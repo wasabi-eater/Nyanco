@@ -1,0 +1,23 @@
+-- Nyanco 0.38 prefix
+class show 'a => named 'a where
+  name : 'a -> string
+
+data person = Person string
+instance named person where
+  name (Person x) = x
+  show (Person x) = "person:" ++ x
+
+render : named 'a => 'a -> string
+render = show
+
+asFloat : num 'a => 'a -> float / {exn}
+asFloat = toFloat
+
+main =
+  print (render (Person "Ada"));
+  print (name (Person "Bob"));
+  print (asFloat 42);
+  print (toChar 65);
+  print (toChar 128512);
+  print (bytes "日本😀");
+  print (chars "日本😀")

@@ -274,7 +274,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         if(info.env.get(n.value).callable)invoke(ctx,value,values,info.effect,at);
         else values.push(value);
       }
-      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex) {
+      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
         let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
         const target=definitions.classes.get(m.className).instances.get(instanceKey(type))?.implementations.get(n.value);
@@ -371,7 +371,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       ctx.lines.push(`${parts}:=[]string{};m.loop(func(m *Machine){${walk}(m,func(item any){${parts}=append(${parts},stringValue(item,${at}))})},${at},${label})`);
       v.push(ctx.value(`strings.Join(${parts},stringValue(${separator},${at}))`));return;
     }
-    if(['toInt','toFloat','toByte'].includes(name)){v.push(ctx.value(`m.numericCast(${pop()},${str(name.slice(2).toLowerCase())},${at})`));return;}
+    if(['toInt','toFloat','toByte','toChar'].includes(name)){
+      const value=pop(),type=T.prune(topTypes.at(-1)),target=definitions.classes.get(name)?.instances.get(instanceKey(type))?.implementations.get(name);
+      if(target){const spec=named(target,info.effect);v.push(...ctx.call(`m.${spec.fn}`,[value],1));}
+      else v.push(ctx.value(`m.numericCast(${value},${str(name.slice(2).toLowerCase())},${at})`));return;
+    }
+    if(name==='bytes'){v.push(ctx.value(`byteValues(${pop()},${at})`));return;}
     if(name==='chars'){v.push(ctx.value(`chars(${pop()},${at})`));return;}
     if(name==='toNum'||name==='parseNum'){v.push(ctx.value(`m.parseNumber(${pop()},${name==='toNum'},${at})`));return;}
     if(name==='fromYield') {

@@ -1,4 +1,4 @@
-# Nyanco 0.57 — 数値型とindexer
+# Nyanco 0.58 — クラス継承と文字変換
 
 型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
 
@@ -900,7 +900,7 @@ main = print (b + 5); print (f / 2)
 -- 1.5
 ```
 
-`//`は廃止しました。`7 / 2`は3、`-7 / 2`は-3となり、整数の除算は0方向へ切り捨てます。`7.0 / 2.0`は3.5です。`+ - * / % ^`は組み込みのnumクラスのメソッドです。`f = +`の型には`num 'a`制約が付きます。数値型には既定のinstanceがあり、ADTにもnum instanceを実装できます。比較のordは別のクラスで、charの比較にも対応します。charは数値型ではありません。
+`//`は廃止しました。`7 / 2`は3、`-7 / 2`は-3となり、整数の除算は0方向へ切り捨てます。`7.0 / 2.0`は3.5です。0.58では`+ - * / % ^`はそれぞれadd・sub・mul・div・mod・powクラスのメソッドです。`f = +`の型には`add 'a`制約が付きます。numはこれらを継承します。数値型には既定のinstanceがあり、ADTにもnum instanceを実装できます。比較のordは別のクラスで、charの比較にも対応します。charは数値型ではありません。
 
 `toInt`・`toFloat`・`toByte`は数値型間の明示的なキャストです。整数へは0方向へ小数部分を切り捨てます。変換先の範囲を超える値はexnです。byteの演算結果が0〜255を超えた場合は実行エラーになります。Goのint演算は64bitの整数演算です。
 
@@ -942,3 +942,40 @@ instance indexSet (box 'a) where
 既存のtoNum・parseNumはfloatを読み取る互換名として残しています。旧ソースの型注釈numは用途に応じてfloatまたはintへ変更してください。
 
 [実行例](examples/scalars-indexers.nyan)
+
+
+## クラス継承・toChar・bytes（0.58）
+
+`class 親制約, 親制約 => 子クラス 'a where`で継承します。親には子と同じ型引数を渡します。子の制約があれば親のメソッドも使えます。
+
+```haskell
+class show 'a => named 'a where
+  name : 'a -> string
+
+data person = Person string
+instance named person where
+  name (Person x) = x
+  show (Person x) = "person:" ++ x
+
+render : named 'a => 'a -> string
+render = show
+```
+
+instanceでは継承したメソッドもまとめて実装できます。親のinstanceを別に定義済みならその実装を再利用するので、同じメソッドを重ねて定義する必要はありません。再利用する親の文脈制約も満たす必要があります。親の実装と異なる上書き、循環継承、無関係な親同士で衝突する関連型は型エラーになります。関連型も継承され、子のinstanceで指定します。
+
+numはadd・sub・mul・div・mod・pow・toInt・toFloat・toByte・toCharを継承する標準クラスです。変換関数もそれぞれ同名のクラスメソッドになりました。int・float・byteには全ての標準instanceがあります。`num 'a`制約から四則演算や変換を呼べますが、`+`だけを使う関数の推論結果は最小限の`add 'a`制約です。
+
+```haskell
+asFloat : num 'a => 'a -> float / {exn}
+asFloat = toFloat
+
+toChar 65          -- 'A'
+toChar 128512      -- '😀'
+toChar 'あ'        -- 'あ'
+bytes "あ"         -- [227, 129, 130] : [byte]
+chars "あ"         -- ['あ'] : [char]
+```
+
+`toChar : toChar 'a => 'a -> char / {exn}`は数値をUnicodeスカラー値として解釈します。floatは0方向へ切り捨て、0〜0x10FFFFの範囲外やサロゲート領域0xD800〜0xDFFFはexnになります。charに対するtoCharはその文字を返します。ADTにも変換のinstanceを実装できます。`bytes : string -> [byte]`はUTF-8の各byteをvectorにします。
+
+[実行例](examples/class-inheritance.nyan)

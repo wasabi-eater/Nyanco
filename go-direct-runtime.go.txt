@@ -167,10 +167,11 @@ func(m *Machine) parseNumber(value any,optional bool,loc string) any {
 }
 
 func(m *Machine) numericCast(value any,target,loc string) any {
+ if target=="char"{if _,ok:=value.(Char);ok{return value}}
  if target=="int"{if _,ok:=value.(int64);ok{return value}}
  n:=number(value,loc)
- if math.IsNaN(n)||math.IsInf(n,0)||target=="byte"&&(math.Trunc(n)<0||math.Trunc(n)>=256)||target=="int"&&(n< -9223372036854775808.0||n>=9223372036854775808.0){m.perform("exn",[]any{"Invalid numeric cast to "+target},loc,true);fail(loc,"Non-returning effect returned")}
- switch target{case "float":return n;case "byte":return uint8(n);case "int":if _,ok:=value.(int64);ok{return value};return int64(n)};return nil
+ if math.IsNaN(n)||math.IsInf(n,0)||target=="byte"&&(math.Trunc(n)<0||math.Trunc(n)>=256)||target=="int"&&(n< -9223372036854775808.0||n>=9223372036854775808.0)||target=="char"&&(math.Trunc(n)<0||math.Trunc(n)>0x10ffff||math.Trunc(n)>=0xd800&&math.Trunc(n)<=0xdfff){m.perform("exn",[]any{"Invalid numeric cast to "+target},loc,true);fail(loc,"Non-returning effect returned")}
+ switch target{case "char":return Char(n);case "float":return n;case "byte":return uint8(n);case "int":if _,ok:=value.(int64);ok{return value};return int64(n)};return nil
 }
 func chars(value any,loc string) []any {s:=stringValue(value,loc);out:=[]any{};for _,r:=range s{out=append(out,Char(r))};return out}
 
@@ -178,3 +179,5 @@ func charText(c Char) string {
  special:=map[Char]string{0:"\\0",9:"\\t",10:"\\n",13:"\\r",39:"\\'",92:"\\\\"}
  value,ok:=special[c];if !ok{if c<32||c==127{value=fmt.Sprintf("\\u{%x}",c)}else{value=string(rune(c))}};return "'"+value+"'"
 }
+
+func byteValues(value any,loc string) []any {s:=stringValue(value,loc);out:=make([]any,len(s));for i:=range out{out[i]=uint8(s[i])};return out}

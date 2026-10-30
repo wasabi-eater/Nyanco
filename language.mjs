@@ -1109,7 +1109,7 @@ export class VM {
           stack.push(...returned);
         }
         else if (BUILTINS.has(t.value)) {
-          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
+          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
           if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
         }
@@ -1298,13 +1298,17 @@ for(const name of combinationNames)define(name,name==='powerset'?1:2,function*(v
 });
 
 define('chars',1,(vm,s,t)=>{const value=vm.expect(s.pop(),'string',t);s.push([...value].map(c=>scalar('char',c)));});
-for(const type of ['int','float','byte'])define('to'+type[0].toUpperCase()+type.slice(1),1,function*(vm,s,t){
- const value=s.pop(),n=scalarValue(value);let result=type==='float'?n:Math.trunc(n);
- if(!['int','float','byte'].includes(scalarType(value))||!Number.isFinite(result)||type==='byte'&&(result<0||result>255)||type==='int'&&Math.abs(result)>9223372036854775807){
+for(const type of ['int','float','byte','char'])define('to'+type[0].toUpperCase()+type.slice(1),1,function*(vm,s,t){
+ const value=s.pop(),method='to'+type[0].toUpperCase()+type.slice(1),target=vm.definitions.classes?.get(method)?.instances.get(runtimeTypeKey(value))?.implementations.get(method);
+ if(target){const call={...t,kind:'word',value:target},effect=t.castEffect,local=[value];yield* vm.run([call],local,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(local[0]);return;}
+ if(type==='char'&&scalarType(value)==='char'){s.push(value);return;}
+ const n=scalarValue(value);let result=type==='float'?n:Math.trunc(n);
+ if(!['int','float','byte'].includes(scalarType(value))||!Number.isFinite(result)||type==='byte'&&(result<0||result>255)||type==='int'&&Math.abs(result)>9223372036854775807||type==='char'&&(result<0||result>0x10ffff||result>=0xd800&&result<=0xdfff)){
   yield {operation:ioEffects().get('exn'),args:['Invalid numeric cast to '+type],token:t};throw new LanguageError('Non-returning effect returned',t);
  }
- s.push(scalar(type,result));
+ s.push(scalar(type,type==='char'?String.fromCodePoint(result):result));
 });
+define('bytes',1,(vm,s,t)=>s.push([...new TextEncoder().encode(vm.expect(s.pop(),'string',t))].map(v=>scalar('byte',v))));
 for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];
  const target=vm.definitions.classes?.get(name==='at'?'indexGet':'indexSet')?.instances.get(runtimeTypeKey(container))?.implementations.get(name);

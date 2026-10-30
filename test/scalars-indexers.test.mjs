@@ -34,7 +34,7 @@ const body=`main =
  print (handle {"あ" with {.[0] = 0}} {exn: {-> message k; "invalid UTF-8"}})`;
 function native(source){const p=compile(source),dir=mkdtempSync(join(tmpdir(),'nyanco-scalars-'));try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);return result.stdout;}finally{rmSync(dir,{recursive:true,force:true});}}
 test('numeric inference separates scalar types and contextual integer literals',()=>{
- const vm=new VM();assert.match(vm.infer('3'),/--.*int/);assert.match(vm.infer('3.0'),/--.*float/);assert.match(vm.infer("'あ'"),/--.*char/);assert.match(vm.infer('"a".[0]'),/--.*byte/);assert.match(vm.infer('+'),/num 'a/);
+ const vm=new VM();assert.match(vm.infer('3'),/--.*int/);assert.match(vm.infer('3.0'),/--.*float/);assert.match(vm.infer("'あ'"),/--.*char/);assert.match(vm.infer('"a".[0]'),/--.*byte/);assert.match(vm.infer('+'),/add 'a/);
  assert.match(compile(defs).types.get('b'),/byte/);assert.match(compile(defs).types.get('f'),/float/);
  for(const expr of ['toByte 1 + toInt 2','toInt 1 + toFloat 2','toFloat 1 == toInt 1',"'a' + 'b'",'3 // 2'])assert.throws(()=>run('main = '+expr),/unify|instance|removed/i,expr);
  assert.throws(()=>run('one = 1\nmain = toByte 2 + one'),/unify/);
@@ -60,6 +60,10 @@ instance num amount where
   (/) (Amount x) (Amount y) = Amount (x / y)
   (%) (Amount x) (Amount y) = Amount (x % y)
   (^) (Amount x) (Amount y) = Amount (x ^ y)
+  toInt (Amount x) = x
+  toFloat (Amount x) = toFloat x
+  toByte (Amount x) = toByte x
+  toChar (Amount x) = toChar x
 data settings = Settings int
 instance indexGet settings where
   key : string

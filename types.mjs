@@ -1,3 +1,4 @@
+import {implies,resolveInheritance} from './class-inheritance.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {combinationNames} from './combinatorics.mjs';
 import {transforms,streamTransforms,countTransform,predicateTransform,callbackTransform} from './iteration.mjs';
@@ -5,7 +6,7 @@ import {withOption,isStandardOption} from './builtin-option.mjs';
 import {ioEffects,effectFamilies} from './builtin-effects.mjs';
 import {classConstraint} from './class-syntax.mjs';
 import {lowerName,instanceKey} from './type-names.mjs';
-import {operatorFallback,operatorSpecs,installOperatorClasses} from './operator-classes.mjs';
+import {operatorFallback,operatorSpecs,builtinInstance,installOperatorClasses} from './operator-classes.mjs';
 // Hindley–Milner-style value and stack-row inference. No program code is run.
 import { typeSyntax, patternNames } from './type-syntax.mjs';
 export class StaticTypeError extends Error {
@@ -36,6 +37,9 @@ function requireAssociated(c,container,items,token) {
   container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(container.tag==='var'||container.tag==='rigid') {
     if(container.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
+    for(const [child,args] of container.associated||[])if(child!==c.name&&implies(activeClasses,child,c.name)){
+      const own=activeClasses.get(child).associated||[];c.associated.forEach((a,i)=>unify(items[i],args[own.findIndex(x=>x.name===a.name)],token));return;
+    }
     const existing=container.associated?.get(c.name);
     if(existing){existing.forEach((t,i)=>unify(t,items[i],token));return;}
     if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${formatType(container)} ${c.name}`,token);
@@ -49,31 +53,36 @@ function requireAssociated(c,container,items,token) {
   const parameters=new Map();unify(container,syntaxType(instance.head,parameters),token);
   c.associated.forEach((a,i)=>unify(items[i],syntaxType(instance.associated.get(a.name),parameters),token));
   applyContext(instance.context,parameters,token);
+  for(const parent of c.supers||[]){const pc=activeClasses.get(parent);if(parent==='streem')requireIterable(container,items[c.associated.findIndex(a=>a.name==='item')],token);else if(pc.associated?.length)requireConstraint(parent,[container,...pc.associated.map(a=>items[c.associated.findIndex(x=>x.name===a.name)])],token);else requireClass(parent,container,token);}
 }
 function requireClass(name,type,token) {
+  if(name==='streem')return requireIterable(type,variable(),token);
   type=prune(type);
   const c=activeClasses.get(name);
   if(!c)throw new StaticTypeError(`Unknown class: ${name}`,token);
   if(c.associated?.length)return requireAssociated(c,type,c.associated.map(()=>variable()),token);
-  if(c.operatorClass && !c.instances.size && [...c.methods.keys()].every(op=>operatorSpecs.get(op).universal))return;
+  if(c.operatorClass && !c.supers?.length && !c.instances.size && [...c.methods.keys()].every(op=>operatorSpecs.get(op)?.universal))return;
   if(type.tag==='var') {
     if(type.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
-    type.classes ??= new Set();type.classes.add(name);return;
+    type.classes ??= new Set();if([...type.classes,...type.associated?.keys()||[]].some(c=>implies(activeClasses,c,name)))return;for(const c of type.classes)if(implies(activeClasses,name,c))type.classes.delete(c);type.classes.add(name);return;
   }
   if(type.tag==='rigid') {
-    if(!type.classes?.has(name))throw new StaticTypeError(`Missing constraint: ${formatType(type)} ${name}`,token);
+    if(![...type.classes||[],...type.associated?.keys()||[]].some(c=>implies(activeClasses,c,name)))throw new StaticTypeError(`Missing constraint: ${formatType(type)} ${name}`,token);
     return;
   }
+  for(const parent of c.supers||[])requireClass(parent,type,token);
   const key=instanceKey(type),inst=c.instances.get(key);
   if(inst) { const parameters=new Map();unify(type,syntaxType(inst.head,parameters),token);applyContext(inst.context,parameters,token);return; }
-  if(c.showClass)return;
-  if(!operatorFallback(c,type))throw new StaticTypeError(`No instance: ${formatType(type)} ${name}`,token);
+  if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${formatType(type)} ${name}`,token);
 }
 
 function requireIterable(container,item,token,latent=null) {
   container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(latent){if(container.tag==='var'||container.tag==='rigid'){if(container.eachEffects)mergeEffects(latent,container.eachEffects,token);else container.eachEffects=latent;}else mergeEffects(latent,container.tag==='stream'?container.effects:effects(),token);}
   if(container.tag==='stream'){unify(container.item,item,token);return;}
+  for(const [child,args] of container.associated||[])if(implies(activeClasses,child,'streem')){
+    const index=activeClasses.get(child).associated.findIndex(a=>a.name==='item');if(index>=0){unify(item,args[index],token);return;}
+  }
   if(container.tag==='var') {if(container.eachItem)unify(container.eachItem,item,token);else container.eachItem=item;return;}
   if(container.tag==='rigid') {if(!container.eachItem)throw new StaticTypeError('Missing streem constraint',token);unify(container.eachItem,item,token);return;}
   if(container.tag==='list'){unify(container.item,item,token);return;}
@@ -529,6 +538,8 @@ function builtinSchemes() {
   for(const [name,result] of [['toInt',INT],['toFloat',FLOAT],['toByte',BYTE]]){
     const s=row(),a=variable();requireClass('num',a);out.set(name,generalize(quote(push(s,a),push(s,result),effects([{name:'exn',args:[]}]))));
   }
+  {const s=row();out.set('toChar',generalize(quote(push(s,INT),push(s,CHAR),effects([{name:'exn',args:[]}]))));}
+  add('bytes',()=>{const s=row();return quote(push(s,STRING),push(s,list(BYTE)));});
   add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
   add('split',()=>{const s=row();return quote(stack(s,STRING,STRING),push(s,{tag:'stream',item:STRING,effects:effects()}));});
   add('toNum',()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'adt',name:'option',args:[FLOAT]}));});
@@ -1123,7 +1134,7 @@ function components(definitions,globals) {
 
 function prepare(definitions,globalValues,initialized=false) {
   definitions=withStandardFunctions(withOption(definitions));
-  const operators=installOperatorClasses(new Map(definitions.classes||[]),new Map(definitions.methods||[]));
+  const operators=installOperatorClasses(new Map(definitions.classes||[]),new Map(definitions.methods||[]));resolveInheritance(operators.classes,(message,t)=>{throw new StaticTypeError(message,t);});
   activeClasses=operators.classes;
   const inference=new Inference();
   inference.classes=activeClasses;
@@ -1141,6 +1152,12 @@ function prepare(definitions,globalValues,initialized=false) {
   }
   inference.dataTypes=definitions.dataTypes;
   inference.constructors=definitions.constructors || new Map();
+  for(const c of activeClasses.values())if(c.supers?.length)for(const instance of c.instances.values()){
+    const params=new Map(),head=syntaxType(instance.head,params);applyContext(instance.context,params,instance.token);
+    const args=[head,...(c.associated||[]).map(a=>syntaxType(instance.associated.get(a.name),params))];
+    const checked=instantiate(generalize(tuple(args)),true);requireConstraint(c.name,checked.items,instance.token);
+  }
+
   for(const [name,constructor] of inference.constructors) {
     const {fields,result}=constructorTypes(constructor),s=row();
     inference.functions.set(name,generalize(quote(stack(s,...fields),push(s,result),effects())));
@@ -1279,7 +1296,7 @@ function executionTypes(base,definitions) {
     activate();const method=definitions.methods.get(node.value);let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const result=definitions.classes.get(method.className).instances.get(instanceKey(type))?.implementations.get(node.value);
-    if(!result && (method.specialShow||method.specialIndex))return node.value;
+    if(!result && (method.specialShow||method.specialIndex||method.specialCast))return node.value;
     if(!result && operatorFallback(definitions.classes.get(method.className),type))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;
