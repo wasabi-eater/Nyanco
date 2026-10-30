@@ -34,16 +34,16 @@ test('record rows reject absent fields, incompatible shapes and field types befo
 test('record effect annotations accept open and closed rows',()=>{
   const vm=new VM(compile(`get : {name: 'a | 'r} -> 'a
 get = .name
-exact : {x: num, y: bool} -> num
+exact : {x: int, y: bool} -> int
 exact = .x
 main = {name: 2, z: True} get; {x: 4, y: False} exact`));
   assert.deepEqual(vm.evaluate('main'),[2,4]);
   assert.throws(()=>vm.evaluate('{x: 1, y: True, z: 0} exact'),/Type error/);
-  assert.throws(()=>compile("bad : {x: 'a | 'r} -> num\nbad = .y"),/Type error/);
+  assert.throws(()=>compile("bad : {x: 'a | 'r} -> int\nbad = .y"),/Type error/);
 });
 
 test('record fields contain closures, local functions and ADTs with forward dependencies',()=>{
-  const vm=new VM(compile(`data box = {value: num} Box
+  const vm=new VM(compile(`data box = {value: int} Box
 make = {q: {later}, data: ({value: 5} Box)}
 later = + 1
 main = 4 make.q call; {x: (f = 8; f)}.x`));
@@ -52,14 +52,14 @@ main = 4 make.q call; {x: (f = 8; f)}.x`));
 });
 
 test('row variables preserve the complete shape across inputs and outputs',()=>{
-  const vm=new VM(compile(`keep : {x: num | 'r} -> {x: num | 'r}
+  const vm=new VM(compile(`keep : {x: int | 'r} -> {x: int | 'r}
 keep = nop
 anyRecord : {| 'r} -> {| 'r}
 anyRecord = nop`));
   assert.deepEqual(vm.evaluate('{x: 2, extra: "kept"} keep.extra; {:} anyRecord'),['kept',{kind:'record',fields:Object.create(null)}]);
   assert.throws(()=>vm.evaluate('3 anyRecord'),/Type error/);
-  assert.throws(()=>compile("bad : {x: num | 'r} -> {y: num | 'r}\nbad = nop"),/Type error/);
-  assert.throws(()=>compile("bad : {x: num | 'r} -> 'r\nbad = .x"),/Type error/);
+  assert.throws(()=>compile("bad : {x: int | 'r} -> {y: int | 'r}\nbad = nop"),/Type error/);
+  assert.throws(()=>compile("bad : {x: int | 'r} -> 'r\nbad = .x"),/Type error/);
 });
 
 test('field expressions run in source order and do not leak declarations',()=>{

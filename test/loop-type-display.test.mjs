@@ -16,7 +16,7 @@ test('display does not claim to handle a callback also invoked outside the loop'
  const vm=new VM(p);assert.throws(()=>vm.evaluate('f {break}'),/Unhandled effect: break/);
 });
 test('displaying accepted effects does not contaminate actual pure or handled computations',()=>{
- const p=compile('pure : -> num / {}\npure = 0; while {$ < 3} {+ 1}\nstop = 0; while {True} {break}\nmain = pure; stop');
+ const p=compile('pure : -> int / {}\npure = 0; while {$ < 3} {+ 1}\nstop = 0; while {True} {break}\nmain = pure; stop');
  assert.doesNotMatch(p.types.get('pure'),/break/);assert.doesNotMatch(p.types.get('stop'),/break/);
  const vm=new VM(p);assert.deepEqual(vm.evaluate('main'),[3,0]);
  vm.infer('while');assert.deepEqual(vm.evaluate('main'),[3,0]);

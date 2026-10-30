@@ -42,7 +42,7 @@ test('captures remain shared through parentheses, lists and records',()=>{
 });
 
 test('function and local definitions use name first, with prefix patterns',()=>{
-  const v=vm(`data pair = Pair num string
+  const v=vm(`data pair = Pair int string
 pick (Pair n s) = n
 sum xs = 0; each xs {+}
 sum2 xs = 0, xs; each {+}
@@ -80,19 +80,19 @@ instance add 'a => add (box 'a) where
   + (Box x) (Box y) = Box (x + y)`);
   assert.deepEqual(v.evaluate('unwrap (Box 3); unwrap (Box True)'),[3,true]);
   assert.deepEqual(v.evaluate('(Box 2) + (Box 3)')[0].fields,[5]);
-  assert.match(v.infer('Box 3'),/\(box num\)/);
+  assert.match(v.infer('Box 3'),/\(box int\)/);
   assert.match(v.infer('unwrap'),/^unpack /);
 });
 
 test('prefix effects, effect-row annotations and multiple handler results',()=>{
   const output=[],v=vm(`effect yield 'a: 'a ->
-effect ask: -> num
-emit : num -> / {yield num}
+effect ask: -> int
+emit : int -> / {yield int}
 emit = yield
-main : -> num string / {io}
+main : -> int string / {io}
 main = handle {emit 1; ask; "done"} {yield: {-> x k; print x; resume k}, ask: {-> k; resume 42 k}}`,{output:x=>output.push(x)});
   assert.deepEqual(v.evaluate('main'),[42,'done']);assert.deepEqual(output,['1']);
-  assert.match(v.infer('yield 1'),/\{yield num\}/);
+  assert.match(v.infer('yield 1'),/\{yield int\}/);
 });
 
 test('prefix constructor patterns work in case, arrow and list Push patterns',()=>{

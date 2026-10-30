@@ -16,7 +16,7 @@ test('streem is the constraint class and each remains its method',()=>{
  const p=compile(box+'collect xs = toList xs\nmain = toList (Box [1,2])');
  assert.ok(p.definitions.classes.has('streem'));assert.equal(p.definitions.classes.has('each'),false);
  assert.match(p.types.get('collect'),/^streem /);assert.deepEqual(new VM(p).evaluate('main'),[[1,2]]);
- assert.throws(()=>compile("instance each [num] where\n  item: num\n  each xs f = nop"),/Unknown class: each/);
+ assert.throws(()=>compile("instance each [int] where\n  item: int\n  each xs f = nop"),/Unknown class: each/);
  for(const old of ['lmap','lfilter'])assert.throws(()=>new VM().infer(old),/Unknown word/);
 });
 test('lazy transforms and list counterparts agree on values, boundaries, and empty sources',()=>{
@@ -67,14 +67,14 @@ test('downstream breaks and labelled or masked breaks reach the intended operati
 });
 test('deferred source, mapper and flattened stream effects are inferred',()=>{
  const p=compile('make = sflatMap [1] {drop; fromYield {print "x"; yield 1}}\nmain = toList make');
- assert.match(p.types.get('make'),/stream num.*io/);assert.match(p.types.get('main'),/\/ \{io\}$/);
- assert.throws(()=>compile('main : -> [num] / {}\nmain = flatten [fromYield {print "x"; yield 1}]'),/Effect io is not allowed/);
+ assert.match(p.types.get('make'),/stream int.*io/);assert.match(p.types.get('main'),/\/ \{io\}$/);
+ assert.throws(()=>compile('main : -> [int] / {}\nmain = flatten [fromYield {print "x"; yield 1}]'),/Effect io is not allowed/);
  assert.throws(()=>compile('main = sflatMap [1] {+ 1}'),/No instance/);
  assert.throws(()=>compile('main = sflatten [1,2]'),/No instance/);
  assert.throws(()=>compile('main = stakeWhile [1] {+ 1}'),/Cannot unify/);
 });
 test('counts reject invalid numbers with exn and streams retain types in the REPL',()=>{
- for(const name of ['stake','sskip','take','skip'])for(const n of ['-1','0.5','9999999999999999']){
+ for(const name of ['stake','sskip','take','skip'])for(const n of ['-1','9999999999999999']){
   assert.deepEqual(run(`main = handle {${name} [1,2] ${n}; drop} {exn: {-> message k; nop}}`).stack,[]);
  }
  const vm=new VM();vm.evaluate('stake (1 ..= 9) 2 -> xs');assert.deepEqual(vm.evaluate('toList xs'),[[1,2]]);

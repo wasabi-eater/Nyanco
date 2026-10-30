@@ -1,5 +1,5 @@
 -- Nyanco 0.38 prefix
-effect ask : -> num
+effect ask : -> int
 loop = while {True} _
 main =
   1; loop @a {* 2; print $; when ($ > 8) {break@a}}; drop;

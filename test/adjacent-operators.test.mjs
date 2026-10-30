@@ -32,7 +32,7 @@ test('comparison chains and ranges combine with adjacent arithmetic operators',(
   assert.deepEqual(output,[]);
 });
 test('operator sequences infer constraints and dispatch ADT instances',()=>{
-  const p=compile(`data amount = num Amount
+  const p=compile(`data amount = int Amount
 instance add amount where
   (x Amount) (y Amount) + = (x + y) Amount
 instance mul amount where

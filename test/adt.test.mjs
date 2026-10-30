@@ -12,7 +12,7 @@ test('ADT constructors are polymorphic stack functions with readable values',()=
   assert.equal(program.types.get('Just'),"..s 'a -- ..s ('a maybe)");
   assert.equal(program.types.get('Nothing'),"..s -- ..s ('a maybe)");
   assert.equal(format(vm.evaluate('99; 3 Just; True Just; Nothing')),'[99, (Just 3), (Just True), Nothing]');
-  assert.equal(vm.infer('1 Just'),"..s -- ..s (num maybe)");
+  assert.equal(vm.infer('1 Just'),"..s -- ..s (int maybe)");
   assert.throws(()=>vm.evaluate('Just'),/underflow/);
 });
 
@@ -61,7 +61,7 @@ test('ADT fields support lists, nested ADTs, and quotation types',()=>{
 test('ADT annotations validate parameter arity and polymorphic contracts',()=>{
   const program=compile(`${maybe}\nfromMaybe : (a (Maybe a)) -> a\n${fromMaybe}`);
   assert.deepEqual(new VM(program).evaluate('0 Nothing fromMaybe'),[0]);
-  for(const signature of ['Maybe -> num','Maybe num -> bool','Unknown -> num','Maybe a -> a']) {
+  for(const signature of ['Maybe -> int','Maybe int -> bool','Unknown -> int','Maybe a -> a']) {
     assert.throws(()=>compile(`${maybe}\nf : ${signature}\n_ f = 1`),StaticTypeError,signature);
   }
   assert.throws(()=>compile(`${maybe}\nNothing f = 0\n(x Just) f = True`),StaticTypeError);
@@ -81,10 +81,10 @@ test('mutable ADTs preserve weak parameter types across empty variants',()=>{
 test('constructor names and invalid ADT declarations are rejected atomically',()=>{
   const previous=compile(maybe).definitions;
   for(const source of [
-    maybe, 'data Other = Just', 'data num = N', 'data bad = good', 'data Bad A = Good',
+    maybe, 'data Other = Just', 'data int = N', 'data bad = good', 'data Bad A = Good',
     'data Bad a a = Good', 'data Bad a = Good b', 'data Bad = Good Unknown',
     'data Bad =', 'data Bad = Good |', 'data Bad = Good | Good',
-    'data Bad = Good "num"', 'Just = 1', '(x x Just) f = x',
+    'data Bad = Good "int"', 'Just = 1', '(x x Just) f = x',
     '(x Missing) f = x', 'Just f = 1', 'data Bad = Good (Maybe)',
   ])assert.throws(()=>compile(source,'bad.nyan',previous),undefined,source);
   assert.equal(previous.constructors.size,2);

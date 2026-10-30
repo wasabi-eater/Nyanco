@@ -70,18 +70,18 @@ func(m *Machine) handleWith(body func(*Machine) []any,handlers map[string]Effect
 }
 
 func(m *Machine) listIndex(value,index any,loc string) any {
- xs:=list(value,loc);n:=number(index,loc)
- if math.IsNaN(n)||math.IsInf(n,0)||math.Trunc(n)!=n||n<0||n>=float64(len(xs)) {
-  m.perform("exn",[]any{fmt.Sprintf("Vector index out of bounds: %s (length %d)",text(n),len(xs))},loc,true)
-  fail(loc,"Cannot resume a non-returning effect")
- }
- return xs[int(n)]
+ n:=number(index,loc);size:=0;var xs []any;var text string;isString:=false
+ if s,ok:=value.(string);ok{text=s;size=len(s);isString=true}else{xs=list(value,loc);size=len(xs)}
+ if math.IsNaN(n)||math.Trunc(n)!=n||n<0||n>=float64(size){m.perform("exn",[]any{"Index out of bounds: "+textValue(index)},loc,true);fail(loc,"Non-returning effect returned")}
+ if isString{return uint8(text[int(n)])};return xs[int(n)]
 }
-
+func textValue(v any) string{return text(v)}
 func(m *Machine) listOptionIndex(value,index any,loc string) any {
- xs:=list(value,loc);n:=number(index,loc)
- if math.IsNaN(n)||math.IsInf(n,0)||math.Trunc(n)!=n||n<0||n>=float64(len(xs)) {return &ADT{"option","None",nil}}
- return &ADT{"option","Some",[]any{xs[int(n)]}}
+ return m.handle(func(m *Machine) []any{return []any{&ADT{"option","Some",[]any{m.listIndex(value,index,loc)}}}},map[string]EffectHandler{"exn":func(_ []any,_ *Continuation) []any{return []any{&ADT{"option","None",nil}}}},loc)[0]
+}
+func(m *Machine) indexSetOwned(value,index,replacement any,loc string,reuse bool) any {
+ m.listIndex(value,index,loc);i:=int(number(index,loc));if s,ok:=value.(string);ok{bytes:=[]byte(s);bytes[i]=replacement.(uint8);if !utf8.Valid(bytes){m.perform("exn",[]any{"String update produces invalid UTF-8"},loc,true);fail(loc,"Non-returning effect returned")};return string(bytes)}
+ result:=list(value,loc);if !reuse{result=append([]any{},result...)};result[i]=replacement;return result
 }
 
 // Private cancellation is not an effect: user break handlers cannot swallow a take limit.
@@ -104,13 +104,13 @@ func(m *Machine) iterationCount(value any,name,loc string) float64 {
 func(m *Machine) walkUnresolved(value any,visit func(any),loc string) {
  switch xs:=value.(type) {
  case []any: for _,item:=range xs{visit(item)}
- case *Range: for i:=0;i<xs.count();i++{m.tick(loc);visit(xs.start+float64(i)*xs.step())}
+ case *Range: for i:=0;i<xs.count();i++{m.tick(loc);visit(xs.start+int64(i)*xs.step())}
  case *Stream: xs.walk(m,visit)
  default: fail(loc,"Unresolved native streem container")
  }
 }
 
-type UpdatePart struct {kind,name string;index any}
+type UpdatePart struct {kind,name string;index any;cached any;hasCached bool;get func(*Machine,any,any) any;set func(*Machine,any,any,any) any}
 func(m *Machine) copyUpdate(value any,path []UpdatePart,replacement any,loc string,reuse bool) any {
  if len(path)==0{return replacement};p:=path[0]
  if p.kind=="field" {
@@ -121,12 +121,11 @@ func(m *Machine) copyUpdate(value any,path []UpdatePart,replacement any,loc stri
   n:=int(number(p.index,loc));old:=tupleIndex(value,n,loc);items:=append([]any(nil),value.(*Tuple).items...)
   items[n]=m.copyUpdate(old,path[1:],replacement,loc,false);return &Tuple{items}
  }
- old:=m.listIndex(value,p.index,loc);xs:=list(value,loc);if !reuse{xs=append([]any{},xs...)}
- xs[int(number(p.index,loc))]=m.copyUpdate(old,path[1:],replacement,loc,false);return xs
+ old:=p.cached;if !p.hasCached{old=p.get(m,value,p.index)};updated:=m.copyUpdate(old,path[1:],replacement,loc,false);return p.set(m,value,p.index,updated)
 }
 
 func(m *Machine) readUpdatePath(value any,path []UpdatePart,loc string) any {
- for _,p:=range path {switch p.kind {case "field":value=recordField(value,p.name,loc);case "tuple":value=tupleIndex(value,int(number(p.index,loc)),loc);default:value=m.listIndex(value,p.index,loc)}}
+ for i,p:=range path {switch p.kind {case "field":value=recordField(value,p.name,loc);case "tuple":value=tupleIndex(value,int(number(p.index,loc)),loc);default:value=p.get(m,value,p.index);path[i].cached=value;path[i].hasCached=true}}
  return value
 }
 

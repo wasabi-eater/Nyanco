@@ -46,7 +46,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     for(const part of associatedParts){
       const label=part[1]?.value;
       if(part.length!==2 || !/^[a-z][A-Za-z0-9_]*$/.test(label||''))fail('Associated type declaration requires type name',part[0]);
-      if(c.associated.some(a=>a.name===label) || definitions.dataTypes.has(label) || ['num','bool','string','range','stream'].includes(label))fail('Duplicate or reserved associated type: '+label,part[0]);
+      if(c.associated.some(a=>a.name===label) || definitions.dataTypes.has(label) || ['int','float','byte','char','bool','string','range','stream'].includes(label))fail('Duplicate or reserved associated type: '+label,part[0]);
       let param="'associated_"+label;while(used.has(param))param+='_';used.add(param);c.associated.push({name:label,param});
     }
     for(const part of classMembers.filter(p=>p[0]?.value!=='type')) {
@@ -74,7 +74,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
   function enableStandard(name,token) {
     if(!classes.has(name) && standardOperatorClasses.has(name)) {
       const c=primitiveOperatorClass(name,standardOperatorClasses.get(name),token);
-      for(const [op,m] of c.methods){if(methods.has(op))fail(`Operator already belongs to class: ${op}`,token);methods.set(op,m);}
+      for(const [op,m] of c.methods){if(methods.has(op)&&!classes.get(methods.get(op).className)?.standard)fail(`Operator already belongs to class: ${op}`,token);methods.set(op,m);}
       classes.set(name,c);
     }
   }
@@ -102,6 +102,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       if(args.some(param=>!params.has(param)))fail('Instance constraint variable must occur in its head',token);
     }
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);
+    if(c.indexClass&&(head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
     if(name==='streem' && ['vector','range'].includes(target))fail('Built-in streem instance already exists',token);
     if(c.instances.has(target))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
     const instance={target,head,context,implementations:new Map(),token};c.instances.set(target,instance);

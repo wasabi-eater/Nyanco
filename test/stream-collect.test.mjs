@@ -9,17 +9,17 @@ import {join} from 'node:path';
 const run=source=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,output,stack:vm.evaluate('main')};};
 const custom=`class zero 'a where
   zero : -> 'a
-instance zero num where
+instance zero int where
   zero = 0
-data key = Key num
+data key = Key int
 instance ord key where
   (<) (Key a) (Key b) = a > b
   (<=) (Key a) (Key b) = a >= b
   (>) (Key a) (Key b) = a < b
   (>=) (Key a) (Key b) = a <= b
-data bag = Bag [num]
+data bag = Bag [int]
 instance streem bag where
-  item : num
+  item : int
   each (Bag xs) f = each xs f
 `;
 const source=custom+`main =
@@ -52,7 +52,7 @@ test('collector types include key effects and latent producer effects',()=>{
  assert.doesNotMatch(run('main = fold (1 ..= 3) 0 {when ($ == 2) {break}; +}').p.types.get('main'),/break/);
 });
 test('value rendering uses comma vectors and prefix constructors recursively',()=>{
- assert.equal(format(run('data tree = Leaf num | Node tree tree\nmain = Node (Leaf 1) (Leaf 2)').stack[0]),'(Node (Leaf 1) (Leaf 2))');
+ assert.equal(format(run('data tree = Leaf int | Node tree tree\nmain = Node (Leaf 1) (Leaf 2)').stack[0]),'(Node (Leaf 1) (Leaf 2))');
  assert.equal(format(run('main = Some [[1,2], []]').stack[0]),'(Some [[1, 2], []])');
 });
 test('native collectors match VM including class instances, key effects and break',()=>{

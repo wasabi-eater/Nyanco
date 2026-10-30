@@ -1,3 +1,4 @@
+import {scalar,scalarType,scalarValue,numericBinary,charText} from './numeric-values.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {combinationNames,selections} from './combinatorics.mjs';
 import {vectorOwnership} from './ownership.mjs';
@@ -23,7 +24,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
   const advance = () => { const c = source[i++]; if (c === '\n') { line++; col = 1; } else col++; return c; };
   function stringToken(token) {
     advance();let raw='',chunks=[],parts=[];
-    const flush=()=>{try{chunks.push(JSON.parse('"'+raw+'"'));}catch{throw new LanguageError('Invalid string escape or literal newline',token);}raw='';};
+    const flush=()=>{try{const value=JSON.parse('"'+raw+'"');if(/[\uD800-\uDFFF]/u.test(value))throw new Error('Invalid Unicode scalar');chunks.push(value);}catch{throw new LanguageError('Invalid string escape or literal newline',token);}raw='';};
     while(i<source.length){
       const c=advance();
       if(c==='\\'){if(i>=source.length)break;const next=advance();raw+=next==='{'||next==='}'?next:'\\'+next;continue;}
@@ -45,22 +46,30 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
   }
   while (i < source.length) {
     const c = source[i];
+    if(source.startsWith('//',i))throw new LanguageError('// has been removed; use / for integer division',{file,line,col});
     if (/\s/.test(c)) { advance(); continue; }
     if (source.startsWith('--', i)) { while (i < source.length && source[i] !== '\n') advance(); continue; }
     const token = { file, line, col, kind: 'word', value: '' };
     if(source.startsWith(';;',i)){token.kind=';;';token.value=advance()+advance();}
     else if ('[]{}();,#'.includes(c)) { token.kind = c; token.value = advance(); }
+    else if(c==="'" && /^'(?:[^'\\\r\n]|\\(?:[nrt0'"\\]|u\{[0-9a-fA-F]+\}))'/u.test(source.slice(i))){
+      const match=source.slice(i).match(/^'(?:[^'\\\r\n]|\\(?:[nrt0'"\\]|u\{[0-9a-fA-F]+\}))'/u)[0];
+      for(let j=0;j<match.length;j++)advance();
+      const body=match.slice(1,-1).replace(/\\u\{([0-9a-fA-F]+)\}/g,(_,n)=>String.fromCodePoint(parseInt(n,16))).replace(/\\([nrt0'"\\])/g,(_,c)=>({n:'\n',r:'\r',t:'\t','0':'\0'}[c]??c));
+      if([...body].length!==1||(body.codePointAt(0)>=0xd800&&body.codePointAt(0)<=0xdfff))throw new LanguageError('char literal requires one Unicode scalar',token);
+      token.kind='literal';token.value=scalar('char',body);
+    }
     else if (c === '"') {
       Object.assign(token,stringToken(token));
     } else {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..='].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|:=|::|==|\/\/|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
-        token.kind = 'literal'; token.value = Number(token.value);
+        token.numericKind=/[.eE]/.test(token.value)?'float':'integer';token.numberSource=token.value;token.kind = 'literal'; token.value = Number(token.value);
         if (!Number.isFinite(token.value)) throw new LanguageError('Number must be finite', token);
       } else if (['True', 'False'].includes(token.value)) { token.kind = 'literal'; token.value = token.value === 'True'; }
     }
@@ -72,7 +81,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
 const OPERATORS = new Map([
   ['or', 1], ['and', 2], ['==', 3], ['/=', 3],
   ['<', 3], ['>', 3], ['<=', 3], ['>=', 3],
-  ['..', 4], ['..=', 4], ['::', 4.5], ['+', 5], ['-', 5], ['++', 5], ['*', 6], ['/', 6], ['//', 6], ['%', 6], ['^', 7],
+  ['..', 4], ['..=', 4], ['::', 4.5], ['+', 5], ['-', 5], ['++', 5], ['*', 6], ['/', 6], ['%', 6], ['^', 7],
 ]);
 const isOperator = t => t?.kind === 'word' && OPERATORS.has(t.value);
 const isComparison = t => t?.kind === 'word' && ['<','<=','>','>=','==','/='].includes(t.value);
@@ -443,7 +452,7 @@ function dataDeclarations(groups, definitions, globals) {
     const name=originalName && {...originalName,value:typeName(originalName.value)};
     if (!name || name.kind!=='word' || !/^[a-z][a-zA-Z0-9_']*$/.test(name.value) || ['data','mut'].includes(name.value) || eq<2)
       throw new LanguageError('Expected data Type parameters = Constructors',group[0]);
-    if (['num','bool','string','int','range','stream','vector'].includes(name.value) || definitions.dataTypes.has(name.value))
+    if (['num','float','byte','char','bool','string','int','range','stream','vector'].includes(name.value) || definitions.dataTypes.has(name.value))
       throw new LanguageError(`Type already declared: ${name.value}`,name);
     const parameters=group.slice(postfix ? 1 : 2,postfix ? eq-1 : eq).map(t=>{
       if(t.kind!=='word' || !(postfix ? /^'[a-z][a-zA-Z0-9_']*$/ : /^'?[a-z][a-zA-Z0-9_']*$/).test(t.value) || ['mut','data'].includes(t.value))
@@ -539,7 +548,7 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
 
 function matchPattern(pattern,value,bindings,valueType) {
   if(pattern.kind==='tuple-pattern')return value?.kind==='tuple' && pattern.fields.length===value.items.length && pattern.fields.every((p,i)=>matchPattern(p,value.items[i],bindings,valueType));
-  if(pattern.kind==='literal')return equal(pattern.value,value);
+  if(pattern.kind==='literal')return typeof pattern.value==='number'&&['int','float','byte'].includes(scalarType(value))?pattern.value===scalarValue(value):equal(pattern.value,value);
   if(pattern.kind==='list-pattern')return Array.isArray(value) && value.length===pattern.fields.length && pattern.fields.every((p,i)=>matchPattern(p,value[i],bindings,valueType));
   if(pattern.kind==='push-pattern')return Array.isArray(value) && value.length>0 && matchPattern(pattern.fields[0],value.slice(0,-1),bindings,valueType) && matchPattern(pattern.fields[1],value.at(-1),bindings,valueType);
   if(pattern.kind==='constructor')return value?.kind==='adt' && value.constructor===pattern.value && value.fields.length===pattern.fields.length && pattern.fields.every((p,i)=>matchPattern(p,value.fields[i],bindings,valueType));
@@ -694,6 +703,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
 }
 
 export function format(value) {
+  if(value?.kind==='scalar')return value.type==='char'?charText(value.value):String(value.value);
   if(value?.kind==='continuation')return '<continuation>';
   if(value?.kind==='stream')return '<stream>';
   if(value?.kind==='range')return `(${value.start} ${value.inclusive?'..=':'..'} ${value.end})`;
@@ -707,6 +717,7 @@ export function format(value) {
   return String(value);
 }
 function equal(a, b) {
+  if(a?.kind==='scalar'||b?.kind==='scalar')return a?.kind==='scalar'&&b?.kind==='scalar'&&a.type===b.type&&a.value===b.value;
   if(a?.kind==='range' && b?.kind==='range')return a.start===b.start && a.end===b.end && a.inclusive===b.inclusive;
   if(a?.kind==='tuple' && b?.kind==='tuple')return equal(a.items,b.items);
   if(a?.kind==='record' && b?.kind==='record')return Object.keys(a.fields).length===Object.keys(b.fields).length && Object.keys(a.fields).every(k=>Object.hasOwn(b.fields,k) && equal(a.fields[k],b.fields[k]));
@@ -824,6 +835,7 @@ export class VM {
   }
   need(stack, count, t) { if (stack.length < count) throw new LanguageError(`Stack underflow: need ${count}, have ${stack.length}`, t); }
   expect(value, type, t) {
+    if(type==='number'&&value?.kind==='scalar'&&value.type!=='char')return value.value;
     const ok = type === 'list' ? Array.isArray(value) : type === 'quotation' ? value?.kind === 'closure' : typeof value === type;
     if (!ok) throw new LanguageError(`Expected ${type==='list'?'vector':type}, got ${format(value)}`, t);
     return value;
@@ -1009,7 +1021,7 @@ export class VM {
           yield* this.binary(t.value,operands,t);
           stack.push(operands[0]);
         }
-        else if (t.kind === 'literal') stack.push(t.value);
+        else if (t.kind === 'literal') stack.push(typeof t.value==='number'?scalar(typeIR.numericName(info?.output?.item)|| (t.numericKind==='float'||!Number.isInteger(t.value)?'float':'int'),t.value):t.value);
         else if(t.kind==='interpolation') {
           const count=t.fields.filter(f=>f.empty).length;this.need(stack,count,t);
           const values=count?stack.splice(-count):[];let index=0,result=t.chunks[0];
@@ -1056,21 +1068,18 @@ export class VM {
               if(value?.kind!=='tuple'||part.index>=value.items.length)throw new LanguageError('Tuple index out of bounds',t);
               const items=[...value.items];items[part.index]=yield* copy(items[part.index],depth+1);return {kind:'tuple',items};
             }
-            const xs=vm.expect(value,'list',t),index=vm.expect(args[part.argument],'number',t);
-            if(!Number.isSafeInteger(index)||index<0||index>=xs.length){yield {operation:ioEffects().get('exn'),args:[`Vector index out of bounds: ${index} (length ${xs.length})`],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);}
-            const replacement=yield* copy(xs[index],depth+1),reuse=depth===0&&vm.vectorReuse.has(t);vm.vectorUpdates[reuse?'inPlace':'copied']++;const result=reuse?xs:[...xs];result[index]=replacement;return result;
+            const index=args[part.argument],local=[value,index];
+            yield* BUILTINS.get('at')(vm,local,{...t,indexEffect:info?.indexPaths?.[depth]?.get});
+            const replacement=yield* copy(local[0],depth+1),updated=[value,index,replacement];
+            yield* BUILTINS.get('setAt')(vm,updated,{...t,indexEffect:info?.indexPaths?.[depth]?.set,reuseVector:depth===0&&vm.vectorReuse.has(t)});return updated[0];
           }
           stack.push(yield* copy(original,0));
         }
         else if(t.kind==='list-index') {
-          this.need(stack,1,t);const xs=this.expect(stack.pop(),'list',t);
-          const index=this.expect(yield* this.operand(t.body,env,missing,t,'Vector index'),'number',t);
-          if(!Number.isSafeInteger(index)||index<0||index>=xs.length){
-            if(t.optional){stack.push({kind:'adt',typeName:'option',constructor:'None',fields:[]});continue;}
-            yield {operation:ioEffects().get('exn'),args:[`Vector index out of bounds: ${index} (length ${xs.length})`],token:t};
-            throw new LanguageError('Cannot resume a non-returning effect',t);
-          }
-          stack.push(t.optional?{kind:'adt',typeName:'option',constructor:'Some',fields:[xs[index]]}:xs[index]);
+          this.need(stack,1,t);const value=stack.pop(),index=yield* this.operand(t.body,env,missing,t,'Index'),local=[value,index];
+          const iterator=BUILTINS.get('at')(this,local,{...t,indexEffect:info?.indexGet});let failed=false;
+          try{let step=iterator.next();while(!step.done){if(t.optional&&step.value.operation.name==='exn'){failed=true;break;}const returned=yield step.value;step=iterator.next(returned);}}finally{iterator.return();}
+          stack.push(t.optional?{kind:'adt',typeName:'option',constructor:failed?'None':'Some',fields:failed?[]:[local[0]]}:local[0]);
         }
         else if(t.kind==='tuple-index') {
           this.need(stack,1,t);const value=stack.pop();
@@ -1100,8 +1109,8 @@ export class VM {
           stack.push(...returned);
         }
         else if (BUILTINS.has(t.value)) {
-          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
-          if(dispatch&&info && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
+          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
+          if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
         }
         else if(this.definitions.constructors?.has(t.value)) {
@@ -1163,15 +1172,9 @@ define('resume',1,function*(vm,s,t){
   s.push(...(yield* k.resume(returned)));
 });
 define('nop',0,()=>{});
-for (const [name, operation] of Object.entries({ '+': (a,b)=>a+b, '-': (a,b)=>a-b, '*': (a,b)=>a*b, '/': (a,b)=>a/b, '//': (a,b)=>Math.floor(a/b), '%': (a,b)=>a%b, '^': (a,b)=>a**b, '<': (a,b)=>a<b, '>': (a,b)=>a>b, '<=': (a,b)=>a<=b, '>=': (a,b)=>a>=b })) {
-  define(name, 2, (vm,s,t) => {
-    const b = vm.expect(s.pop(), 'number', t), a = vm.expect(s.pop(), 'number', t);
-    if (['/', '//', '%'].includes(name) && b === 0) throw new LanguageError('Division by zero', t);
-    const result = operation(a,b);
-    if (typeof result === 'number' && !Number.isFinite(result)) throw new LanguageError('Non-finite numeric result', t);
-    s.push(result);
-  });
-}
+for(const name of ['+','-','*','/','%','^','<','>','<=','>='])define(name,2,(vm,s,t)=>{
+ const b=s.pop(),a=s.pop();try{s.push(numericBinary(name,a,b));}catch(e){throw new LanguageError(e.message,t);}
+});
 for (const name of ['==', '/=']) define(name, 2, (_vm,s) => { const b=s.pop(), a=s.pop(); s.push(name === '==' ? equal(a,b) : !equal(a,b)); });
 for (const name of ['and', 'or']) define(name, 2, (vm,s,t) => { const b=vm.expect(s.pop(),'boolean',t), a=vm.expect(s.pop(),'boolean',t); s.push(name === 'and' ? a && b : a || b); });
 define('not',1,(vm,s,t)=>s.push(!vm.expect(s.pop(),'boolean',t)));
@@ -1277,12 +1280,12 @@ define('join',2,function*(vm,s,t){t={...t};const separator=vm.expect(s.pop(),'st
 const numberText=/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
 for(const name of ['toNum','parseNum'])define(name,1,function*(vm,s,t){
   const source=vm.expect(s.pop(),'string',t),text=source.replace(/^[ \t\r\n\v\f]+|[ \t\r\n\v\f]+$/g,''),n=numberText.test(text)?Number(text):NaN;
-  if(name==='toNum')s.push(Number.isFinite(n)?{kind:'adt',typeName:'option',constructor:'Some',fields:[n]}:{kind:'adt',typeName:'option',constructor:'None',fields:[]});
-  else if(Number.isFinite(n))s.push(n);
+  if(name==='toNum')s.push(Number.isFinite(n)?{kind:'adt',typeName:'option',constructor:'Some',fields:[scalar('float',n)]}:{kind:'adt',typeName:'option',constructor:'None',fields:[]});
+  else if(Number.isFinite(n))s.push(scalar('float',n));
   else {yield {operation:ioEffects().get('exn'),args:['Invalid number: '+format(source)],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);}
 });
 export const builtinNames = () => [...BUILTINS.keys()].sort();
-import { checkDefinitions, checkExpression, inferExpression, missingOperands } from './types.mjs';
+import { checkDefinitions, checkExpression, inferExpression, missingOperands, typeIR } from './types.mjs';
 export { StaticTypeError } from './types.mjs';
 
 
@@ -1292,4 +1295,24 @@ for(const name of combinationNames)define(name,name==='powerset'?1:2,function*(v
   yield {operation:ioEffects().get('exn'),args:[name+': count must be a nonnegative safe integer'],token:t};throw new LanguageError('Non-returning effect returned',t);
  }
  s.push({kind:'stream',mode:'combinatorial',operation:name,source,...(name==='cartesianProduct'?{right:arg}:{count:arg})});
+});
+
+define('chars',1,(vm,s,t)=>{const value=vm.expect(s.pop(),'string',t);s.push([...value].map(c=>scalar('char',c)));});
+for(const type of ['int','float','byte'])define('to'+type[0].toUpperCase()+type.slice(1),1,function*(vm,s,t){
+ const value=s.pop(),n=scalarValue(value);let result=type==='float'?n:Math.trunc(n);
+ if(!['int','float','byte'].includes(scalarType(value))||!Number.isFinite(result)||type==='byte'&&(result<0||result>255)||type==='int'&&Math.abs(result)>9223372036854775807){
+  yield {operation:ioEffects().get('exn'),args:['Invalid numeric cast to '+type],token:t};throw new LanguageError('Non-returning effect returned',t);
+ }
+ s.push(scalar(type,result));
+});
+for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
+ const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];
+ const target=vm.definitions.classes?.get(name==='at'?'indexGet':'indexSet')?.instances.get(runtimeTypeKey(container))?.implementations.get(name);
+ if(target){const call={...t,kind:'word',value:target},effect=t.indexEffect;yield* vm.run([call],values,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(values[0]);return;}
+ const xs=typeof container==='string'?new TextEncoder().encode(container):vm.expect(container,'list',t);
+ if(scalarType(index)!=='int'||!Number.isSafeInteger(index)||index<0||index>=xs.length){yield {operation:ioEffects().get('exn'),args:['Index out of bounds: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}
+ if(name==='at'){s.push(typeof container==='string'?scalar('byte',xs[index]):xs[index]);return;}
+ if(typeof container==='string'){
+  const bytes=new Uint8Array(xs);bytes[index]=scalarValue(values[2]);try{s.push(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{yield {operation:ioEffects().get('exn'),args:['String update produces invalid UTF-8'],token:t};throw new LanguageError('Non-returning effect returned',t);}
+ }else{const result=t.reuseVector?xs:[...xs];vm.vectorUpdates[t.reuseVector?'inPlace':'copied']++;result[index]=values[2];s.push(result);}
 });

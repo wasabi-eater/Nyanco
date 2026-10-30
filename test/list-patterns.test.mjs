@@ -12,16 +12,16 @@ test(': annotates types and :: constructs lists with sections and left associati
   assert.deepEqual(vm.evaluate('([] :: 1) == [1]'),[true]);
   assert.throws(()=>vm.evaluate('True :: [1]'),StaticTypeError);
   assert.throws(()=>vm.evaluate('1 :: 2'),StaticTypeError);
-  assert.throws(()=>compile('x :: num -> num\nx f = x'));
+  assert.throws(()=>compile('x :: int -> int\nx f = x'));
 });
 
 test('empty and Push patterns infer recursive homogeneous list functions',()=>{
-  const program=compile('sum : [num] -> num\n[] sum = 0\n(xs :: x) sum = x + (xs sum)');
+  const program=compile('sum : [int] -> int\n[] sum = 0\n(xs :: x) sum = x + (xs sum)');
   const vm=new VM(program);
   assert.deepEqual(vm.evaluate('[] sum; [1 2 3] sum'),[0,6]);
   assert.throws(()=>vm.evaluate('[True] sum'),StaticTypeError);
   const size=compile('[] size = 0\n(xs :: _) size = 1 + (xs size)');
-  assert.equal(size.types.get('size'),"..s ['a] -- ..s num");
+  assert.equal(size.types.get('size'),"..s ['a] -- ..s int");
   assert.deepEqual(new VM(size).evaluate('[True False] size'),[2]);
 });
 
@@ -49,7 +49,7 @@ test('list destructuring cooperates with ADTs and binds immutable locals',()=>{
 test(':: works with mutable updates and REPL dispatch uses : for annotations',()=>{
   const vm=new VM();
   assert.deepEqual(vm.evaluate('[2] -> mut xs; xs ! (:: 1); xs'),[[2,1]]);
-  const result=spawnSync(process.execPath,['migration/v037-cli.mjs'],{cwd:new URL('..',import.meta.url),input:':{\nf : [num] -> num\n[] f = 0\n(_ :: x) f = x\n:}\n[] :: 1\nf\n:q\n',encoding:'utf8'});
+  const result=spawnSync(process.execPath,['migration/v037-cli.mjs'],{cwd:new URL('..',import.meta.url),input:':{\nf : [int] -> int\n[] f = 0\n(_ :: x) f = x\n:}\n[] :: 1\nf\n:q\n',encoding:'utf8'});
   assert.equal(result.status,0);
   assert.doesNotMatch(result.stdout,/Error:/);
   assert.match(result.stdout,/\[\[1\]\]/);

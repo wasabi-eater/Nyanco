@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile,VM,format} from '../migration/v037-adapter.mjs';
-const vec2=`data vec2 = num num Vec
+const vec2=`data vec2 = int int Vec
 instance add vec2 where
   (x y Vec) (u v Vec) (+) = (x + u); (y + v); Vec
 instance mul vec2 where
@@ -32,7 +32,7 @@ main =
 });
 
 test('custom operator class declarations allow symbols and primitive fallbacks',()=>{
-  const p=compile(`data amount = num Amount
+  const p=compile(`data amount = int Amount
 class 'a combine where
   (+) : 'a 'a -> 'a
 instance combine amount where
@@ -43,7 +43,7 @@ combine = +`);
   assert.equal(run(p,'1 2 combine'),'[3]');
 });
 
-const ordered=`data ticket = num num Ticket
+const ordered=`data ticket = int int Ticket
 instance eq ticket where
   (id _ Ticket) (other _ Ticket) == = id == other
   (id _ Ticket) (other _ Ticket) /= = id /= other
@@ -66,7 +66,7 @@ test('equality and comparison chains select ADT instances and preserve short cir
 });
 
 test('append preserves list concatenation while supporting ADTs',()=>{
-  const p=compile(`data bag = [num] Bag
+  const p=compile(`data bag = [int] Bag
 instance append bag where
   (xs Bag) (ys Bag) ++ = (xs ++ ys) Bag`);
   assert.equal(run(p,'([1] Bag) ++ ([2 3] Bag)'),'[(Bag [1, 2, 3])]');
@@ -74,15 +74,15 @@ instance append bag where
 });
 
 test('invalid or overlapping operator instances fail before execution',()=>{
-  assert.throws(()=>compile('instance add num where\n  + = drop'),/Primitive operator instance/);
+  assert.throws(()=>compile('instance add int where\n  + = drop'),/Primitive operator instance/);
   assert.throws(()=>compile("class 'a Wrong where\n  + : 'a -> 'a"),/requires/);
-  assert.throws(()=>compile('data box = num Box\ninstance add box where\n  + = drop drop True'),/Type error/);
+  assert.throws(()=>compile('data box = int Box\ninstance add box where\n  + = drop drop True'),/Type error/);
   assert.throws(()=>compile("class 'a A where\n  + : 'a 'a -> 'a\nclass 'a B where\n  + : 'a 'a -> 'a"),/already used/);
-  assert.throws(()=>compile('data box = num Box\ninstance eq box where\n  == = drop drop True'),/Missing instance method/);
+  assert.throws(()=>compile('data box = int Box\ninstance eq box where\n  == = drop drop True'),/Missing instance method/);
 });
 
 test('REPL instance additions preserve previous definitions and primitive operators',()=>{
-  const p=compile('data box = num Box\nplus = +');
+  const p=compile('data box = int Box\nplus = +');
   const next=compile('instance add box where\n  (x Box) (y Box) + = (x + y) Box','<repl>',p.definitions);
   assert.equal(run(next,'(1 Box) (2 Box) plus'),'[(Box 3)]');
   assert.equal(run(p,'1 2 plus'),'[3]');
@@ -99,10 +99,10 @@ test('standard operator constraints can be used without declaring an ADT instanc
 test('standard operator classes are inferred before any instance is declared',()=>{
   const vm=new VM(compile('f = +\nlocal =\n  inner = +\n  inner'));
   const expected="'a add => ..s 'a 'a -- ..s 'a";
-  assert.equal(new VM().infer('+'),expected);
+  assert.equal(new VM().infer('+'),"'a num => ..s 'a 'a -- ..s 'a");
   assert.equal(vm.infer('f'),expected);
   assert.equal(vm.infer('local'),expected);
-  assert.equal(vm.infer('3 +'),'..s num -- ..s num');
+  assert.equal(vm.infer('3 +'),'..s int -- ..s int');
   assert.deepEqual(vm.evaluate('2 3 f'),[5]);
   assert.throws(()=>vm.evaluate('True False f'),/No instance/);
 });

@@ -20,11 +20,11 @@ test('range sections and references keep precedence and have range type',()=>{
   assert.deepEqual(run('(1..3) == (1..3); (1..3) == (1..=3)'),[true,false]);
   assert.throws(()=>run('(1..3) == [1 2]'),/Cannot unify/);
   for(const s of ['1 4 (..)','1 (..= 3)','3 (1 ..=)','1 3 {..=} call','1 3; _1 ..= _'])assert.deepEqual(collect(s),[1,2,3]);
-  assert.equal(new VM().infer('..'),'..s num num -- ..s range');
+  assert.equal(new VM().infer('..'),'..s int int -- ..s range');
   assert.deepEqual(new VM(compile('f = ..=')).evaluate('0 (2 4 f) {+} each'),[9]);
 });
 test('range endpoints validate safe integer limits without materializing lists',()=>{
-  for(const s of ['1.5..3','1..=2.5','0..100001','0..=100001','9007199254740992..9007199254740992'])assert.throws(()=>run(s),/safe integers/);
+  for(const s of ['1.5..3','1..=2.5','0..100001','0..=100001','9007199254740992..9007199254740992'])assert.throws(()=>run(s),/safe integers|Cannot unify/);
   for(const s of ['True..3','1..="x"','(1..3) length'])assert.throws(()=>run(s),/Type error/);
   assert.equal(run('0..100000')[0].end,100000);
   assert.deepEqual(collect('9007199254740990..=9007199254740991'),[9007199254740990,9007199254740991]);

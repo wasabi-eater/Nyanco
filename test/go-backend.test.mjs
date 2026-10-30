@@ -301,7 +301,7 @@ test('native type class methods specialize across functions and quotations',{ski
   const program=compile(`data color = Red | Blue
 class 'a describe where
   describe : 'a -> string
-instance describe num where
+instance describe int where
   describe = show
 instance describe bool where
   True describe = "yes"
@@ -328,7 +328,7 @@ main =
 });
 
 test('native ADT operators cover sections, higher order calls and comparison chains',{skip:!goAvailable},()=>{
-  const program=compile(`data amount = num Amount
+  const program=compile(`data amount = int Amount
 instance add amount where
   (x Amount) (y Amount) (+) = (x + y) Amount
 instance mul amount where
@@ -380,12 +380,11 @@ main =
   const result=native(program,{showStack:true});
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout,interpreted(program,{showStack:true}));
-  const bad=native(compile('main = 1.5..3'));
-  assert.notEqual(bad.status,0);assert.match(bad.stderr,/safe integers/);
+  assert.throws(()=>compile('main = 1.5..3'),/Cannot unify int with float/);
 });
 
 test('native adjacent operators preserve precedence, holes and comparison short circuiting',{skip:!goAvailable},()=>{
-  const program=compile(`data amount = num Amount
+  const program=compile(`data amount = int Amount
 instance add amount where
   (x Amount) (y Amount) + = (x + y) Amount
 instance mul amount where
@@ -436,7 +435,7 @@ main =
 });
 
 test('native tuples preserve literals, indices, patterns, clauses and stored quotations',{skip:!goAvailable},()=>{
-  const program=compile(`a : #(num string [num])
+  const program=compile(`a : #(int string [int])
 a = #(0 "Hoge" [])
 first = .0
 #(x y) unpack = x y
@@ -465,7 +464,7 @@ test('native generic instances and each preserve carried values and dispatch',{s
   const program=compile(`data 'a box = 'a Box
 class 'a describe where
   describe : 'a -> string
-instance describe num where
+instance describe int where
   describe = show
 instance 'a describe => describe ('a box) where
   (x Box) describe = x describe
@@ -503,9 +502,9 @@ main = "prefix" 0 ((1 Leaf) ((2 Leaf) (3 Leaf) Node) Node) {+} each`);
 });
 
 test('native algebraic effects resume, abort and forward without replaying side effects',{skip:!goAvailable},()=>{
-  const program=compile(`effect ask : -> num
+  const program=compile(`effect ask : -> int
 effect log : string ->
-effect split : num -> num num
+effect split : int -> int int
 withHandlers = handle
 f = ask + 1
 main =
@@ -533,7 +532,7 @@ test('native continuations reject repeated resumption and report unhandled effec
     ['{{ask} {:} handle} {:} handle',/Unhandled effect: ask/],
     ['{0} -> mut saved; {ask} {ask: {-> k; saved := {1 k resume}; 0}} handle drop; saved call',/expired/],
   ]){
-    const result=native(compile(`effect ask : -> num\nmain = ${body}`));
+    const result=native(compile(`effect ask : -> int\nmain = ${body}`));
     assert.equal(result.status,1,result.error?.message||result.stderr);assert.match(result.stderr,message);
   }
 });
@@ -608,10 +607,10 @@ main =
 
 test('native compilation preserves explicitly annotated effect rows',{skip:!goAvailable},()=>{
   const program=compile(`effect 'a yield: 'a ->
-effect ask: -> num
-run : {-> num / { | 'e}} -> num / { | 'e}
+effect ask: -> int
+run : {-> int / { | 'e}} -> int / { | 'e}
 run = call
-body : -> num / {ask, num yield}
+body : -> int / {ask, int yield}
 body = ask; dup yield; + 10
 main : -> / {io}
 main = { {body} run } {ask: {-> k; 32 k resume}, yield: {-> x k; x print; k resume}} handle print`);
@@ -620,7 +619,7 @@ main = { {body} run } {ask: {-> k; 32 k resume}, yield: {-> x k; x print; k resu
 });
 
 test('native handlers and continuations return zero and multiple values',{skip:!goAvailable},()=>{
-  const program=compile(`effect ask: -> num
+  const program=compile(`effect ask: -> int
 effect tick: ->
 effect fail: string -> !
 withHandlers = handle
@@ -643,7 +642,7 @@ test('native conditional instances enforce and dispatch nested contexts',{skip:!
   const source=`data 'a box = 'a Box
 class 'a describe where
   describe : 'a -> string
-instance num describe where
+instance int describe where
   describe = show
 instance 'a describe => ('a box) describe where
   (x Box) describe = x describe

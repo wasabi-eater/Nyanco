@@ -26,12 +26,12 @@ test('unlabelled break stops the nearest loop; labelled break crosses nested loo
  assert.deepEqual(result.output,['#(1 3)','1','#(2 3)','2','#(1 3)']);
 });
 test('plain masks skip one matching handler; nested masks skip two',()=>{
- const result=run(`effect ask: -> num
+ const result=run(`effect ask: -> int
 main = handle {handle {handle {mask ask {mask ask {ask}}} {ask:{-> k; resume 3 k}}} {ask:{-> k; resume 2 k}}} {ask:{-> k; resume 1 k}}`);
  assert.deepEqual(result.stack,[1]);assert.doesNotMatch(result.p.types.get('main'),/ask/);
 });
 test('named effects and named mask select their handler and preserve inner handlers',()=>{
- const result=run(`effect ask: -> num
+ const result=run(`effect ask: -> int
 main = @outer handle {
   @inner handle {ask@outer; mask ask@outer {ask}; ask;
     mask ask@outer {handle {ask} {ask:{-> k; resume 3 k}}}}
@@ -48,9 +48,9 @@ test('labelled yields cross inner generators and labelled generators survive REP
 test('labels resolve lexically and invalid or escaping references are rejected',()=>{
  assert.throws(()=>compile('main = break@missing'),/Unknown effect label/);
  assert.throws(()=>compile('main = @x each [1] {drop; ask@x}'),/Only effect operations/);
- assert.throws(()=>compile('effect ask: -> num\nmain = @x each [1] {drop; ask@x; drop}'),/does not handle/);
- assert.throws(()=>compile('effect ask: -> num\nmain = @x handle {{ask@x}} {ask:{-> k; resume 1 k}}'),/escapes/);
- assert.throws(()=>compile('effect ask: -> num\nmain = {0} -> mut saved; @x handle {saved := {ask@x}} {ask:{-> k; resume 1 k}}; call saved'),/escapes/);
+ assert.throws(()=>compile('effect ask: -> int\nmain = @x each [1] {drop; ask@x; drop}'),/does not handle/);
+ assert.throws(()=>compile('effect ask: -> int\nmain = @x handle {{ask@x}} {ask:{-> k; resume 1 k}}'),/escapes/);
+ assert.throws(()=>compile('effect ask: -> int\nmain = {0} -> mut saved; @x handle {saved := {ask@x}} {ask:{-> k; resume 1 k}}; call saved'),/escapes/);
  assert.throws(()=>compile('main = @x print 1'),/Label requires/);
  assert.throws(()=>compile('main = @x each [1] {print@x}'),/Only effect operations/);
  assert.throws(()=>compile('main = mask missing {nop}'),/Unknown effect operation/);
@@ -66,9 +66,9 @@ test('callbacks from named functions can be masked and mask changes remain visib
 test('Go labelled handlers, loop exits, masks and yielded streams match interpreter',()=>{
  const source=`effect state 'a where
   ask: -> 'a
-data box = Box [num]
+data box = Box [int]
 instance streem box where
-  item : num
+  item : int
   each (Box xs) f = each xs {call f}; 99; call f
 main =
   [] -> mut seen;

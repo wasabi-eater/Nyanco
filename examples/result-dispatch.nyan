@@ -3,7 +3,7 @@
 class zero 'a where
   zero : -> 'a
 
-instance zero num where
+instance zero int where
   zero = 0
 
 instance zero string where
@@ -13,11 +13,11 @@ data box 'a = Box 'a
 instance zero 'a => zero (box 'a) where
   zero = Box zero
 
-origin : -> num
+origin : -> int
 origin = zero
 emptyText : -> string
 emptyText = zero
-boxed : -> box num
+boxed : -> box int
 boxed = zero
 getZero = zero
 produce = yield getZero

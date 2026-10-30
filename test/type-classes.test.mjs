@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {compile,VM,format} from '../migration/v037-adapter.mjs';
 const source=`class 'a describe where
   describe : 'a -> string
-instance describe num where
+instance describe int where
   n describe = n show
 instance describe bool where
   True describe = "yes"
@@ -55,8 +55,8 @@ instance same color where
   Red label = "red"
   Blue label = "blue"
 class 'a magnitude where
-  magnitude : 'a -> num
-instance magnitude num where
+  magnitude : 'a -> int
+instance magnitude int where
   n magnitude | n < 0 = 0 - n
               | otherwise = n
 main = Red Blue same; Red Red same; Blue label; -3 magnitude`));
@@ -64,24 +64,24 @@ main = Red Blue same; Red Red same; Blue label; -3 magnitude`));
 });
 
 test('class and instance declarations reject incomplete, duplicate and invalid implementations',()=>{
-  const base="class 'a c where\n  f : 'a -> num\n";
+  const base="class 'a c where\n  f : 'a -> int\n";
   for(const [suffix,pattern] of [
-    ['instance c num where\n  g = 1',/must define a method/],
-    ['instance c num where',/Missing instance method/],
-    ['instance c num where\n  f = drop True',/Cannot unify/],
-    ['instance c num where\n  f = drop 1\ninstance c int where\n  f = drop 2',/Duplicate instance/],
-    ['instance Unknown num where\n  f = drop 1',/Unknown class/],
+    ['instance c int where\n  g = 1',/must define a method/],
+    ['instance c int where',/Missing instance method/],
+    ['instance c int where\n  f = drop True',/Cannot unify/],
+    ['instance c int where\n  f = drop 1\ninstance c int where\n  f = drop 2',/Duplicate instance/],
+    ['instance Unknown int where\n  f = drop 1',/Unknown class/],
     ['f = 1',/Cannot redefine class method/],
   ])assert.throws(()=>compile(base+suffix),pattern);
   assert.doesNotThrow(()=>compile("class 'a c where\n  f : -> 'a"));
-  assert.throws(()=>compile("class 'a c where\n  print : 'a -> num"),/already used/);
-  assert.throws(()=>compile(base+"class 'a d where\n  f : 'a -> num"),/already used/);
+  assert.throws(()=>compile("class 'a c where\n  print : 'a -> int"),/already used/);
+  assert.throws(()=>compile(base+"class 'a d where\n  f : 'a -> int"),/already used/);
 });
 
 test('multiple class constraints on one value are retained',()=>{
   const vm=new VM(compile(source+`\nclass 'a count where
-  count : 'a -> num
-instance count num where
+  count : 'a -> int
+instance count int where
   count = nop
 both = dup describe; swap count`));
   assert.deepEqual(vm.evaluate('3 both'),['3',3]);
@@ -91,12 +91,12 @@ both = dup describe; swap count`));
 
 test('REPL can add instances after class definitions without changing older programs',()=>{
   const initial=compile("class 'a c where\n  f : 'a -> string\nuse = f");
-  const extended=compile('instance c num where\n  f = show','<repl>',initial.definitions);
+  const extended=compile('instance c int where\n  f = show','<repl>',initial.definitions);
   assert.deepEqual(new VM(extended).evaluate('3 use'),['3']);
   assert.equal(initial.definitions.classes.get('c').instances.size,0);
   assert.throws(()=>new VM(initial).evaluate('3 use'),/No instance/);
   const result=spawnSync(process.execPath,[fileURLToPath(new URL('../migration/v037-cli.mjs',import.meta.url))],{
-    input:":{\nclass 'a c where\n  f : 'a -> string\n:}\n:{\ninstance c num where\n  f = show\n:}\n3 f\n:words\n:q\n",encoding:'utf8',windowsHide:true});
+    input:":{\nclass 'a c where\n  f : 'a -> string\n:}\n:{\ninstance c int where\n  f = show\n:}\n3 f\n:words\n:q\n",encoding:'utf8',windowsHide:true});
   assert.equal(result.status,0,result.stderr);assert.doesNotMatch(result.stdout,/Error:|__tc_/);assert.match(result.stdout,/\["3"\]/);
 });
 

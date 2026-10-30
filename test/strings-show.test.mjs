@@ -9,9 +9,9 @@ import {join} from 'node:path';
 const run=source=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,vm,output,stack:vm.evaluate('main')};};
 const declarations=`class zero 'a where
   zero : -> 'a
-instance zero num where
+instance zero int where
   zero = 0
-data person = Person string num
+data person = Person string int
 instance show person where
   show (Person name age) = name ++ ":" ++ (show age)
 data box 'a = Box 'a
@@ -51,7 +51,7 @@ test('string streams, conversion and show instances work with effects and generi
 });
 test('numeric parsing is strict finite decimal parsing and errors are exn effects',()=>{
  for(const text of ['', ' ', '0x10', '0b11', 'NaN', 'Infinity', '12x', '1_000', '+', '.', '1e', '1e999'])assert.equal(run(`main = toNum ${JSON.stringify(text)}`).stack[0].constructor,'None',text);
- for(const [text,n] of [['1.',1],['+.25',.25],['1e-999',0],[' -3 ', -3]])assert.equal(run(`main = parseNum ${JSON.stringify(text)}`).stack[0],n);
+ for(const [text,n] of [['1.',1],['+.25',.25],['1e-999',0],[' -3 ', -3]])assert.equal(run(`main = parseNum ${JSON.stringify(text)}`).stack[0].value,n);
  assert.match(compile('f = parseNum').types.get('f'),/exn/);
  assert.doesNotMatch(compile('f = toNum').types.get('f'),/exn/);
  assert.throws(()=>run('main = parseNum "oops"'),/Invalid number/);
@@ -62,7 +62,7 @@ test('show is constrained and instances validate return type and instance contex
  assert.match(compile('f = show').types.get('f'),/show 'a =>/);
  assert.doesNotMatch(compile('f = print').types.get('f'),/show/);
  assert.throws(()=>compile('data bad = Bad\ninstance show bad where\n  show Bad = 1'),/unify/i);
- assert.deepEqual(run('instance show num where\n  show x = "number"\nmain = print (show 4); show 5').output,['number']);
+ assert.deepEqual(run('instance show int where\n  show x = "number"\nmain = print (show 4); show 5').output,['number']);
  assert.deepEqual(run('instance show string where\n  show x = "string"\nmain = print "abc"; show "xyz"').stack,['string']);
 });
 test('native strings and show match VM including typed dictionaries and custom containers',()=>{

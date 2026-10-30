@@ -28,7 +28,7 @@ test('shared stack combinators infer accumulators',()=>{
 });
 test('inference handles recursive functions, forward references, and mutual recursion',()=>{
   const p=compile('n fact = n * ((n - 1) fact)\n0 unused = 0');
-  assert.match(p.types.get('fact'),/num/);
+  assert.match(p.types.get('fact'),/int/);
   const recursive=compile('0 fact = 1\nn fact = n * ((n - 1) fact)\n0 even = True\nn even = (n - 1) odd\n0 odd = False\nn odd = (n - 1) even');
   assert.deepEqual(run('6 fact 10 even 9 odd',recursive),[720,true,true]);
   assert.deepEqual(run('"prefix" 6 fact',recursive),['prefix',720]);
@@ -67,19 +67,19 @@ test('loop stack shapes are invariant, while accumulator loops remain supported'
     assert.throws(()=>run(source),StaticTypeError,source);
 });
 test('type annotations are checked, including polymorphism and stack signatures',()=>{
-  assert.equal(compile('f : num -> num\nf = dup (*)').types.get('f'),"..s num -- ..s num");
-  assert.deepEqual(run('3 4 add',compile('add : (num num) -> num\nadd = (+)')),[7]);
+  assert.equal(compile('f : int -> int\nf = dup (*)').types.get('f'),"..s int -- ..s int");
+  assert.deepEqual(run('3 4 add',compile('add : (int int) -> int\nadd = (+)')),[7]);
   assert.deepEqual(run('3 same',compile('same : a -> a\nx same = x')),[3]);
-  for(const source of ['f : bool -> bool\nf = (+ 1)','f : a -> a\nf = (+ 1)','f : Nope -> num\nf = 1'])
+  for(const source of ['f : bool -> bool\nf = (+ 1)','f : a -> a\nf = (+ 1)','f : Nope -> int\nf = 1'])
     assert.throws(()=>compile(source),StaticTypeError,source);
 });
 test('annotation constraints survive declaration merges and restrict callers',()=>{
-  const p=compile('id : num -> num\nx id = x');
+  const p=compile('id : int -> int\nx id = x');
   assert.throws(()=>run('True id',p),StaticTypeError);
   assert.throws(()=>compile('main = True id','next.nyan',p.definitions),StaticTypeError);
 });
 test('quotation annotation syntax supports lists and effects',()=>{
-  const p=compile('f : [num] -> [num]\nf = {+ 1} map\ninc : () -> {num -> num}\ninc = {+ 1}\napply = call');
+  const p=compile('f : [int] -> [int]\nf = {+ 1} map\ninc : () -> {int -> int}\ninc = {+ 1}\napply = call');
   assert.deepEqual(run('[1 2] f 3 {+ 1} apply',p),[[2,3],4]);
 });
 test('static binary checking preserves nested missing operands and separators',()=>{
@@ -126,7 +126,7 @@ test('CLI exposes inference, static checking, and error exit codes',()=>{
   const bad=cli(['--eval','"NOT_PRINTED" print 1 + True']);assert.equal(bad.status,1);assert.equal(bad.stdout,'');assert.match(bad.stderr,/Type error/);
   const path=fileURLToPath(new URL('../examples/demo.nyan',import.meta.url));
   const checked=cli(['--check',path]);assert.equal(checked.status,0);assert.match(checked.stdout,/Types OK/);assert.doesNotMatch(checked.stdout,/Squares:/);
-  const types=cli(['--types',path]);assert.equal(types.status,0);assert.match(types.stdout,/factorial : \.\.s num -- \.\.s num/);
+  const types=cli(['--types',path]);assert.equal(types.status,0);assert.match(types.stdout,/factorial : \.\.s int -- \.\.s int/);
   const repl=cli([], 'x same = x\n:type same\n:type "NOT_PRINTED" print\n3 -> x;\nTrue -> x;\nx\n:q\n');
   assert.equal(repl.status,0);assert.match(repl.stdout,/\.\.s 'a -- \.\.s 'a/);assert.doesNotMatch(repl.stdout,/NOT_PRINTED/);assert.match(repl.stdout,/Type error/);assert.match(repl.stdout,/\[3\]/);
 });

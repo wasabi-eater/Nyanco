@@ -5,7 +5,7 @@ data color  = Red | Blue
 class describe 'a where
   describe : 'a -> string
 
-instance describe num where
+instance describe int where
   describe n =
     n, show
 

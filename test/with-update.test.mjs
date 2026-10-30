@@ -39,12 +39,12 @@ test('update paths and replacement arities are statically checked',()=>{
 });
 test('list bounds use exn, indices run once, and failed mutation retains the root',()=>{
  const {p,stack,output}=run('index = print "index"; 0;; main = [1] with {.[index] ! + 2}');assert.deepEqual(stack,[[3]]);assert.deepEqual(output,['index']);assert.match(p.types.get('main'),/exn/);
- for(const index of ['-1','1','0.5'])assert.deepEqual(run(`main = handle {[1] with {.[${index}] = 9}; drop; 0} {exn: {-> message k; 7}}`).stack,[7]);
+ for(const index of ['-1','1'])assert.deepEqual(run(`main = handle {[1] with {.[${index}] = 9}; drop; 0} {exn: {-> message k; 7}}`).stack,[7]);
  assert.deepEqual(run('main = [1] -> mut xs; handle {xs.[3] := 9} {exn: {-> message k; nop}}; xs').stack,[[1]]);
 });
 test('effects, dependencies and typed class dispatch work inside update expressions',()=>{
  assert.deepEqual(run('main = {x: 1} with {.x = later}.x;; later = 8').stack,[8]);
- assert.deepEqual(run("class zero 'a where\n  zero : -> 'a\ninstance zero num where\n  zero = 0\nmain = {x: 1} with {.x = zero}.x; + 2").stack,[2]);
+ assert.deepEqual(run("class zero 'a where\n  zero : -> 'a\ninstance zero int where\n  zero = 0\nmain = {x: 1} with {.x = zero}.x; + 2").stack,[2]);
  assert.deepEqual(run('main = handle {{x: 1} with {.x ! exn "stop"}; drop} {exn: {-> message k; 9}}').stack,[9]);
 });
 test('Go persistent updates and mutable sugar agree with the VM',()=>{

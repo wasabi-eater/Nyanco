@@ -28,7 +28,7 @@ test('parallel update captures old target values in declaration order',()=>{
 test('parallel updates reject immutable targets, duplicates, type and arity changes and roll back failures',()=>{
  for(const body of ['x, x := 1, 2','x, y := 1','x, y := 1, 2, 3','x, y := "bad", 2','x, missing := 1, 2'])assert.throws(()=>run('main = 1 -> mut x; 2 -> mut y; '+body),/Duplicate|produce 2|Cannot unify|Unknown/);
  assert.throws(()=>run('main = 1 -> mut x; 2 -> y; x, y := 3, 4'),/immutable/);
- const vm=new VM({warning:()=>{}});vm.evaluate('1 -> mut x; 2 -> mut y');assert.throws(()=>vm.evaluate('x, y := 3, 1 // 0'),/zero/);assert.deepEqual(vm.evaluate('x, y'),[1,2]);
+ const vm=new VM({warning:()=>{}});vm.evaluate('1 -> mut x; 2 -> mut y');assert.throws(()=>vm.evaluate('x, y := 3, 1 / 0'),/zero/);assert.deepEqual(vm.evaluate('x, y'),[1,2]);
 });
 test('mutable parameters work in functions, local functions, patterns and guards',()=>{
  assert.deepEqual(run('square mut x = x ! _ * _; x;; main = square 5').stack,[25]);
@@ -44,18 +44,19 @@ test('double semicolons separate definitions and preserve semicolons inside expl
  assert.deepEqual(run('f = 1;; g = 2;; main = f, g;;').stack,[1,2]);
  assert.deepEqual(run('main = f = 1; 2;; f').stack,[1,2]);
  assert.deepEqual(run('main = (f = 3;; g = 4;; f, g)').stack,[3,4]);
- assert.deepEqual(run('f : -> num;; f = 2;; main = f').stack,[2]);
+ assert.deepEqual(run('f : -> int;; f = 2;; main = f').stack,[2]);
 });
-test('floor division rounds toward negative infinity and supports operator instances',()=>{
- assert.deepEqual(run('main = 7 // 3; -7 // 3; 7 // -3; -7 // -3; 5.5 // 2; 8; // 3').stack,[2,-3,-3,2,2,2]);
- assert.throws(()=>run('main = 1 // 0'),/zero/);
- assert.deepEqual(run('data box = Box num\ninstance floorDiv box where\n  // (Box x) (Box y) = Box (x // y)\nmain = (Box -7) // (Box 3)').stack,[{kind:'adt',typeName:'box',constructor:'Box',fields:[-3]}]);
+test('integer division truncates toward zero and // is removed',()=>{
+ assert.deepEqual(run('main = 7 / 3; -7 / 3; 7 / -3; -7 / -3; 8; / 3').stack,[2,-2,-2,2,2]);
+ assert.throws(()=>run('main = 1 / 0'),/zero/);
+ assert.throws(()=>run('main = 7 // 3'),/removed/);
 });
-test('Go and VM agree for parallel updates, mutable parameters and floor division',()=>{
+
+test('Go and VM agree for parallel updates, mutable parameters and integer division',()=>{
  const source=`fib mut x mut y = each (1 ..= 6) {drop; x, y ! _, _1 + _}; #(x,y);;
 flip mut x mut y = x, y := y, x; #(x,y);;
 counter mut x = {x ! _ + 1; x};;
-main = print (fib 0 1); print (flip 2 3); print (-7 // 3);
+main = print (fib 0 1); print (flip 2 3); print (-7 / 3);
   counter 0 -> c; print (call c); print (call c);
   f mut x = x ! _ * _; x;; print (f 4)`;
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-updates-'));

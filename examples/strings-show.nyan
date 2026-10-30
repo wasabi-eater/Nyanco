@@ -1,5 +1,5 @@
 -- Nyanco 0.38 prefix
-data person = Person string num
+data person = Person string int
 instance show person where
   show (Person name age) = name ++ ":" ++ (show age)
 main =

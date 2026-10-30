@@ -4,12 +4,12 @@ effect yield 'a: 'a ->
 
 effect ask 'a:  -> 'a
 
-first : {num ->  / {yield num}}
+first : {int ->  / {yield int}}
 
 first =
   {( + (10)), yield}
 
-second : { -> num / {yield num}}
+second : { -> int / {yield int}}
 
 second =
   {2, yield, 3}
@@ -19,7 +19,7 @@ third : { ->  / {ask 'a, yield 'a}}
 third =
   {ask, yield}
 
-run : { -> num / { | 'e}} -> num / { | 'e}
+run : { -> int / { | 'e}} -> int / { | 'e}
 
 run =
   call

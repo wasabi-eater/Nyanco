@@ -15,7 +15,7 @@ absolute3 = case
     otherwise nop`);
   for(const name of ['absolute','absolute2','absolute3']) {
     assert.deepEqual(vm.evaluate(`99 -7 ${name} 0 ${name} 5 ${name}`),[99,7,0,5]);
-    assert.equal(vm.infer(name),'..s num -- ..s num');
+    assert.equal(vm.infer(name),'..s int -- ..s int');
   }
 });
 

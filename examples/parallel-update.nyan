@@ -9,4 +9,4 @@ main =
   print (fib 0 1);
   print (swapValues 2 3);
   print (square 5);
-  print (-7 // 3)
+  print (-7 / 3)

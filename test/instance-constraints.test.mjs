@@ -4,7 +4,7 @@ import {compile,VM} from '../migration/v037-adapter.mjs';
 const base=`data 'a box = 'a Box
 class 'a describe where
   describe : 'a -> string
-instance num describe where
+instance int describe where
   describe = show
 instance 'a describe => ('a box) describe where
   (x Box) describe = x describe
@@ -58,7 +58,7 @@ test('instance constraints remain distinct from algebraic effect rows',()=>{
 data 'a box = 'a Box
 class 'a emit where
   emit : 'a -> / {string yield}
-instance num emit where
+instance int emit where
   emit = show yield
 instance 'a emit => ('a box) emit where
   (x Box) emit = x emit

@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 
-sum : [num] -> num
+sum : [int] -> int
 
 sum [] =
   0

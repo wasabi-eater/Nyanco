@@ -23,9 +23,9 @@ test('function and case clauses join bottom with returning paths',()=>{
 test('bottom annotations reject returning implementations and resuming bottom operations',()=>{
   assert.throws(()=>compile('f : -> !\nf = 1'),/may return normally/);
   assert.throws(()=>compile('f : -> !\nf = nop'),/may return normally/);
-  assert.throws(()=>compile(header+'0 f = "bad" fail\nn f = n\nf : num -> !'),/may return normally/);
+  assert.throws(()=>compile(header+'0 f = "bad" fail\nn f = n\nf : int -> !'),/may return normally/);
   for(const body of ['k resume','1 k resume','True k resume'])assert.throws(()=>run(`{"bad" fail} {fail: {-> msg k; ${body}}} handle`),/Cannot resume a non-returning effect/);
-  for(const signature of ['! -> num','num -> ! num','num -> [!]'])assert.throws(()=>compile('effect bad : '+signature));
+  for(const signature of ['! -> int','int -> ! int','int -> [!]'])assert.throws(()=>compile('effect bad : '+signature));
 });
 test('explicit recursive non-returning functions and nested quotation signatures work',()=>{
   const p=compile('loop : -> !\nloop = loop');assert.match(p.types.get('loop'),/-- !(?: \/ \{fail\})?$/);

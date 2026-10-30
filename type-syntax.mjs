@@ -5,6 +5,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
   const expect = value => { if (tokens[i++] !== value) fail(`Expected ${value} in type`); };
   function type() {
     const raw = tokens[i++],name=typeName(raw);
+    if(name==='num')fail('num is a class; use float or int as the value type');
     if(name==='vector')return {tag:'list',item:type()};
     if(name==='stream'){const item=type(),block=type();if(block.tag!=='quote'||block.input.length||block.output.length||block.never)fail('stream requires item type and { -> / effects }');return {tag:'stream',item,block};}
     if(name==='#') {
@@ -29,7 +30,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
     }
     if (name === '{') { const result=effect('}'); expect('}'); return result; }
     
-    if (['num','bool','string','range'].includes(name)) return {tag:'atom',name};
+    if (['int','float','byte','char','bool','string','range'].includes(name)) return {tag:'atom',name};
     if (dataTypes.has(name) && !dataTypes.get(name).postfix) {
       const args=dataTypes.get(name).parameters.map(()=>type());
       return {tag:'adt',name,args};

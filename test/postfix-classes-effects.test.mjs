@@ -5,7 +5,7 @@ test('classes, constraints and generic instances accept postfix spelling',()=>{
   const p=compile(`data 'a box = 'a Box
 class 'a describe where
   describe : 'a -> string
-instance num describe where
+instance int describe where
   describe = show
 instance 'a describe => ('a box) describe where
   (x Box) describe = x describe
@@ -49,7 +49,7 @@ main = {1 "ok" pair} {pair: {-> a b k; #(a b) k resume}} handle;
   const result=vm.evaluate('main');assert.deepEqual(result[0].items,[1,'ok']);assert.equal(result[1],7);
 });
 test('effect parameter declarations reject duplicates, undeclared and unused parameters',()=>{
-  for(const source of ["effect 'a 'a x: 'a ->", "effect 'a x: 'b ->", "effect 'a x: num ->", "effect x: 'a ->"])
+  for(const source of ["effect 'a 'a x: 'a ->", "effect 'a x: 'b ->", "effect 'a x: int ->", "effect x: 'a ->"])
     assert.throws(()=>compile(source));
 });
 test('polymorphic handler values can be reused and declarations persist across REPL compilations',()=>{
@@ -64,7 +64,7 @@ make = [] -> mut xs; {yield: {-> x k; xs := xs :: x; k resume}}
 main = {1 yield; True yield; 0} make handle`;
   assert.throws(()=>compile(body),/escapes/);
   const annotated=`effect 'a yield : 'a ->
-make : -> {yield: {'a 'k -> num}}
+make : -> {yield: {'a 'k -> int}}
 make = [] -> mut xs; {yield: {-> x k; xs := xs :: x; 0}}
 main = {1 yield; 0} make handle`;
   assert.throws(()=>compile(annotated),/escapes/);
@@ -75,7 +75,7 @@ main = {1 yield; True yield; 0} {yield: {-> x k; {x drop} call; k resume}} handl
 
 test('polymorphic effects retain list elements and record row kinds',()=>{
   const vm=new VM(compile(`effect 'a first : ['a] -> 'a
-effect 'r getX : {x: num | 'r} -> num
+effect 'r getX : {x: int | 'r} -> int
 main = {([1] first); ([True] first); #( _1 _ )} {first: {-> xs k; xs head k resume}} handle;
   {{x: 3, name: "n"} getX} {getX: {-> record k; record.x k resume}} handle`));
   const values=vm.evaluate('main');assert.deepEqual(values[0].items,[1,true]);assert.equal(values[1],3);

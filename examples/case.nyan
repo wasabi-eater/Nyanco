@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 
-data fuga  = Fuga num
+data fuga  = Fuga int
 
 runFuga =
   -> (Fuga x), x

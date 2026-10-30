@@ -20,7 +20,7 @@ instance streem 'c 'a => streem (lmap 'c 'a 'b) where
   item : 'b
   each (LMap c f) g = each c {call f; call g}
 effect yield 'a: 'a ->
-effect ask: -> num
+effect ask: -> int
 effect fail: string -> !
 abs = when ($ < 0) {0 -}
 sum xs = 0; each xs {+}

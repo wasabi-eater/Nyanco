@@ -10,7 +10,7 @@ import {parseExpression} from './language.mjs';
 import {checkExpression,loweringTypes,typeIR as T,formatType,missingOperands,StaticTypeError} from './types.mjs';
 
 const str=JSON.stringify;
-const lit=v=>typeof v==='string'?str(v):typeof v==='boolean'?String(v):`float64(${v})`;
+const lit=(v,type='int',source=null)=>v?.kind==='scalar'?`Char(${v.value.codePointAt(0)})`:typeof v==='string'?str(v):typeof v==='boolean'?String(v):`${type==='float'?'float64':type==='byte'?'uint8':'int64'}(${source??v})`;
 const location=n=>str(n?`${n.file}:${n.line}:${n.col}`:'<empty>');
 const tuple=items=>items.never?T.BOTTOM:T.stack(T.EMPTY,...items);
 const neverValues=()=>Object.assign([],{never:true});
@@ -34,7 +34,7 @@ function effectParts(effect) {
 }
 function copyEnv(env) {
   const vars=new Set();for(const s of env.values())for(const v of T.free(s.type))vars.add(v);
-  const replacements=new Map([...vars].map(v=>[v,{...T.variable(v.sort),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
+  const replacements=new Map([...vars].map(v=>[v,{...T.variable(v.sort),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>T.clone(t,replacements))]));if(v.eachItem)fresh.eachItem=T.clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=T.clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=T.clone(v.handlerAnswer,replacements);}
   return new Map([...env].map(([name,s])=>[name,{...s,type:T.clone(s.type,replacements),vars:new Set([...s.vars].map(v=>replacements.get(v)||v))}]));
 }
@@ -88,7 +88,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   }
   function pattern(p) {
     if(p.kind==='tuple-pattern')return `tuplePattern(${p.fields.map(pattern).join(',')})`;
-    if(p.kind==='literal')return `literalPattern(${lit(p.value)})`;
+    if(p.kind==='literal')return `literalPattern(${lit(p.value,p.numericKind==='float'?'float':'int',p.numberSource)})`;
     if(p.kind==='word')return `${p.mutable?"mutablePattern":"variablePattern"}(${str(p.value)})`;
     const fields=p.fields.map(pattern).join(',');
     if(p.kind==='constructor')return `constructorPattern(${str(p.value)}${fields?','+fields:''})`;
@@ -170,7 +170,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       };
       try {
       if(n.kind==='reference')values.push(holes.references.get(n));
-      else if(n.kind==='literal')values.push(ctx.value(lit(n.value)));
+      else if(n.kind==='literal')values.push(ctx.value(lit(n.value,T.numericName(T.prune(info.output).item)|| (n.numericKind==='float'?'float':'int'),n.numberSource)));
       else if(n.kind==='interpolation') {
         const count=n.fields.filter(f=>f.empty).length,arguments_=count?values.splice(-count):[];let index=0;
         const parts=[str(n.chunks[0])];
@@ -198,12 +198,18 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else if(n.kind==='tuple')values.push(ctx.value(`&Tuple{[]any{${child(n.body,[],holes).join(',')}}}`));
       else if(n.kind==='path-update') {
         const original=values.pop(),args=n.fields.slice(0,-1).map(f=>child(f.body,[],holes)[0]);
-        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:`UpdatePart{kind:"list",index:${args[p.argument]}}`);
-        const old=ctx.value(`m.readUpdatePath(${original},[]UpdatePart{${path}},${at})`);
+        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:(()=>{const methods=info.indexPaths[n.path.indexOf(p)],g=context(),set=context(),read=indexCall('at',['v','i'],methods.get,g,at),write=indexCall('setAt',['v','i','x'],methods.set,set,at,n.path.indexOf(p)===0&&vectorReuse.has(n));return `UpdatePart{kind:"list",index:${args[p.argument]},get:func(m *Machine,v,i any) any{${g.lines.join(';')};return ${read}},set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}}`;})());
+        const pathValue=`path${next++}`;ctx.lines.push(`${pathValue}:=[]UpdatePart{${path}}`);
+        const old=n.updating?ctx.value(`m.readUpdatePath(${original},${pathValue},${at})`):null;
         const replacement=child(n.fields.at(-1).body,n.updating?[old]:[],n.updating?new Map():holes)[0];
-        values.push(ctx.value(`m.copyUpdate(${original},[]UpdatePart{${path}},${replacement},${at},${vectorReuse.has(n)})`));
+        values.push(ctx.value(`m.copyUpdate(${original},${pathValue},${replacement},${at},${vectorReuse.has(n)})`));
       }
-      else if(n.kind==='list-index'){const xs=values.pop(),index=child(n.body,[],holes)[0];values.push(ctx.value(`m.${n.optional?"listOptionIndex":"listIndex"}(${xs},${index},${location(n)})`));}
+      else if(n.kind==='list-index'){
+        const xs=values.pop(),index=child(n.body,[],holes)[0];
+        if(!n.optional)values.push(indexCall('at',[xs,index],info.indexGet,ctx,at));
+        else {const inner=context(),value=indexCall('at',[xs,index],info.indexGet,inner,at);
+          values.push(ctx.value(`m.handle(func(m *Machine) []any {${inner.lines.join(';')};return []any{&ADT{"option","Some",[]any{${value}}}}},map[string]EffectHandler{"exn":func(_ []any,_ *Continuation) []any{return []any{&ADT{"option","None",nil}}}},${at})[0]`));}
+      }
       else if(n.kind==='tuple-index')values.push(ctx.value(`tupleIndex(${values.pop()},${n.index},${location(n)})`));
       else if(n.kind==='field')values.push(ctx.value(`recordField(${values.pop()},${str(n.name)},${location(n)})`));
       else if(n.kind==='list')values.push(ctx.value(`[]any{${child(n.body,[],holes).join(',')}}`));
@@ -268,9 +274,9 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         if(info.env.get(n.value).callable)invoke(ctx,value,values,info.effect,at);
         else values.push(value);
       }
-      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow) {
+      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
-        const type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);
+        let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
         const target=definitions.classes.get(m.className).instances.get(instanceKey(type))?.implementations.get(n.value);
         if(!target)throw new StaticTypeError(`Ambiguous or unresolved class method: ${n.value}; add a type annotation`,n);
         const spec=named(target,info.effect),vs=values.splice(values.length-spec.input.length);
@@ -299,7 +305,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const name=`walk${next++}`;
     ctx.lines.push(`${name}:=func(m *Machine,visit func(any)){`);
     if(type.tag==='list')ctx.lines.push(`for _,x:=range list(${value},${at}){visit(x)}`);
-    else if(type.tag==='atom' && type.name==='range')ctx.lines.push(`r:=${value}.(*Range);for i:=0;i<r.count();i++{m.tick(${at});visit(r.start+float64(i)*r.step())}`);
+    else if(type.tag==='atom' && type.name==='range')ctx.lines.push(`r:=${value}.(*Range);for i:=0;i<r.count();i++{m.tick(${at});visit(r.start+int64(i)*r.step())}`);
     else {
       const instance=definitions.classes?.get('streem')?.instances.get(instanceKey(type)),target=instance?.implementations.get('each');
       if(!target)throw new Error('No native each instance for '+formatType(type));
@@ -327,6 +333,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const state=count?`remaining:=${count}.(float64);${mode==='take'?'if remaining==0{return};':''}`:mode==='skipWhile'?'skipping:=true;':'';
     return ctx.value(`&Stream{func(m *Machine,visit func(any)){iterationBoundary(func(stop func()){${state}m.loop(func(m *Machine){${walk}(m,func(item any){${prefix}${inner.lines.join(';')}})},${at},${label})})}}`);
   }
+  function indexCall(name,args,effect,ctx,at,reuse=false){
+    const inputs=items(T.prune(effect).input),type=T.prune(effect.dispatchType||inputs.at(name==='at'?-2:-3));
+    const target=definitions.classes.get(name==='at'?'indexGet':'indexSet').instances.get(instanceKey(type))?.implementations.get(name);
+    if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,args,1)[0];}
+    return ctx.value(name==='at'?`m.listIndex(${args},${at})`:`m.indexSetOwned(${args},${at},${reuse})`);
+  }
   function shown(value,type,ctx,at,rawString=false) {
     type=T.prune(type);
     const target=definitions.classes.get('show')?.instances.get(instanceKey(type))?.implementations.get('show');
@@ -343,6 +355,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else {const result=`collected${next++}`;ctx.lines.push(`${result}:=[]any{};${stream}.(*Stream).walk(m,func(item any){${result}=append(${result},item)})`);v.push(ctx.value(result));}
       return;
     }
+    if(['at','setAt'].includes(name)){const args=v.splice(-(name==='at'?2:3));v.push(indexCall(name,args,info.effect,ctx,at));return;}
     if(combinationNames.has(name)){
       const arg=name==='powerset'?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(arg?-2:-1),at),rows=`choices${next++}`;
       let count='float64(0)',other='nil',extra='';
@@ -358,6 +371,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       ctx.lines.push(`${parts}:=[]string{};m.loop(func(m *Machine){${walk}(m,func(item any){${parts}=append(${parts},stringValue(item,${at}))})},${at},${label})`);
       v.push(ctx.value(`strings.Join(${parts},stringValue(${separator},${at}))`));return;
     }
+    if(['toInt','toFloat','toByte'].includes(name)){v.push(ctx.value(`m.numericCast(${pop()},${str(name.slice(2).toLowerCase())},${at})`));return;}
+    if(name==='chars'){v.push(ctx.value(`chars(${pop()},${at})`));return;}
     if(name==='toNum'||name==='parseNum'){v.push(ctx.value(`m.parseNumber(${pop()},${name==='toNum'},${at})`));return;}
     if(name==='fromYield') {
       const q=pop(),inv=invocation(info.bodyType),body=context();body.call(`m.${inv.name}`,[q,at],inv.output.length);
@@ -380,7 +395,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`;
       ctx.lines.push(`${result}:=[]any{};m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));return;
     }
-    if(['+','-','*','/','//','%','^','<','>','<=','>=','==','/=','and','or','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
+    if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','and','or','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
       const b=pop(),a=pop();v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name)},${a},${b},${at})`));
     } else if(['not','head','tail','length'].includes(name))v.push(ctx.value(`unary(${str(name)},${pop()},${at})`));
     else if(name==='nop'){}

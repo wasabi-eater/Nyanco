@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile,VM} from '../migration/v037-adapter.mjs';
-const program=(body,extra='')=>compile(`effect ask : -> num\n${extra}\nmain = ${body}`);
+const program=(body,extra='')=>compile(`effect ask : -> int\n${extra}\nmain = ${body}`);
 const run=(body,extra='')=>new VM(program(body,extra)).evaluate('main');
 const handler='{ask: {-> k; 41 k resume}}';
 test('effects resume the remaining computation and handlers transform its result',()=>{
@@ -30,7 +30,7 @@ test('nested handlers shadow operations and forward unhandled ones',()=>{
   assert.deepEqual(run(`{{ask} {:} handle; + 100} {ask: {drop; 7}} handle`),[7]);
 });
 test('operations accept arguments, multiple results and zero results',()=>{
-  assert.deepEqual(run('{3 split; +} {split: {-> n k; n (n + 1) k resume}} handle','effect split : num -> num num'),[7]);
+  assert.deepEqual(run('{3 split; +} {split: {-> n k; n (n + 1) k resume}} handle','effect split : int -> int int'),[7]);
   const output=[],vm=new VM({...program('{"hello" log; 5} {log: {-> msg k; msg print; k resume}} handle','effect log : string ->'),output:x=>output.push(x)});
   assert.deepEqual(vm.evaluate('main'),[5]);assert.deepEqual(output,['hello']);
 });
@@ -45,13 +45,13 @@ test('effect signatures and handler result/resumption types are statically check
   assert.throws(()=>run('{ask} {missing: {drop; 1}} handle'),/Unknown effect/);
   assert.deepEqual(run('{1 2} {:} handle'),[1,2]);
   assert.throws(()=>compile("effect generic : 'a -> 'a"),/Unknown type|undeclared/);
-  assert.throws(()=>compile('effect ask : -> num\neffect ask : -> num'),/already used/);
-  assert.throws(()=>compile('effect ask : -> num\nask = 1'),/redefine effect/);
-  assert.throws(()=>compile('effect print : -> num'),/already used/);
+  assert.throws(()=>compile('effect ask : -> int\neffect ask : -> int'),/already used/);
+  assert.throws(()=>compile('effect ask : -> int\nask = 1'),/redefine effect/);
+  assert.throws(()=>compile('effect print : -> int'),/already used/);
 });
 test('unhandled operations report their name and REPL declarations persist',()=>{
-  const initial=compile('effect ask : -> num'),extended=compile('f = ask','<repl>',initial.definitions),vm=new VM(extended);
-  assert.match(extended.types.get('ask'),/num/);
+  const initial=compile('effect ask : -> int'),extended=compile('f = ask','<repl>',initial.definitions),vm=new VM(extended);
+  assert.match(extended.types.get('ask'),/int/);
   assert.deepEqual(vm.evaluate(`{f} ${handler} handle`),[41]);
   assert.throws(()=>vm.evaluate('f'),/Unhandled effect: ask/);assert.equal(vm.depth,0);
 });

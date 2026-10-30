@@ -33,7 +33,7 @@ export function vectorOwnership(definitions,nodes,{local=false}={}) {
     if(name==='swap'){const b=pop(),a=pop();stack.push(b,a);continue;}
     if(name==='drop'){pop();continue;}
     if(name==='nop')continue;
-    if(['+','-','*','/','//','%','^','==','/=','<','>','<=','>=','and','or'].includes(name)){escape(pop());escape(pop());stack.push(null);continue;}
+    if(['+','-','*','/','%','^','==','/=','<','>','<=','>=','and','or'].includes(name)){escape(pop());escape(pop());stack.push(null);continue;}
     forget();continue;
    }
    if(n.kind==='path-update'){

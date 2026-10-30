@@ -11,7 +11,7 @@ test('print and raw io infer an io effect and the host supplies the default hand
 });
 
 test('io can be suppressed and removed from an explicitly pure effect row',()=>{
-  const {p,output,stack}=run(`main : -> num / {}
+  const {p,output,stack}=run(`main : -> int / {}
 main = handle {print 42; 7} {put: {-> text k; resume k}}`);
   assert.deepEqual(output,[]);assert.deepEqual(stack,[7]);assert.doesNotMatch(p.types.get('main'),/io/);
   assert.throws(()=>compile('main : -> / {}\nmain = print 42'),/Effect io is not allowed/);

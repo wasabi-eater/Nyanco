@@ -9,22 +9,22 @@ const state=`effect state 'a where
 const handlers=`{ask: {-> k; resume value k}, write: {-> x k; value := x; resume k}}`;
 test('group operations share a parameter and a single inferred effect family',()=>{
  const p=compile(state+`work = write 3; ask
-main : -> num / {}
+main : -> int / {}
 main = 0 -> mut value; handle {work} ${handlers}`);
- assert.match(p.types.get('work'),/state num/);assert.doesNotMatch(p.types.get('main'),/state/);
+ assert.match(p.types.get('work'),/state int/);assert.doesNotMatch(p.types.get('main'),/state/);
  assert.deepEqual(new VM(p).evaluate('main'),[3]);
  assert.throws(()=>compile(state+'bad = write 3; write "bad"'),/Cannot unify/);
  assert.throws(()=>compile(state+`main = "bad" -> mut value; handle {write 3; ask} ${handlers}`),/Cannot unify/);
 });
 test('partial handlers retain only unhandled operations and full handlers discharge annotations',()=>{
- const p=compile(state+`work : -> num / {state num}
+ const p=compile(state+`work : -> int / {state int}
 work = write 3; ask
 partial = handle {write 3; ask} {ask: {-> k; resume 0 k}}
-main : -> num / {}
+main : -> int / {}
 main = 0 -> mut value; handle {work} ${handlers}`);
- assert.match(p.types.get('partial'),/state num/);
+ assert.match(p.types.get('partial'),/state int/);
  assert.deepEqual(new VM(p).evaluate('main'),[3]);
- assert.throws(()=>compile(state+`bad : -> num / {}
+ assert.throws(()=>compile(state+`bad : -> int / {}
 bad = handle {write 3; ask} {ask: {-> k; resume 0 k}}`),/Effect state is not allowed/);
 });
 test('group members may omit parameters used by other members and return bottom',()=>{
@@ -33,15 +33,15 @@ test('group members may omit parameters used by other members and return bottom'
   closed : -> bool
   abort : string -> !
 f = send 3; closed`);
- assert.match(p.types.get('f'),/channel num/);
+ assert.match(p.types.get('f'),/channel int/);
  assert.throws(()=>compile("effect state 'a where\n  ask: -> bool"),/Unused/);
- assert.throws(()=>compile('effect state where\n  ask: -> num\n  ask: -> num'),/already used/);
+ assert.throws(()=>compile('effect state where\n  ask: -> int\n  ask: -> int'),/already used/);
  assert.throws(()=>compile('effect state where'),/indented/);
  assert.throws(()=>compile("effect state 'a where\n  ask: -> 'b"),/Unknown/);
 });
 test('group operations persist across incremental compilation',()=>{
  const p=compile(state),q=compile('f = write 4; ask','<next>',p.definitions);
- assert.match(q.types.get('f'),/state num/);
+ assert.match(q.types.get('f'),/state int/);
  assert.throws(()=>compile(state,'<next>',q.definitions),/already used/);
 });
 test('read and put can both be handled without host IO',()=>{
@@ -63,7 +63,7 @@ test('synchronous CLI reads lines, CRLF, Unicode, and EOF',()=>{
 
 test('generic handle wrappers preserve family parameters and partial handling',()=>{
  const p=compile(state+`withHandlers = handle
-main : -> num / {}
+main : -> int / {}
 main = 0 -> mut value; withHandlers {write 8; ask} ${handlers}`);
  assert.deepEqual(new VM(p).evaluate('main'),[8]);
  assert.throws(()=>compile(state+`withHandlers = handle

@@ -65,7 +65,7 @@ instance ('c 'a wrapped) unpack where
 });
 
 test('associated type declarations reject omissions, duplicates, unknown variables and incorrect implementations',()=>{
-  for(const [from,to] of [["  item : 'a\n",''],["  item : 'a", "  item : 'a\n  item : num"],["  item : 'a","  item : 'missing"],["  (x Box) unpack = x","  (x Box) unpack = True"],["  type item","  type item\n  type item"]])assert.throws(()=>compile(box.replace(from,to)),/associated type|undeclared|Cannot unify/);
+  for(const [from,to] of [["  item : 'a\n",''],["  item : 'a", "  item : 'a\n  item : int"],["  item : 'a","  item : 'missing"],["  (x Box) unpack = x","  (x Box) unpack = True"],["  type item","  type item\n  type item"]])assert.throws(()=>compile(box.replace(from,to)),/associated type|undeclared|Cannot unify/);
 });
 
 test('lmap accepts each associated-type prerequisites and preserves accumulation',()=>{
@@ -78,7 +78,7 @@ test('lmap accepts each associated-type prerequisites and preserves accumulation
 });
 
 test('associated declarations and instance relations survive REPL updates and quotation captures',()=>{
-  const first=compile(box),next=compile('instance num unpack where\n  item : bool\n  unpack = drop True','<repl>',first.definitions),vm=new VM(next);
+  const first=compile(box),next=compile('instance int unpack where\n  item : bool\n  unpack = drop True','<repl>',first.definitions),vm=new VM(next);
   assert.deepEqual(vm.evaluate('{unpack} -> q; 1 q call; "s" Box q call'),[true,'s']);
   assert.throws(()=>new VM(first).evaluate('1 unpack'),/No instance/);
 });
@@ -87,7 +87,7 @@ test('associated types are class-scoped and may be unused by a method',()=>{
   const p=compile(box+`
 class 'c measure where
   type item
-  measure : 'c -> num
+  measure : 'c -> int
 instance ('a box) measure where
   item : bool
   measure = drop 1

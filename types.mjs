@@ -33,13 +33,16 @@ function requireConstraint(name,args,token) {
 }
 function applyContext(context,parameters,token){for(const [name,...params] of context)requireConstraint(name,params.map(p=>parameters.get(p)),token);}
 function requireAssociated(c,container,items,token) {
-  container=prune(container);
+  container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(container.tag==='var'||container.tag==='rigid') {
     if(container.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
     const existing=container.associated?.get(c.name);
     if(existing){existing.forEach((t,i)=>unify(t,items[i],token));return;}
     if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${formatType(container)} ${c.name}`,token);
     container.associated??=new Map();container.associated.set(c.name,items);return;
+  }
+  if(c.indexClass&&(container.tag==='list'||container.tag==='atom'&&container.name==='string')){
+    unify(items[0],INT,token);unify(items[1],container.tag==='list'?container.item:BYTE,token);return;
   }
   const instance=c.instances.get(instanceKey(container));
   if(!instance)throw new StaticTypeError(`No instance: ${formatType(container)} ${c.name}`,token);
@@ -68,13 +71,13 @@ function requireClass(name,type,token) {
 }
 
 function requireIterable(container,item,token,latent=null) {
-  container=prune(container);
+  container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(latent){if(container.tag==='var'||container.tag==='rigid'){if(container.eachEffects)mergeEffects(latent,container.eachEffects,token);else container.eachEffects=latent;}else mergeEffects(latent,container.tag==='stream'?container.effects:effects(),token);}
   if(container.tag==='stream'){unify(container.item,item,token);return;}
   if(container.tag==='var') {if(container.eachItem)unify(container.eachItem,item,token);else container.eachItem=item;return;}
   if(container.tag==='rigid') {if(!container.eachItem)throw new StaticTypeError('Missing streem constraint',token);unify(container.eachItem,item,token);return;}
   if(container.tag==='list'){unify(container.item,item,token);return;}
-  if(container.tag==='atom' && container.name==='range'){unify(item,NUM,token);return;}
+  if(container.tag==='atom' && container.name==='range'){unify(item,INT,token);return;}
   const instance=activeClasses.get('streem')?.instances.get(instanceKey(container));
   if(!instance)throw new StaticTypeError(`No instance: ${formatType(container)} streem`,token);
   const parameters=new Map();unify(container,syntaxType(instance.head,parameters),token);
@@ -134,7 +137,7 @@ function eachEffect(instance) {
 const variable = (sort = 'value') => ({ tag: 'var', sort, id: nextId++ });
 const row = () => variable('row');
 const atom = name => ({ tag: 'atom', name });
-const NUM = atom('num'), BOOL = atom('bool'), STRING = atom('string');
+const INT = atom('int'), FLOAT=atom('float'), BYTE=atom('byte'), CHAR=atom('char'), BOOL = atom('bool'), STRING = atom('string');
 const EMPTY = { tag: 'empty' };
 const BOTTOM = Object.freeze({tag:'bottom'});
 const isBottom=t=>prune(t).tag==='bottom';
@@ -328,6 +331,13 @@ function unify(a, b, token) {
   if (a.tag === 'var') {
     if (sortOf(a) !== sortOf(b)) throw new StaticTypeError('Value/stack kind mismatch', token);
     if (occurs(a,b)) throw new StaticTypeError('Infinite type or changing stack shape (loop/recursive stack effect)', token);
+    if(a.numericLiterals){
+      if(b.tag==='var'&&(b.eachItem||b.associated)){unify(a,INT,token);unify(b,INT,token);return;}
+      if(b.tag==='var'){b.numericLiterals=[...b.numericLiterals||[],...a.numericLiterals];}
+      else if(b.tag!=='atom'||!['int','float','byte'].includes(b.name))throw new StaticTypeError('Cannot unify integer literal with a nonnumeric type; expected int, float or byte',token);
+      else if(b.name==='int'&&a.numericLiterals.some(n=>{try{const x=BigInt(n);return x< -9223372036854775808n||x>9223372036854775807n;}catch{return true;}}))throw new StaticTypeError('int literal is outside signed 64-bit range',token);
+      else if(b.name==='byte'&&a.numericLiterals.some(n=>Number(n)<0||Number(n)>255))throw new StaticTypeError('byte literal is outside 0..255',token);
+    }
     for(const c of a.classes||[])requireClass(c,b,token);
     if(a.handlerAnswer)requireHandlers(b,a.handlerAnswer,token,a.handlerResidual);
     if(a.associated)for(const [name,items] of a.associated)requireConstraint(name,[b,...items],token);
@@ -403,7 +413,7 @@ function generalize(type, excluded = new Set()) {
 function instantiate(scheme, rigid = false, bindings = null) {
   const top=prune(scheme.type),fixedRows=new Set(top.tag==='quote'?[stackTail(top.input),stackTail(top.output)]:[]);
   const vars=new Set([...scheme.vars].map(prune).filter(v=>v.tag==='var'));
-  const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
+  const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
   replacements.preserveWeak=true;
   if(bindings)for(const [v,fresh] of replacements)bindings.set(v,fresh);
@@ -416,6 +426,7 @@ function envFree(env) {
 }
 
 export function formatType(type) {
+  for(const v of free(type))if(v.numericLiterals&&v.tag==='var')unify(v,INT);
   // An open callback row may include break, while every use of that row is
   // beneath a loop's handler. Expose that accepted operation in the signature
   // without injecting a performed effect into the callback's inference graph.
@@ -506,8 +517,8 @@ function builtinSchemes() {
     if(['while','vmap','vfilter','fold'].includes(name))type.effects=effects([],[{row:type.effects,exclude:['break'],loop:true}]);
     out.set(name,generalize(type));
   } };
-  add('+ - * / % ^',()=>{const s=row();return quote(stack(s,NUM,NUM),push(s,NUM));});
-  add('< > <= >=',()=>{const s=row();return quote(stack(s,NUM,NUM),push(s,BOOL));});
+  add('+ - * / % ^',()=>{const s=row();return quote(stack(s,INT,INT),push(s,INT));});
+  add('< > <= >=',()=>{const s=row();return quote(stack(s,INT,INT),push(s,BOOL));});
   add('== /=',()=>{const s=row(),a=variable();return quote(stack(s,a,a),push(s,BOOL));});
   add('and or',()=>{const s=row();return quote(stack(s,BOOL,BOOL),push(s,BOOL));});
   add('not',()=>{const s=row();return quote(push(s,BOOL),push(s,BOOL));});
@@ -515,9 +526,13 @@ function builtinSchemes() {
   add('drop',()=>{const s=row(),a=variable();return quote(push(s,a),s);});
   {const s=row(),a=variable();out.set('print',generalize(quote(push(s,a),s,effects([{name:'io',operation:'put',args:[]}]))));}
   add('nop',()=>{const s=row();return quote(s,s);});
+  for(const [name,result] of [['toInt',INT],['toFloat',FLOAT],['toByte',BYTE]]){
+    const s=row(),a=variable();requireClass('num',a);out.set(name,generalize(quote(push(s,a),push(s,result),effects([{name:'exn',args:[]}]))));
+  }
+  add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
   add('split',()=>{const s=row();return quote(stack(s,STRING,STRING),push(s,{tag:'stream',item:STRING,effects:effects()}));});
-  add('toNum',()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'adt',name:'option',args:[NUM]}));});
-  {const s=row();out.set('parseNum',generalize(quote(push(s,STRING),push(s,NUM),effects([{name:'exn',args:[]}]))));}
+  add('toNum',()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'adt',name:'option',args:[FLOAT]}));});
+  {const s=row();out.set('parseNum',generalize(quote(push(s,STRING),push(s,FLOAT),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),latent=variable('effect-row');requireIterable(c,STRING,null,latent);
     out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['break'],loop:true}]))));}
   add('show',()=>{const s=row(),a=variable();return quote(push(s,a),push(s,STRING));});
@@ -539,7 +554,7 @@ function builtinSchemes() {
     const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);
     const args=[c],deps=[{row:latent}];let item=list(a);
     if(name==='cartesianProduct'){const d=variable(),b=variable(),other=variable('effect-row');requireIterable(d,b,null,other);args.push(d);deps.push({row:other});item=tuple([a,b]);}
-    else if(name!=='powerset')args.push(NUM);
+    else if(name!=='powerset')args.push(INT);
     const traversal=effects([],[{row:effects([],deps),exclude:['break'],loop:true}]);
     out.set(name,generalize(quote(stack(s,...args),push(s,{tag:'stream',item,effects:traversal}),effects(['powerset','cartesianProduct'].includes(name)?[]:[{name:'exn',args:[]}]))));
   }
@@ -558,7 +573,7 @@ function builtinSchemes() {
       if(mode==='map')item=b;
       if(mode==='flatMap'){item=variable();requireIterable(b,item,null,nested);dependencies.push({row:nested});}
     } else if(mode==='flatten'){item=b;requireIterable(a,b,null,nested);dependencies.push({row:nested});}
-    else inputs.push(NUM);
+    else inputs.push(INT);
     const traversal=effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]);
     const construction=effects(countTransform(mode)?[{name:'exn',args:[]}]:[]);
     const lazy=streamTransforms.has(name),result=lazy?{tag:'stream',item,effects:traversal}:list(item);
@@ -571,11 +586,11 @@ function builtinSchemes() {
   add('cons',()=>{const s=row(),a=variable();return quote(stack(s,a,list(a)),push(s,list(a)));});
   add('push Push ::',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
   add('concat ++',()=>{const s=row(),a=variable();return quote(stack(s,list(a),list(a)),push(s,list(a)));});
-  add('length',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,NUM));});
+  add('length',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,INT));});
   add('head',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,a));});
   add('tail',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,list(a)));});
-  add('.. ..=',()=>{const s=row();return quote(stack(s,NUM,NUM),push(s,atom('range')));});
-  add('range',()=>{const s=row();return quote(stack(s,NUM,NUM),push(s,list(NUM)));});
+  add('.. ..=',()=>{const s=row();return quote(stack(s,INT,INT),push(s,atom('range')));});
+  add('range',()=>{const s=row();return quote(stack(s,INT,INT),push(s,list(INT)));});
   return out;
 }
 
@@ -623,6 +638,7 @@ class Inference {
     const excluded=envFree(env);
     for(const v of this.excluded || []) excluded.add(v);
     if(mutable)weakEffects(type);
+    for(const v of free(type))if(v.numericLiterals)excluded.add(v);
     env.set(name,mutable ? {...mono(type),mutable:true} : generalize(type,excluded));
   }
   pop(current, token) {
@@ -682,7 +698,7 @@ class Inference {
         const body=[...args,head];if(trace)trace.application=body;
         current=this.sequence(body,current,env,bound);
       }
-      else if(node.kind==='literal') current=push(current,this.value(node.value,node));
+      else if(node.kind==='literal'){const type=typeof node.value==='number'?((node.numericKind==='float'||!Number.isInteger(node.value))?FLOAT:{...variable(),numericLiterals:[node.numberSource??String(node.value)]}):this.value(node.value,node);current=push(current,type);}
       else if(node.kind==='interpolation') {
         const values=[];for(const f of node.fields.filter(f=>f.empty)){let value;[current,value]=this.pop(current,node);values.unshift(value);}
         let index=0;const formatTypes=[],formatEffects=[];
@@ -801,17 +817,26 @@ class Inference {
               const items=Array.from({length:part.index+1},()=>variable()),tail=variable('tuple-row');
               unify(type,tuple(items,tail),node);items[part.index]=replace(items[part.index],depth+1);return isBottom(items[part.index])?BOTTOM:tuple(items,tail);
             }
-            unify(type,list(item),node);unify(args[part.argument],NUM,node);this.effectSink.entries.push({name:'exn',args:[]});
-            const result=replace(item,depth+1);if(isBottom(result))return BOTTOM;unify(item,result,node);return list(item);
+            const get=instantiate(this.functions.get('at')),set=instantiate(this.functions.get('setAt'));
+            unify(get,quote(stack(EMPTY,type,args[part.argument]),push(EMPTY,item)),node);
+            const result=replace(item,depth+1);if(isBottom(result))return BOTTOM;
+            unify(set,quote(stack(EMPTY,type,args[part.argument],result),push(EMPTY,type)),node);
+            this.effectSink.dependencies.push({row:get.effects},{row:set.effects});
+            if(trace){trace.indexPaths??=[];trace.indexPaths[depth]={get,set};}return type;
           };
           const result=replace(original,0);current=isBottom(result)?BOTTOM:push(current,result);
         }
       } else if(node.kind==='list-index') {
         if(node.optional && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('Optional indexing requires data option a = None | Some a',node);
-        let value;[current,value]=this.pop(current,node);const item=variable();unify(value,list(item),node);
+        let value;[current,value]=this.pop(current,node);const item=variable();
         const index=this.single(node.body,env,bound,node);
         if(isBottom(index))current=BOTTOM;
-        else {unify(index,NUM,node);current=push(current,node.optional?adt('option',[item]):item);if(!node.optional)this.effectSink.entries.push({name:'exn',args:[]});}
+        else {
+          const get=instantiate(this.functions.get('at'));unify(get,quote(stack(EMPTY,value,index),push(EMPTY,item)),node);
+          if(trace)trace.indexGet=get;
+          this.effectSink.dependencies.push({row:get.effects,...(node.optional?{exclude:['exn']}:{})});
+          current=push(current,node.optional?adt('option',[item]):item);
+        }
       } else if(node.kind==='tuple-index') {
         let value;[current,value]=this.pop(current,node);
         const items=Array.from({length:node.index+1},()=>variable());
@@ -869,6 +894,7 @@ class Inference {
         if(node.handlerLabel){for(const dependency of effect.effects?.dependencies||[])if(dependency.loop)dependency.label=node.handlerLabel;const output=prune(effect.output);if(output.tag==='push' && prune(output.item).tag==='stream')for(const d of prune(output.item).effects.dependencies||[])if(d.loop)d.label=node.handlerLabel;}
         if(trace)trace.effect=effect;
         current=this.apply(effect,current,node);
+        if(this.effects.has(node.value))for(const v of free(effect.input))if(v.numericLiterals)unify(v,INT,node);
         if(['sort','sortBy'].includes(node.value)) {
           const input=prune(before),key=node.value==='sortBy'?prune(prune(input.item).output).item:prune(prune(current).item).item;
           const comparison=instantiate(this.functions.get('<'));
@@ -919,7 +945,8 @@ class Inference {
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
     if(value?.kind==='record')return record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)]));
-    if(typeof value==='number') return NUM;
+    if(value?.kind==='scalar')return atom(value.type);
+    if(typeof value==='number') return INT;
     if(typeof value==='boolean') return BOOL;
     if(typeof value==='string') return STRING;
     if(value?.kind==='adt') {
@@ -952,7 +979,7 @@ class Inference {
       const items=pattern.fields.map(()=>variable());unify(type,tuple(items),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,items[i],env));
     }
-    else if(pattern.kind==='literal')unify(type,this.value(pattern.value,pattern),pattern);
+    else if(pattern.kind==='literal')unify(type,typeof pattern.value==='number'?((pattern.numericKind==='float'||!Number.isInteger(pattern.value))?FLOAT:{...variable(),numericLiterals:[pattern.numberSource??String(pattern.value)]}):this.value(pattern.value,pattern),pattern);
     else if(pattern.kind==='list-pattern' || pattern.kind==='push-pattern') {
       const item=variable();unify(type,list(item),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,pattern.kind==='push-pattern' && i===0 ? list(item) : item,env));
@@ -1183,7 +1210,7 @@ function prepare(definitions,globalValues,initialized=false) {
         const actual=instantiate(inferred);checkEffectPromises(actual,checked,clauses[0].token);unify(actual,checked,clauses[0].token);
         const restore=new Map([...bindings].map(([v,fresh])=>[fresh,v]));
         published.set(name,{...declared,type:clone(checked,restore)});
-      } else published.set(name,inferred);
+      } else {for(const v of free(inferred.type))if(v.numericLiterals)unify(v,INT,clauses[0].token);published.set(name,inferred);}
     }
     for(const [name,scheme] of published)inference.functions.set(name,scheme);
   }
@@ -1211,10 +1238,11 @@ export function checkExpression(nodes,definitions=new Map(),globals=new Map(),va
   inference.rootEnv=env;
   inference.trace??=new Map();
   const input=stack(EMPTY,...values.map(v=>inference.value(v))),output=inference.sequence(nodes,input,env);
-  if([...definitions.methods?.values()||[]].some(m=>m.dispatchIndex<0)) {
-    plan.dispatch=executionTypes(inference,definitions);
+  if(true) {
+    plan.dispatch=executionTypes(inference,definitions);plan.dispatch.numericOnly=![...definitions.methods?.values()||[]].some(m=>m.dispatchIndex<0);
     plan.dispatch.validate([...(initialized?[]:definitions.initializers||[]),...nodes],inference.trace);
   }
+  for(const type of [...inference.cells.values(),...[...env.values()].map(s=>s.type)])for(const v of free(type))if(v.numericLiterals)unify(v,INT);
   plan.cells=inference.cells;plan.bindings=inference.bindings;
   // Internal visitors and live continuations have no source-level body to
   // reconstruct. Their argument contract was checked at the call site.
@@ -1248,10 +1276,11 @@ function executionTypes(base,definitions) {
     Object.assign(inf,{functions:base.functions,globals:base.globals,constructors:base.constructors,dataTypes:base.dataTypes,effects:base.effects,trace:new Map(),quotations:new Map(),hostTypes});return inf;
   }
   function target(node,effect) {
-    activate();const method=definitions.methods.get(node.value),type=prune(effect?.dispatchType||variable());
+    activate();const method=definitions.methods.get(node.value);let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const result=definitions.classes.get(method.className).instances.get(instanceKey(type))?.implementations.get(node.value);
-    if(!result && method.specialShow)return 'show';
+    if(!result && (method.specialShow||method.specialIndex))return node.value;
+    if(!result && operatorFallback(definitions.classes.get(method.className),type))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;
   }
@@ -1329,4 +1358,4 @@ export function loweringTypes(definitions) {
   const execution=executionTypes(base,definitions);
   return {validate:execution.validate,globals:base.globals,functions:base.functions,analyze,pattern:(p,t,e)=>base.pattern(p,t,e)};
 }
-export const typeIR={specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};
+export const typeIR={numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};

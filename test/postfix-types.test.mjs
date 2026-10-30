@@ -10,7 +10,7 @@ _ (x Some) get = x`);
   const vm=new VM(program);
   assert.equal(program.types.get('Some'),"..s 'a -- ..s ('a option)");
   assert.deepEqual(vm.evaluate('0 (42 Some) get; True None get'),[42,true]);
-  assert.equal(vm.infer('1 Some'),"..s -- ..s (num option)");
+  assert.equal(vm.infer('1 Some'),"..s -- ..s (int option)");
 });
 
 test('postfix types support multiple parameters, nested applications and recursive fields',()=>{
@@ -22,7 +22,7 @@ wrap : 'a -> 'a option option
 x wrap = x Some Some
 (x Leaf) sum = x
 (l r Node) sum = (l sum) + (r sum)
-choose : num -> (string num result)
+choose : int -> (string int result)
 x choose = x Ok`);
   const vm=new VM(program);
   assert.deepEqual(vm.evaluate('(1 Leaf) (2 Leaf) Node sum'),[3]);
@@ -33,7 +33,7 @@ x choose = x Ok`);
 test('postfix types reject missing parameters, undeclared fields and malformed constructors',()=>{
   for(const source of ["data 'a option = None | 'b Some","data 'a 'a option = None","data 'a option = Some 'a","data option = 'a Some"])
     assert.throws(()=>compile(source));
-  assert.throws(()=>compile("data 'a option = None | 'a Some\nf : option -> num\n_ f = 0"));
+  assert.throws(()=>compile("data 'a option = None | 'a Some\nf : option -> int\n_ f = 0"));
   const vm=new VM(compile("data 'a option = None | 'a Some"));
   vm.evaluate('None -> mut x');vm.evaluate('x := 1 Some; x := None');
   assert.throws(()=>vm.evaluate('x := True Some'),/Cannot unify/);

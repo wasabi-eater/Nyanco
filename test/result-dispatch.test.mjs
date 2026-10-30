@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const declarations=`class zero 'a where
   zero : -> 'a
-instance zero num where
+instance zero int where
   zero = 0
 instance zero string where
   zero = ""
@@ -16,11 +16,11 @@ data box 'a = Box 'a
 instance zero 'a => zero (box 'a) where
   zero = Box zero
 get = zero
-number : -> num
+number : -> int
 number = get
 text : -> string
 text = get
-boxed : -> box num
+boxed : -> box int
 boxed = get
 `;
 const run=(body,extra='')=>{const p=compile(declarations+extra+'\nmain = '+body),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {stack:vm.evaluate('main'),output,p};};
@@ -34,13 +34,13 @@ test('class parameters may occur inside method input and output types',()=>{
  const extra=`class nested 'a where
   first : ['a] -> 'a
   singleton : -> ['a]
-instance nested num where
+instance nested int where
   first = head
   singleton = [42]
 instance nested string where
   first = head
   singleton = ["ok"]
-nums : -> [num]
+nums : -> [int]
 nums = singleton
 strings : -> [string]
 strings = singleton
@@ -75,7 +75,7 @@ instance streem (many 'a) where
 test('typed dictionaries coexist with effect handlers, break, and mutable captures',()=>{
  assert.deepEqual(run('0 -> mut acc; each [1,2] {drop; acc := acc + number}; acc').stack,[0]);
  assert.deepEqual(run('toList (smap [1,2] {when ($ == 2) {break}; drop; get}); head; + 1').stack,[1]);
- assert.deepEqual(run('handle {ask; + 1} {ask: {-> k; call {resume number k}}}','effect ask : -> num\n').stack,[1]);
+ assert.deepEqual(run('handle {ask; + 1} {ask: {-> k; call {resume number k}}}','effect ask : -> int\n').stack,[1]);
 });
 test('ambiguous calls fail before direct expression or named function side effects',()=>{
  const output=[],vm=new VM({...compile(declarations),output:s=>output.push(s)});

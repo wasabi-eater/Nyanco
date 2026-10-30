@@ -42,13 +42,13 @@ test('consumer exceptions abort producers without executing the rest or replayin
  assert.deepEqual(result.output,[]);assert.deepEqual(result.stack,[]);
 });
 test('delayed effects remain in stream types and propagate through generic wrappers',()=>{
- const p=compile(`build : -> (stream num {-> / {io}}) / {}
+ const p=compile(`build : -> (stream int {-> / {io}}) / {}
 build = smap [1,2] {dup; print}
 collect xs = toList xs
 main = collect build`);
- assert.match(p.types.get('build'),/stream num.*io/);assert.match(p.types.get('main'),/\/ \{io\}$/);
- assert.throws(()=>compile('bad : -> [num] / {}\nbad = toList (smap [1] {dup; print})'),/Effect io is not allowed/);
- assert.throws(()=>compile('bad : -> (stream num {-> / {}})\nbad = smap [1] {dup; print}'),/Effect io is not allowed/);
+ assert.match(p.types.get('build'),/stream int.*io/);assert.match(p.types.get('main'),/\/ \{io\}$/);
+ assert.throws(()=>compile('bad : -> [int] / {}\nbad = toList (smap [1] {dup; print})'),/Effect io is not allowed/);
+ assert.throws(()=>compile('bad : -> (stream int {-> / {}})\nbad = smap [1] {dup; print}'),/Effect io is not allowed/);
  assert.throws(()=>compile('wrap = fromYield\nmain = toList (wrap {yield 1; yield "bad"})'),/Cannot unify/);
  assert.throws(()=>compile('main = fromYield {drop; yield 1}'),/underflow|Stack shape/);
  assert.throws(()=>compile('main = sfilter [1] {+ 1}'),/Cannot unify/);

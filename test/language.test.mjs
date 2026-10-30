@@ -333,15 +333,15 @@ test('list evaluation preserves effects and shares execution limits', () => {
 test('dip hides and restores top value', () => assert.deepEqual(run('2 99 { + 3 } dip'),[5,99]));
 test('comments and escaped strings', () => assert.deepEqual(run('"a\\n--b" -- comment\n 2'),['a\n--b',2]));
 test('multiline declaration and annotation', () => {
-  const p=compile('square : num -> num\nx square =\n  x * x\nmain = 5 square');
-  assert.equal(p.signatures.get('square'),'num -> num');
+  const p=compile('square : int -> int\nx square =\n  x * x\nmain = 5 square');
+  assert.equal(p.signatures.get('square'),'int -> int');
   assert.deepEqual(run('main',p.definitions),[25]);
 });
 test('syntax errors have source locations', () => {
   assert.throws(()=>parseExpression('{ 1','broken.nyan'),/broken.nyan:1:1: Missing/);
   for (const s of [']','"oops','[1 }']) assert.throws(()=>parseExpression(s),LanguageError);
   assert.throws(()=>run('[1 +]'), /underflow/);
-  for (const s of ['x x f = x','0 f = 1\nf = 2','dup = 2','f : num','[x x] f = x']) assert.throws(()=>compile(s),LanguageError);
+  for (const s of ['x x f = x','0 f = 1\nf = 2','dup = 2','f : int','[x x] f = x']) assert.throws(()=>compile(s),LanguageError);
 });
 test('runtime errors are controlled', () => {
   for (const s of ['(+)', '1 / 0', '"a" + 2', '1 { 2 } { 3 } if', '[] head', '[1] { drop } map', '[1] { 1 } filter', '1e999', '2 ^ 9999', '1 call'])

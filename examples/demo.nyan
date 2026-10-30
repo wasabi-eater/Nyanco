@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 
-square : num -> num
+square : int -> int
 
 square x =
   ((x) * (x))

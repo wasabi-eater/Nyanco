@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {compile,VM,format} from '../migration/v037-adapter.mjs';
 const run=s=>new VM().evaluate(s);
 test('tuple literals have heterogeneous elements, empty and singleton forms',()=>{
-  const vm=new VM(compile('a : #(num string [num])\na = #(0 "Hoge" [])'));
+  const vm=new VM(compile('a : #(int string [int])\na = #(0 "Hoge" [])'));
   assert.deepEqual(vm.evaluate('a.0; a.1; a.2'),[0,'Hoge',[]]);
   assert.equal(format(run('#(); #(1); #(1 "x" [2])')),'[#(), #(1), #(1 "x" [2])]');
   assert.deepEqual(run('#(1.5 2).0'),[1.5]);
@@ -26,10 +26,10 @@ test('tuple elements execute commands and share clauses with their surroundings'
   assert.deepEqual(run('#(f = +; 3 4 f).0'),[7]);
 });
 test('tuple annotations check exact shape, elements and open prefixes',()=>{
-  const vm=new VM(compile("first : #('a | 't) -> 'a\nfirst = .0\na : #(num string)\na = #(1 \"x\")"));
+  const vm=new VM(compile("first : #('a | 't) -> 'a\nfirst = .0\na : #(int string)\na = #(1 \"x\")"));
   assert.deepEqual(vm.evaluate('a first'),[1]);
-  for(const source of ['a : #(num string)\na = #(1 True)','a : #(num string)\na = #(1)',
-    'a : #(num)\na = #(1 2)'])assert.throws(()=>compile(source),/Type error/);
+  for(const source of ['a : #(int string)\na = #(1 True)','a : #(int string)\na = #(1)',
+    'a : #(int)\na = #(1 2)'])assert.throws(()=>compile(source),/Type error/);
   for(const s of ['#().0','#(1).1','[1].0','{x: 1}.0','#(1) .x','[#(1); #(1 2)]','[#(1); #(True)]'])
     assert.throws(()=>run(s),/Type error/);
   assert.throws(()=>run('#(1).100001'),/Tuple index/);
@@ -37,7 +37,7 @@ test('tuple annotations check exact shape, elements and open prefixes',()=>{
   assert.throws(()=>compile('a : #(Int)\na = #(1)'),/Unknown type/);
 });
 test('tuples support structural equality and exact patterns in declarations, case and arrow',()=>{
-  const vm=new VM(compile(`data wrapped = #(num string) Wrapped
+  const vm=new VM(compile(`data wrapped = #(int string) Wrapped
 #(x y) unpack = x y
 choose = case
   -> #(0 _) then "zero"

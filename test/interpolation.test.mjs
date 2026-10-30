@@ -9,7 +9,7 @@ import {join} from 'node:path';
 const run=source=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,output,stack:vm.evaluate('main')};};
 const source=String.raw`class zero 'a where
   zero : -> 'a
-instance zero num where
+instance zero int where
   zero = 0
 data user = User string
 instance show user where
@@ -30,7 +30,7 @@ main =
   print "unicode=日本😀\nline";
   print (toVector (map (1 ..= 3) {"item={_}"}));
   print (handle @a {"ask={ask@a}"} {ask: {-> k; resume 9 k}})
-effect ask : -> num`;
+effect ask : -> int`;
 test('interpolation evaluates expressions and consumes empty slots in stack order',()=>{
  assert.deepEqual(run(source).output,['3 4','3 * 4 = 12','{}','raw True','hello Ada','nested 7','record 12','user:Bob','key=0','once','effects=42','square=9','unicode=日本😀\nline','["item=1", "item=2", "item=3"]','ask=9']);
  assert.deepEqual(run('main = 99, 3, 4; "{} {}"').stack,[99,'3 4']);

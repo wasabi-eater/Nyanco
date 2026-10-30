@@ -1,5 +1,5 @@
 -- Nyanco 0.38 prefix
-effect ask : -> num
+effect ask : -> int
 
 main =
     @outer each (1 ..= 3) {

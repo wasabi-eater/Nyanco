@@ -7,7 +7,7 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const run=source=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,output,vm,stack:vm.evaluate('main')};};
-const ask='effect ask : -> num\n';
+const ask='effect ask : -> int\n';
 test('labelled blocks work through a user loop wrapper',()=>{
  const {stack,output,p}=run('loop = while {True} _\nmain = 1; loop @a {* 2; print $; when ($ > 2000) {break@a}}');
  assert.deepEqual(output,Array.from({length:11},(_,i)=>String(2**(i+1))));assert.deepEqual(stack,[1024]);assert.doesNotMatch(p.types.get('main'),/break/);
@@ -26,7 +26,7 @@ test('inner loops cannot intercept a break routed to the outer block context',()
  const result=run('main = each [1,2] @outer {-> n; each [3,4] @inner {drop; break@inner}; print n}');assert.deepEqual(result.output,['1','2']);
 });
 test('one block label can name multiple operations with different enclosing handlers',()=>{
- const source='effect ask : -> num\neffect tell : num ->\nmain = handle {handle @h {tell@h (ask@h)} {ask: {-> k; resume 12 k}}} {tell: {-> n k; print n; resume k}}';
+ const source='effect ask : -> int\neffect tell : int ->\nmain = handle {handle @h {tell@h (ask@h)} {ask: {-> k; resume 12 k}}} {tell: {-> n k; print n; resume k}}';
  assert.deepEqual(run(source).output,['12']);
 });
 test('recursion and shadowing give each activation its own label identity',()=>{
@@ -51,13 +51,13 @@ test('missing handlers stay effects and host IO routing works with async calls',
  assert.deepEqual(await vm.evaluateAsync('call @a {read@a; put@a}'),[]);assert.deepEqual(output,['hello']);
 });
 test('block labels survive type-directed class dispatch',()=>{
- const source=ask+"class zero 'a where\n  zero : -> 'a\ninstance zero num where\n  zero = 0\nmain = handle @h {ask@h; + 1} {ask: {-> k; resume zero k}}";
+ const source=ask+"class zero 'a where\n  zero : -> 'a\ninstance zero int where\n  zero = 0\nmain = handle @h {ask@h; + 1} {ask: {-> k; resume zero k}}";
  assert.deepEqual(run(source).stack,[1]);
 });
 test('Go block labels agree with VM across wrappers, reentry, streams and effects',()=>{
  const source=ask+`class zero 'a where
   zero : -> 'a
-instance zero num where
+instance zero int where
   zero = 0
 loop = while {True} _
 invoke q = call q

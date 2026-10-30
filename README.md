@@ -1,4 +1,4 @@
-# Nyanco 0.56 — 外側のスタックcapture
+# Nyanco 0.57 — 数値型とindexer
 
 型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
 
@@ -102,7 +102,7 @@ fold [1, 2, 3] 0 {+}          -- 6
 
 ## 値、演算子、パターン
 
-型名は`num`、`bool`、`string`など、小文字始まりです。
+型名は`int`、`bool`、`string`など、小文字始まりです。
 
 ```haskell
 [1, 2, 3]                    -- vector内は空スタックでコマンドを実行
@@ -137,7 +137,7 @@ last = case
   -> [] then 0
 ```
 
-型適用も`option num`、`pair num string`の前置形式です。複数引数の型を他の型の引数にするときは必要に応じて括弧でまとめます。constructorパターンも`Some x`、`Pair x y`の順です。関数のguard、caseのguard、`otherwise nop`、`->`によるパターン束縛は引き続き使用できます。
+型適用も`option int`、`pair int string`の前置形式です。複数引数の型を他の型の引数にするときは必要に応じて括弧でまとめます。constructorパターンも`Some x`、`Pair x y`の順です。関数のguard、caseのguard、`otherwise nop`、`->`によるパターン束縛は引き続き使用できます。
 
 ## 型クラスと関連型
 
@@ -173,13 +173,13 @@ instance streem 'c 'a => streem (lmap 'c 'a 'b) where
 
 ```haskell
 effect yield 'a: 'a ->
-effect ask: -> num
+effect ask: -> int
 effect fail: string -> !
 
-emit : num -> / {yield num}
+emit : int -> / {yield int}
 emit = yield
 
-main : -> num string / {io}
+main : -> int string / {io}
 main = handle
   {emit 3; ask; "done"}
   {yield: {-> value k; print value; resume k},
@@ -190,7 +190,7 @@ main = handle
 
 継続は単発のdeep continuationです。`resume`は操作の戻り値を渡して残りの計算を再開し、その結果列全体を返します。再開しなければ計算を打ち切ります。`!`は正常には戻らない型で、その操作の継続は再開できません。
 
-エフェクト行も`/ {yield num, ask}`の前置形式です。`/ {}`は代数的エフェクトを漏らさない制約、`/ { | 'e}`は未知の行です。`print`は`io`として追跡します。mutable変数への代入はこの集合の対象外です。単独で宣言した型引数付き操作のhandlerには、すべての型に対して実装できることを要求します。グループの型引数は、そのグループの操作間で共有します。
+エフェクト行も`/ {yield int, ask}`の前置形式です。`/ {}`は代数的エフェクトを漏らさない制約、`/ { | 'e}`は未知の行です。`print`は`io`として追跡します。mutable変数への代入はこの集合の対象外です。単独で宣言した型引数付き操作のhandlerには、すべての型に対して実装できることを要求します。グループの型引数は、そのグループの操作間で共有します。
 
 ## CLI・REPL・Go生成
 
@@ -241,9 +241,9 @@ effect state 'a where
     ask : -> 'a
     write : 'a ->
 
-work = write 3; ask                -- -> num / {state num}
+work = write 3; ask                -- -> int / {state int}
 
-main : -> num / {}
+main : -> int / {}
 main =
     0 -> mut value;
     handle {work}
@@ -251,7 +251,7 @@ main =
        write: {-> x k; value := x; resume k}}
 ```
 
-操作名はグローバルです。ハンドラーのフィールドにはグループ名ではなく`ask`や`write`を指定します。型のエフェクト行は`/ {state num}`となり、各操作で同じ型引数を共有します。グループ内の一部の操作だけをハンドルした場合、未処理の操作は外側へ伝わります。
+操作名はグローバルです。ハンドラーのフィールドにはグループ名ではなく`ask`や`write`を指定します。型のエフェクト行は`/ {state int}`となり、各操作で同じ型引数を共有します。グループ内の一部の操作だけをハンドルした場合、未処理の操作は外側へ伝わります。
 
 従来の`effect yield 'a : 'a ->`も使えます。この単独宣言は各呼び出しで異なる型を使える多相操作です。一方、グループの型引数は一つのエフェクト行内で統一されるので、`write 3; write "text"`は型エラーです。
 
@@ -296,12 +296,12 @@ x.[1]                       -- 20（0始まり）
 x.[1 + 1]                   -- 30
 ```
 
-`.[i]`はvectorを消費して要素を返す関数としても使えます。添字の式は0消費1生産で、型はnumです。`x.[i].[j]`や`record.items.[i]`のように連結できます。`[]`内は外側の節の`_`・`$`を共有し、`;`で新しい節になります。
+`.[i]`はvectorを消費して要素を返す関数としても使えます。添字の式は0消費1生産で、型はintです。`x.[i].[j]`や`record.items.[i]`のように連結できます。`[]`内は外側の節の`_`・`$`を共有し、`;`で新しい節になります。
 
 アクセスは`/ {exn}`を伴います。負数、整数でない値、vector長以上の添字は例外です。組み込みの非復帰エフェクト`exn : string -> !`が例外メッセージを渡します。
 
 ```haskell
-safe : -> num / {}
+safe : -> int / {}
 safe = handle {[10,20].[9]} {exn: {-> message k; 0}}
 ```
 
@@ -368,10 +368,10 @@ streamは結果をキャッシュせず、走査するたびに再実行しま�
 ### 遅延処理のエフェクト
 
 ```haskell
-logged : -> (stream num { -> / {io} }) / {}
+logged : -> (stream int { -> / {io} }) / {}
 logged = map [1,2,3] {dup; print}
 
-main : -> [num] / {io}
+main : -> [int] / {io}
 main = toVector logged
 ```
 
@@ -411,7 +411,7 @@ streamの型は`stream 要素型 { -> / エフェクト行 }`です。構築自�
 一般の操作にも`operation@name`が使えます。
 
 ```haskell
-effect ask : -> num
+effect ask : -> int
 main = @outer handle {
     handle {ask@outer} {ask: {-> k; resume 2 k}}
 } {ask: {-> k; resume 1 k}}
@@ -499,13 +499,13 @@ toVector (@mapped map [1,2,3] {
 class zero 'a where
   zero : -> 'a
 
-instance zero num where
+instance zero int where
   zero = 0
 
 instance zero string where
   zero = ""
 
-origin : -> num
+origin : -> int
 origin = zero
 
 emptyText : -> string
@@ -552,7 +552,7 @@ one = 1;; two = 2;; main = one, two
 main = (f mut x = x ! + 1; x;; f 4)
 ```
 
-`//`は床除算で、優先順位は`*`・`/`・`%`と同じです。`7 // 3`は`2`、`-7 // 3`は`-3`になります。ゼロ除算はエラーです。型は引き続き`num`で、演算子クラス`floorDiv`のinstanceを定義してADTにも対応できます。
+0.57から`//`とfloorDivは廃止しました。整数の`/`は0方向に切り捨てます。数値型とnumクラスについては末尾の0.57の節を参照してください。
 
 
 ## withによるコピー更新（0.48）
@@ -592,7 +592,7 @@ immutableなコピー更新ではrecordフィールドやtuple要素の型を変
 
 ## vectorとstream（0.49・破壊的変更）
 
-コレクションの公開名をvectorにしました。`[num]`と`vector num`は同じ型です。実体はVMではJavaScriptの動的配列、Goでは連続領域を持つsliceです。`push`は末尾へ値を追加します。
+コレクションの公開名をvectorにしました。`[int]`と`vector int`は同じ型です。実体はVMではJavaScriptの動的配列、Goでは連続領域を持つsliceです。`push`は末尾へ値を追加します。
 
 ```haskell
 [0, 1, 2]; push 3; push 4  -- [0 1 2 3 4]
@@ -659,7 +659,7 @@ main = 1; loop @a {
 `break@a`はblock内に作られたloopを通過し、blockの呼び出し位置から外側にある最寄りのbreak handlerへ届きます。`ask@a`や`yield@a`も同じ規則です。ラベルなしの操作は従来どおり、その操作位置から最寄りのhandlerを使います。
 
 ```haskell
-effect ask : -> num
+effect ask : -> int
 main = handle @outer {
   handle @inner {
     print ask@inner -- 20
@@ -721,8 +721,8 @@ sortBy [1, 3, 2] {0 -}                  -- [3, 2, 1]
 | --- | --- |
 | `split text separator` | 区切り文字列で分割する遅延`stream string` |
 | `join xs separator` | `streem`の文字列要素を区切り文字列で結合した`string` |
-| `toNum text` | 数値なら`Some num`、失敗なら`None` |
-| `parseNum text` | 数値なら`num`、失敗なら`exn` |
+| `toNum text` | 数値なら`Some int`、失敗なら`None` |
+| `parseNum text` | 数値なら`int`、失敗なら`exn` |
 
 ```haskell
 toVector (split "a,,b," ",")      -- ["a", "", "b", ""]
@@ -753,7 +753,7 @@ class show 'a where
 標準の構造表示をデフォルトとして提供し、instanceがあればその型の表示に使います。関数`f = show`の型には`show 'a`制約が現れます。instanceはstringを返す純粋な関数として検査されます。
 
 ```haskell
-data person = Person string num
+data person = Person string int
 instance show person where
   show (Person name age) = name ++ ":" ++ (show age)
 
@@ -875,3 +875,70 @@ git commit -m "変更の説明"
 ```
 
 検証は`npm test`で実行できます。GoのnativeテストにはGoのインストールが必要です。
+
+
+## 数値型・char・byte・indexer（0.57、破壊的変更）
+
+従来の浮動小数点型numは`float`へ変更しました。整数は`int`、8bit符号なし整数は`byte`、Unicodeスカラー値1個は`char`です。`num`は値の型ではなく数値型クラスになりました。
+
+| 型 | 内容 |
+| --- | --- |
+| `int` | Go nativeでは符号付き64bit整数。REPLではJavaScriptのNumberによる整数で、厳密な整数精度は53bitまで |
+| `float` | 64bit浮動小数点 |
+| `byte` | 0〜255の整数 |
+| `char` | Unicodeスカラー値（`'a'`、`'あ'`、`'😀'`） |
+
+`3`などの整数リテラルは未確定ならintになります。必要な文脈があればbyteまたはfloatとして扱います。小数点・指数を含む`3.0`・`3e0`はfloatです。byteに推論する整数リテラルは0〜255でなければなりません。確定済みの異なる数値型を混ぜる演算は型エラーです。
+
+```haskell
+b : -> byte
+b = 250
+f : -> float
+f = 3
+main = print (b + 5); print (f / 2)
+-- 255
+-- 1.5
+```
+
+`//`は廃止しました。`7 / 2`は3、`-7 / 2`は-3となり、整数の除算は0方向へ切り捨てます。`7.0 / 2.0`は3.5です。`+ - * / % ^`は組み込みのnumクラスのメソッドです。`f = +`の型には`num 'a`制約が付きます。数値型には既定のinstanceがあり、ADTにもnum instanceを実装できます。比較のordは別のクラスで、charの比較にも対応します。charは数値型ではありません。
+
+`toInt`・`toFloat`・`toByte`は数値型間の明示的なキャストです。整数へは0方向へ小数部分を切り捨てます。変換先の範囲を超える値はexnです。byteの演算結果が0〜255を超えた場合は実行エラーになります。Goのint演算は64bitの整数演算です。
+
+```haskell
+toInt 3.9                 -- 3
+toFloat 3 / 2             -- 1.5
+toByte 42                 -- byteの42
+toInt 1 + toFloat 2       -- 型エラー
+```
+
+文字列はUTF-8として添字を解釈し、結果はbyteになります。`chars : string -> [char]`はUnicodeスカラー値のvectorを返します。
+
+```haskell
+"あ".[0]                 -- byteの227
+"あ".[1]                 -- byteの129
+"あ".[2]                 -- byteの130
+chars "日本😀"           -- ['日', '本', '😀']
+"abc" with {.[1] = 100}  -- "adc"（100はbyteに推論）
+```
+
+読み取りは`indexGet`クラスの`at`、更新は`indexSet`クラスの`setAt`を使います。keyとitemは関連型です。vectorはintをキー、要素型をitemとして実装し、stringはintをキー、byteをitemとして両方を実装します。
+
+```haskell
+data box 'a = Box ['a]
+instance indexGet (box 'a) where
+  key : int
+  item : 'a
+  at (Box xs) i = at xs i
+instance indexSet (box 'a) where
+  key : int
+  item : 'a
+  setAt (Box xs) i x = Box (setAt xs i x)
+```
+
+`xs.[i]`はat、`with {.[i] = x}`・`xs.[i] := x`・`xs.[i] ! f`はsetAtのinstanceで処理します。どちらも永続的な更新で、元の値への別の参照は保持されます。読み取りだけを実装する型も作れます。`xs.?[i]`は読み取り時のexnをNoneに変換します。
+
+添字の型はvector・stringではintです。floatの添字は型エラー、範囲外はexnになります。stringの更新結果が正しいUTF-8でなければexnとなり、元の変数は変更されません。
+
+既存のtoNum・parseNumはfloatを読み取る互換名として残しています。旧ソースの型注釈numは用途に応じてfloatまたはintへ変更してください。
+
+[実行例](examples/scalars-indexers.nyan)

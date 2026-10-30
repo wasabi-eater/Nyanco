@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 
-effect ask :  -> num
+effect ask :  -> int
 
 effect log : string ->
 

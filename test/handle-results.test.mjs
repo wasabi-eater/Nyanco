@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile,VM} from '../migration/v037-adapter.mjs';
-const header='effect ask: -> num\neffect tick: ->\neffect fail: string -> !\nwithHandlers = handle\n';
+const header='effect ask: -> int\neffect tick: ->\neffect fail: string -> !\nwithHandlers = handle\n';
 const run=body=>new VM(compile(header+'main = '+body)).evaluate('main');
 test('handle returns zero or multiple results preserving the outer stack',()=>{
   assert.deepEqual(run('99 {} {:} handle'),[99]);
@@ -22,8 +22,8 @@ test('abort handlers and nested forwarding support arbitrary result arity',()=>{
 });
 test('result row types and arities remain consistent and effects are removed',()=>{
   for(const body of ['{ask; "x"} {ask: {drop; 1}} handle','{ask drop} {ask: {drop; 1}} handle','{ask; "x"} {ask: {drop; 1 True}} handle'])assert.throws(()=>run(body),/Type error/);
-  const p=compile(header+'main : -> num string / {}\nmain = {ask; "x"} {ask: {-> k; 1 k resume}} handle');
-  assert.equal(p.types.get('main'),'..s -- ..s num string');
+  const p=compile(header+'main : -> int string / {}\nmain = {ask; "x"} {ask: {-> k; 1 k resume}} handle');
+  assert.equal(p.types.get('main'),'..s -- ..s int string');
 });
 
 test('generic wrappers can consume a returned result',()=>{

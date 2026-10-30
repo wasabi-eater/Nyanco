@@ -1,0 +1,11 @@
+-- Nyanco 0.38 prefix
+b : -> byte
+b = 250
+f : -> float
+f = 3
+main =
+  print (7 / 2); print (7.0 / 2.0);
+  print (b + 5); print (f / 2);
+  print (chars "日本😀"); print ("あ".[0]);
+  print ("abc" with {.[1] = 100});
+  print (toInt 3.9); print (toFloat 3); print (toByte 42)

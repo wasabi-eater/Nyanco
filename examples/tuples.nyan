@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 
-a : #(num string [num])
+a : #(int string [int])
 
 a =
   #(0, "Hoge", [])

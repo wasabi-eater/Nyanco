@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 
-data vec2  = Vec num num
+data vec2  = Vec int int
 
 instance add vec2 where
   + (Vec x y) (Vec u v) =

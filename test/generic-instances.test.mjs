@@ -4,7 +4,7 @@ import {VM,compile,format} from '../migration/v037-adapter.mjs';
 const generic=`data 'a box = 'a Box
 class 'a describe where
   describe : 'a -> string
-instance describe num where
+instance describe int where
   describe = show
 instance 'a describe => describe ('a box) where
   (x Box) describe = x describe
@@ -25,13 +25,13 @@ test('each supports generic user containers and threads the ambient stack',()=>{
   assert.deepEqual(vm.evaluate('"prefix" 10 (2 Box) {+} each'),['prefix',12]);
   assert.match(vm.infer('walk'),/^'a.* each =>/);
   assert.throws(()=>vm.evaluate('0 (True Box) {+} walk'),/Cannot unify/);
-  assert.throws(()=>vm.evaluate('3 {drop} each'),/No instance: num streem/);
+  assert.throws(()=>vm.evaluate('3 {drop} each'),/No instance: int streem/);
   assert.throws(()=>vm.evaluate('(3 Box) {dup} each'),/Infinite type|shape|underflow/);
 });
 test('nonparametric each instances declare an item type',()=>{
-  const vm=new VM(compile(`data pair = num num Pair
+  const vm=new VM(compile(`data pair = int int Pair
 instance each pair where
-  item : num
+  item : int
   (x y Pair) q each = x q call; y q call`));
   assert.deepEqual(vm.evaluate('0 (2 3 Pair) {+} each'),[5]);
   assert.throws(()=>compile(`data unit = Unit
@@ -49,7 +49,7 @@ f = +`),vm=new VM(p);
 });
 test('instance heads reject duplicates, invalid variables and builtin each overrides',()=>{
   assert.throws(()=>compile(generic+`\ninstance each ('a box) where\n  each = drop drop`),/Duplicate instance/);
-  assert.throws(()=>compile(`instance each [num] where\n  each = drop drop`),/Built-in each/);
+  assert.throws(()=>compile(`instance each [int] where\n  each = drop drop`),/Built-in each/);
   assert.throws(()=>compile(generic+`\ninstance 'z describe => describe range where\n  describe = show`),/variable must occur/);
 });
 test('range values persist in REPL stacks and each works through captured quotations',()=>{
@@ -58,11 +58,11 @@ test('range values persist in REPL stacks and each works through captured quotat
   assert.deepEqual(vm.evaluate('{each} -> walkq; 0 (1..=4) {+} walkq call'),[10]);
 });
 test('legacy uppercase type aliases print canonical lowercase names',()=>{
-  const p=compile(`data Legacy = Legacy Num
-f : Legacy -> Num
+  const p=compile(`data Legacy = Legacy int
+f : Legacy -> int
 (x Legacy) f = x`);
-  assert.equal(p.types.get('f'),'..s legacy -- ..s num');
-  assert.equal(new VM().infer('1 True "s"'),'..s -- ..s num bool string');
+  assert.equal(p.types.get('f'),'..s legacy -- ..s int');
+  assert.equal(new VM().infer('1 True "s"'),'..s -- ..s int bool string');
 });
 
 test('recursive each instances visit trees using the same accumulator',()=>{

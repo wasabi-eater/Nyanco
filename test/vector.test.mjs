@@ -40,7 +40,7 @@ test('unprefixed transforms are lazy, vector transforms eager, and collection is
  assert.throws(()=>new VM().infer('smap'),/Unknown word/);
 });
 test('vector type spelling, constraints and break continue to work',()=>{
- assert.deepEqual(run('f : vector num -> [num]\nf = push 3\nmain = f [1,2]').stack,[[1,2,3]]);
+ assert.deepEqual(run('f : vector int -> [int]\nf = push 3\nmain = f [1,2]').stack,[[1,2,3]]);
  assert.deepEqual(run('main = toVector (map [1,2,3] {when ($ == 2) {break}; * 2})').stack,[[2]]);
  assert.deepEqual(run('main = vfilter [1,2,3] {when ($ == 3) {break}; > 1}').stack,[[2]]);
  assert.deepEqual(run('main = [1,2] :: 3').stack,[[1,2,3]]);
