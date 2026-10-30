@@ -1,0 +1,18 @@
+-- Nyanco 0.38 prefix
+main =
+  print (max (map (1 ..= 5) {* 2}));
+  print (min [3,1,2]);
+  print (maxBy [{score: 2}, {score: 5}] {.score});
+  print (all (1 ..= 5) {> 0});
+  print (any [1,2,3] {== 2});
+  print (maxBy [1,2,3] {when ($ == 3) {break}; nop});
+  print (False && (exn "skipped"));
+  print (True || (exn "skipped"));
+  print (7 .&. 3);
+  print (5 .|. 2);
+  print (xor 3 5);
+  print (1 .<<. 40);
+  print ((toByte 128) .>>. 7);
+  print (testBit 8 3);
+  print (setBit (toByte 0) 7);
+  print (clearBit 15 2)

@@ -4,22 +4,23 @@ export const operatorSpecs=new Map([
   ...['+','-','*','/','%','^'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom' && ['int','float','byte'].includes(t.name),primitive:'num'}]),
   ...['<','<=','>','>='].map(op=>[op,{result:'bool',accept:t=>t.tag==='atom' && ['int','float','byte','char'].includes(t.name),primitive:'num'}]),
   ...['==','/='].map(op=>[op,{result:'bool',accept:()=>true,universal:true}]),
-  ...['and','or'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom' && t.name==='bool',primitive:'bool'}]),
+  ...['.&.','.|.','xor'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom'&&['bool','int','byte'].includes(t.name)}]),
+  ...['.<<.','.>>.'].map(op=>[op,{result:"'a",right:'int',exn:true,accept:t=>t.tag==='atom'&&['int','byte'].includes(t.name)}]),
   ['++',{result:"'a",accept:t=>t.tag==='list'||t.tag==='atom'&&t.name==='string'}],
 ]);
 export const standardOperatorClasses=new Map([
   ['add',['+']],['sub',['-']],['mul',['*']],['div',['/']],['mod',['%']],['pow',['^']],
-  ['eq',['==','/=']],['ord',['<','<=','>','>=']],['and',['and']],['or',['or']],['append',['++']],
+  ['eq',['==','/=']],['ord',['<','<=','>','>=']],['and',['.&.']],['or',['.|.']],['xor',['xor']],['shl',['.<<.']],['shr',['.>>.']],['append',['++']],
 ]);
 export const operatorFallback=(c,t)=>c.operatorClass && [...c.methods.keys()].filter(op=>operatorSpecs.has(op)).every(op=>operatorSpecs.get(op).accept(t));
 export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='range'?'range':v?.kind==='scalar'?v.type:typeof v==='number'?'int':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
 export function builtinInstance(c,t) {
   if(!c)return false;
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
-  return !!(c.showClass||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
+  return !!(c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
 }
 export function primitiveOperatorClass(name,ops,token) {
-  const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a 'a -> ${operatorSpecs.get(op).result}`,token,inputCount:2,dispatchIndex:0}]));
+  const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a ${operatorSpecs.get(op).right||"'a"} -> ${operatorSpecs.get(op).result}${operatorSpecs.get(op).exn?' / {exn}':''}`,token,inputCount:2,dispatchIndex:0,...(op==='xor'?{specialBits:true}:{})}]));
   return {name,param,methods,instances:new Map(),token,operatorClass:true};
 }
 
@@ -28,6 +29,10 @@ export function installOperatorClasses(classes,methods) {
     if(classes.has(name))continue;
     const c=primitiveOperatorClass(name,ops);c.standard=true;
     classes.set(name,c);for(const [op,m] of c.methods)if(!methods.has(op))methods.set(op,m);
+  }
+  if(!classes.has('bits')){
+    const methodsForBits=new Map(['testBit','setBit','clearBit'].map(name=>[name,{name,className:'bits',param:"'a",signature:`'a int -> ${name==='testBit'?'bool':"'a"} / {exn}`,specialBits:true}]));
+    classes.set('bits',{name:'bits',param:"'a",methods:methodsForBits,instances:new Map(),standard:true,bitClass:true});for(const [name,m] of methodsForBits)methods.set(name,m);
   }
   if(!classes.has('into')){
     const m={name:'from',className:'into',param:"'a",params:["'a","'b"],signature:"'a -> 'b / {exn}",specialCast:true,specialInto:true};

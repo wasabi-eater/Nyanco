@@ -31,7 +31,7 @@ function compileLegacy(source,file,previous=new Map(),options={}){
   for(const declaration of definitions.dataTypes.values())declaration.postfix=false;
   for(const c of definitions.classes.values())if(c.instances.has('list')){c.instances.set('vector',c.instances.get('list'));c.instances.delete('list');}
   numericTokens(definitions,source,file);
-  migrateNodes(definitions);migrateNodes(definitions.initializers);
+  migrateNodes(definitions);migrateNodes(definitions.initializers);migrateNodes(definitions.classes);migrateNodes(definitions.methods);
   const numericTypes=(v,seen=new Set())=>{if(!v||typeof v!=='object'||seen.has(v))return;seen.add(v);if(v.tag==='atom'&&v.name==='num')v.name='int';for(const x of v instanceof Map?v.values():Object.values(v)){if(x&&typeof x==='object')numericTypes(x,seen);}};numericTypes(definitions);for(const x of Object.values(definitions))numericTypes(x);
   for(const clauses of definitions.values())if(typeof clauses.signature==='string')clauses.signature=clauses.signature.replace(/\bnum\b/g,'int');
   for(const m of definitions.methods.values())if(m.signature)m.signature=m.signature.replace(/\bnum\b/g,'int');

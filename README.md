@@ -1,4 +1,4 @@
-# Nyanco 0.60 — 再代入と更新の優先順位
+# Nyanco 0.61 — stream集約・短絡評価・ビット演算
 
 型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
 
@@ -117,7 +117,7 @@ Push [] 3                    -- [3]
 
 `r.field`や`t.0`は一つの項として扱います。`.field r`、`.0 t`のようにアクセス関数を前置しても使えます。recordのフィールド区切りの`,`は維持します。フィールド内で複数の処理を書く場合は、括弧でまとめると明確です。
 
-`+ - * / % ^`、比較、`and or`はinfixです。欠けた項はスタックから補います。比較の連鎖と隣接する二項演算子も使えます。
+`+ - * / % ^`、比較、`&& ||`・`.&. .|. .<<. .>>.`はinfixです。欠けた項はスタックから補います。比較の連鎖と隣接する二項演算子も使えます。
 
 ```haskell
 3, 4, 5; + *                 -- 23
@@ -1042,3 +1042,43 @@ x, y <- y, x + y         -- x = 2, y = 7
 r.x ! + 1, * 2           -- r.x = 8
 r.x <- 5, + 2            -- r.x = 7
 ```
+
+
+## streamの集約・判定とビット演算（0.61）
+
+max・min・maxBy・minBy・all・anyはstreemクラスのコンテナを受け取り、vector・range・遅延stream・ユーザー定義コンテナに使えます。
+
+```haskell
+max (map (1 ..= 4) {* 2})       -- Some 8
+min [3,1,2]                    -- Some 1
+max []                         -- None
+maxBy [{score: 1}, {score: 3}] {.score}  -- Some {score: 3}
+all (1 ..= 5) {> 0}            -- True
+any [1,2,3] {== 2}             -- True
+```
+
+max・minは要素にord制約を要求し、By版はsortByと同じくキーを返すblockを受け取ります。結果は選ばれた要素のoptionです。同値のキーではmax系が最後、min系が最初の要素を返し、キーは要素ごとに一度だけ計算します。
+
+all・anyは要素を1個受け取りboolを返す述語blockが必要です。allは最初のFalse、anyは最初のTrueで走査を止めます。空の入力ではallはTrue、anyはFalseです。これら6関数は全てbreakに対応し、中断時は完了した要素までの結果を返します。まだ要素を確定していないmax系・min系はNone、allはTrue、anyはFalseを返します。blockのIOなど、break以外の効果は呼び出し元に伝わります。ラベル付きblockで外側の反復へbreakすることもできます。
+
+`&&`・`||`はbool専用の短絡演算子です。False && rhsとTrue || rhsではrhsを実行しません。節の_/$捕捉と、欠けた項への事前割り当ては従来の規則に従います。
+
+旧and・orは`.&.`・`.|.`へ変更しました。こちらは両辺を評価し、bool・int・byteに標準instanceがあります。xorも同じ3型に使えます。boolでは論理演算、int・byteではビット演算になります。
+
+```haskell
+False && (exn "not evaluated")  -- False
+7 .&. 3                         -- 3
+5 .|. 2                         -- 7
+xor 3 5                         -- 6
+1 .<<. 40                       -- 1099511627776
+-8 .>>. 2                       -- -2
+setBit (toByte 0) 7              -- byteの128
+testBit 8 3                      -- True
+clearBit 15 2                    -- 11
+```
+
+シフトとtestBit・setBit・clearBitはint・byteに対応します。シフト量・bit位置はintで、0始まりです。intは64bit、byteは8bitとして処理し、左シフトでは幅からはみ出すbitを切り捨てます。intの右シフトは符号を拡張し、byteの右シフトは0を補います。幅の範囲外や負の位置・シフト量はexnになります。AND・OR・XORでは両辺を同じ型にする必要があります。
+
+優先順位は低い順に`||`、`&&`、比較、`.|.`、`.&.`、range・cons、シフト、加減算、乗除算、累乗です。空白による適用は引き続き二項演算子より優先されます。標準クラス名はand・or・xor・shl・shr・bitsです。
+
+[実行例](examples/stream-logic-bits.nyan)

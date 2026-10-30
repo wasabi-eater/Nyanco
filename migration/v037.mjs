@@ -54,7 +54,7 @@ function nodeText(n){
   if(n.kind==='list')return '['+sequenceText(n.body)+']';
   if(n.kind==='tuple')return '#('+sequenceText(n.body)+')';
   if(n.kind==='record')return n.fields.length?'{'+n.fields.map(f=>f.name+': '+(f.body.length===1&&f.body[0].kind==='missing'?'':'('+sequenceText(f.body)+')')).join(', ')+'}':'{:}';
-  if(n.kind==='binary')return `(${operand(n.left)} ${n.value} ${operand(n.right)})`;
+  if(n.kind==='binary')return `(${operand(n.left)} ${n.value==='and'?'.&.':n.value==='or'?'.|.':n.value} ${operand(n.right)})`;
   if(n.kind==='comparison-chain')return '('+n.operands.map((o,i)=>(i?n.operators[i-1].value+' ':'')+operand(o)).join(' ')+')';
   if(n.kind==='update')return `(${n.name} <- (${sequenceText(n.body)}))`;
   if(n.kind==='bind')return '-> '+n.patterns.map(p=>n.mutable[n.names.indexOf(p.value)]?'mut '+patternText(p):patternText(p)).join(' ');

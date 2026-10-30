@@ -1,3 +1,4 @@
+import {bitOperation,bitOperators,bitFunctions} from './bit-values.mjs';
 import {scalar,scalarType,scalarValue,numericBinary,charText} from './numeric-values.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {combinationNames,selections} from './combinatorics.mjs';
@@ -65,7 +66,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -79,11 +80,12 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
 }
 
 const OPERATORS = new Map([
-  ['or', 1], ['and', 2], ['==', 3], ['/=', 3],
+  ['||', 1], ['&&', 2], ['.|.', 3.2], ['.&.', 3.3], ['.<<.', 4.7], ['.>>.', 4.7], ['==', 3], ['/=', 3],
   ['<', 3], ['>', 3], ['<=', 3], ['>=', 3],
   ['..', 4], ['..=', 4], ['::', 4.5], ['+', 5], ['-', 5], ['++', 5], ['*', 6], ['/', 6], ['%', 6], ['^', 7],
 ]);
 const isOperator = t => t?.kind === 'word' && OPERATORS.has(t.value);
+const isShortCircuit=t=>['&&','||'].includes(t?.value);
 const isComparison = t => t?.kind === 'word' && ['<','<=','>','>=','==','/='].includes(t.value);
 
 let nextStackCapture=0;
@@ -428,7 +430,7 @@ function resolveLabels(nodes,scope=new Map()) {
     }
     if(n.kind==='label') {
       const root=n.body.length===1?n.body[0]:null,head=root?.kind==='application'?root.body[0]:root;
-      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','join','toVector','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
+      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','max','min','maxBy','minBy','all','any','join','toVector','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
       n.key??=`@label${nextLabel++}`;head.handlerLabel=n.key;
       const nested=new Map(scope);nested.set(n.name,n.key);resolveLabels(n.body,nested);continue;
     }
@@ -1019,6 +1021,7 @@ export class VM {
             stack.push(result);continue;
           }
           const left = yield* this.operand(t.left, env, bound, t, 'Left');
+          if(isShortCircuit(t)){const flag=this.expect(left,'boolean',t);stack.push((t.value==='&&'?flag:!flag)?this.expect(yield* this.operand(t.right,env,bound,t,'Right'),'boolean',t):flag);continue;}
           const right = yield* this.operand(t.right, env, bound, t, 'Right');
           const operands = [left, right];
           yield* this.binary(t.value,operands,t);
@@ -1112,8 +1115,8 @@ export class VM {
           stack.push(...returned);
         }
         else if (BUILTINS.has(t.value)) {
-          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
-          if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
+          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
+          if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxBy','minBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
         }
         else if(this.definitions.constructors?.has(t.value)) {
@@ -1179,7 +1182,12 @@ for(const name of ['+','-','*','/','%','^','<','>','<=','>='])define(name,2,(vm,
  const b=s.pop(),a=s.pop();try{s.push(numericBinary(name,a,b));}catch(e){throw new LanguageError(e.message,t);}
 });
 for (const name of ['==', '/=']) define(name, 2, (_vm,s) => { const b=s.pop(), a=s.pop(); s.push(name === '==' ? equal(a,b) : !equal(a,b)); });
-for (const name of ['and', 'or']) define(name, 2, (vm,s,t) => { const b=vm.expect(s.pop(),'boolean',t), a=vm.expect(s.pop(),'boolean',t); s.push(name === 'and' ? a && b : a || b); });
+for(const name of ['&&','||'])define(name,2,(vm,s,t)=>{const b=vm.expect(s.pop(),'boolean',t),a=vm.expect(s.pop(),'boolean',t);s.push(name==='&&'?a&&b:a||b);});
+for(const name of [...bitOperators,...bitFunctions])define(name,2,function*(vm,s,t){
+ const b=s.pop(),a=s.pop(),m=vm.definitions.methods?.get(name),target=m&&vm.definitions.classes.get(m.className).instances.get(runtimeTypeKey(a))?.implementations.get(name);
+ if(target){const call={...t,kind:'word',value:target},effect=t.bitEffect,values=[a,b];yield* vm.run([call],values,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(values[0]);return;}
+ try{s.push(bitOperation(name,a,b));}catch(error){if(error.bitIndex){yield {operation:ioEffects().get('exn'),args:[error.message],token:t};throw new LanguageError('Non-returning effect returned',t);}throw new LanguageError(error.message,t);}
+});
 define('not',1,(vm,s,t)=>s.push(!vm.expect(s.pop(),'boolean',t)));
 define('dup',1,(_vm,s)=>s.push(s.at(-1)));
 define('drop',1,(_vm,s)=>s.pop());
@@ -1249,6 +1257,17 @@ for(const name of ['reverse','sort','sortBy'])define(name,name==='sortBy'?2:1,fu
   })(),t);
   s.push(rows.map(row=>row.value));
 });
+for(const name of ['max','min','maxBy','minBy','all','any'])define(name,['max','min'].includes(name)?1:2,function*(vm,s,t){t={...t};
+ const predicate=name==='all'||name==='any',q=['max','min'].includes(name)?null:vm.expect(s.pop(),'quotation',t),xs=s.pop(),stop={};let best,key,found=false,result=name==='all';
+ try{yield* vm.loop(vm.walk(xs,function*(value){
+  let next=value;if(q){const local=[value];yield* vm.call(q,local,t);vm.need(local,1,t);next=local.pop();}
+  if(predicate){result=vm.expect(next,'boolean',t);if(name==='all'?!result:result)throw stop;return;}
+  let replace=!found;if(found){const pair=[next,key];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);replace=name.startsWith('max')?!less:less;}
+  if(replace){best=value;key=next;found=true;}
+ },t),t);}catch(error){if(error!==stop)throw error;}
+ s.push(predicate?result:{kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[best]:[]});
+});
+
 define('cons',2,(vm,s,t)=>{ const list=vm.expect(s.pop(),'list',t),x=s.pop(); s.push([x,...list]); });
 define('Push',2,(vm,s,t)=>{const x=s.pop(),xs=vm.expect(s.pop(),'list',t);if(t.reuseVector){vm.vectorUpdates.inPlace++;xs.push(x);s.push(xs);}else{vm.vectorUpdates.copied++;s.push([...xs,x]);}});
 BUILTINS.set('push', BUILTINS.get('Push'));

@@ -568,7 +568,7 @@ function builtinSchemes() {
   add('+ - * / % ^',()=>{const s=row();return quote(stack(s,INT,INT),push(s,INT));});
   add('< > <= >=',()=>{const s=row();return quote(stack(s,INT,INT),push(s,BOOL));});
   add('== /=',()=>{const s=row(),a=variable();return quote(stack(s,a,a),push(s,BOOL));});
-  add('and or',()=>{const s=row();return quote(stack(s,BOOL,BOOL),push(s,BOOL));});
+  add('&& ||',()=>{const s=row();return quote(stack(s,BOOL,BOOL),push(s,BOOL));});
   add('not',()=>{const s=row();return quote(push(s,BOOL),push(s,BOOL));});
   add('dup',()=>{const s=row(),a=variable();return quote(push(s,a),stack(s,a,a));});
   add('drop',()=>{const s=row(),a=variable();return quote(push(s,a),s);});
@@ -614,6 +614,12 @@ function builtinSchemes() {
     if(name==='sortBy'){const q=quote(stack(EMPTY,a),stack(EMPTY,key));args.push(q);dependencies.push({row:q.effects});}
     if(name!=='reverse')requireClass('ord',key);
     out.set(name,generalize(quote(stack(s,...args),push(s,list(a)),effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
+  }
+  for(const name of ['max','min','maxBy','minBy','all','any']){
+    const s=row(),c=variable(),a=variable(),predicate=name==='all'||name==='any',key=name.endsWith('By')?variable():a,latent=variable('effect-row');requireIterable(c,a,null,latent);
+    const args=[c],dependencies=[{row:latent}];if(!['max','min'].includes(name)){const q=quote(stack(EMPTY,a),stack(EMPTY,predicate?BOOL:key));args.push(q);dependencies.push({row:q.effects});}
+    if(!predicate)requireClass('ord',key);
+    out.set(name,generalize(quote(stack(s,...args),push(s,predicate?BOOL:adt('option',[a])),effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
   }
   for(const [name,mode] of transforms) {
     const s=row(),c=variable(),a=variable(),b=variable(),latent=variable('effect-row'),nested=variable('effect-row');requireIterable(c,a,null,latent);
@@ -826,6 +832,12 @@ class Inference {
           // after the chain, even when parentheses share a lexical clause.
           for(const key of bindings.references.keys())if(!guaranteed?.has(key))bindings.references.delete(key);
           if(!isBottom(current))current=push(current,BOOL);
+        } else if(['&&','||'].includes(node.value)){
+          const left=this.single(node.left,env,bindings,node),guaranteed=new Set(bindings.references.keys());
+          if(isBottom(left)){current=BOTTOM;if(trace){trace.output=current;this.trace.set(node,trace);}continue;}
+          unify(left,BOOL,node);const right=this.single(node.right,env,bindings,node);if(!isBottom(right))unify(right,BOOL,node);
+          for(const key of bindings.references.keys())if(!guaranteed.has(key))bindings.references.delete(key);
+          current=push(current,BOOL);
         } else {
           const left=this.single(node.left,env,bindings,node),right=isBottom(left)?BOTTOM:this.single(node.right,env,bindings,node);
           if(isBottom(left)||isBottom(right)){current=BOTTOM;if(trace){trace.output=current;this.trace.set(node,trace);}continue;}
@@ -927,8 +939,9 @@ class Inference {
         current=concatRows(current,answer);
       }
       else if(this.functions.has(node.value)) {
+        if(['max','min','maxBy','minBy'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
         if(node.value==='toNum' && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('toNum requires data option a = None | Some a',node);
-        if((['each','vmap','vfilter','fold','sortBy','while','when'].includes(node.value)||transforms.has(node.value))) {
+        if((['each','vmap','vfilter','fold','sortBy','maxBy','minBy','all','any','while','when'].includes(node.value)||transforms.has(node.value))) {
           const adapt=(type)=>{type=prune(type);if(type.tag!=='quote'||!isBottom(type.output))return type;
             return {...type,output:row(),originalNever:true};
           };
@@ -945,8 +958,8 @@ class Inference {
         if(trace)trace.effect=effect;
         current=this.apply(effect,current,node);
         if(this.effects.has(node.value))for(const v of free(effect.input))if(v.numericLiterals)unify(v,INT,node);
-        if(['sort','sortBy'].includes(node.value)) {
-          const input=prune(before),key=node.value==='sortBy'?prune(prune(input.item).output).item:prune(prune(current).item).item;
+        if(['sort','sortBy','max','min','maxBy','minBy'].includes(node.value)) {
+          const input=prune(before),key=['sortBy','maxBy','minBy'].includes(node.value)?prune(prune(input.item).output).item:node.value==='sort'?prune(prune(current).item).item:prune(prune(current).item).args[0];
           const comparison=instantiate(this.functions.get('<'));
           unify(comparison,quote(stack(EMPTY,key,key),stack(EMPTY,BOOL)),node);
           this.effectSink.dependencies.push({row:comparison.effects,exclude:['break'],loop:true,label:node.handlerLabel});
@@ -1347,7 +1360,7 @@ function executionTypes(base,definitions) {
     activate();const method=definitions.methods.get(node.value);if(method.specialCast)return castInfo(definitions,node,effect).target;let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
-    if(!result && (method.specialShow||method.specialIndex||method.specialCast))return node.value;
+    if(!result && (method.specialShow||method.specialIndex||method.specialCast||method.specialBits))return node.value;
     if(!result && operatorFallback(definitions.classes.get(method.className),type))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;

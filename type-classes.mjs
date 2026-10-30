@@ -61,7 +61,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       const [method,colon]=part;
       if(method.kind!=='word' || (!/^[a-z][A-Za-z0-9_']*$/.test(method.value) && !operatorSpecs.has(method.value)) || colon?.value!==':' || part.length<3)fail('Class member requires method : input -> output',method);
       if(methods.has(method.value) || builtins.has(method.value) && !operatorSpecs.has(method.value) || definitions.has(method.value) || globals.has(method.value) || definitions.constructors.has(method.value))fail(`Method name already used: ${method.value}`,method);
-      const m={name:method.value,className:name,param:arg,params:classParams,signature:part.slice(2).map((t,i,ts)=>ts[i+1]?.value===':'?t.value:(c.associated.find(a=>a.name===t.value)?.param||t.value)).join(' '),token:method};
+      const m={name:method.value,className:name,param:arg,params:classParams,...(method.value==='xor'?{specialBits:true}:{}),signature:part.slice(2).map((t,i,ts)=>ts[i+1]?.value===':'?t.value:(c.associated.find(a=>a.name===t.value)?.param||t.value)).join(' '),token:method};
       c.methods.set(m.name,m);methods.set(m.name,m);
     }
     if(!c.methods.size&&!supers.length)fail('Class requires a method or superclass',first);
@@ -70,8 +70,8 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       if(operators.length!==c.methods.size)fail('Operator classes cannot mix primitive operators and other methods',first);
       for(const m of operators) {
         m.signature=m.signature.replace(/\b(Num|Bool|String)\b/g,x=>lowerName(x));
-        const expected=`${arg} ${arg} -> ${operatorSpecs.get(m.name).result==="'a"?arg:operatorSpecs.get(m.name).result}`;
-        if(m.signature!==expected)fail(`Operator ${m.name} requires ${expected}`,m.token);
+        const expected=`${arg} ${operatorSpecs.get(m.name).right||arg} -> ${operatorSpecs.get(m.name).result==="'a"?arg:operatorSpecs.get(m.name).result}${operatorSpecs.get(m.name).exn?' / {exn}':''}`;
+        if(m.signature.replace(/\s/g,'')!==expected.replace(/\s/g,''))fail(`Operator ${m.name} requires ${expected}`,m.token);
       }
       c.operatorClass=true;
     }
@@ -111,6 +111,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       if(args.length!==count&&!(args.length===classParameters(constraintClass).length&&count>args.length))fail('Invalid instance constraint arity: '+cls,token);
       context[i]=[cls,...args];
     }
+    if(c.bitClass&&head.tag==='atom'&&['int','byte'].includes(head.name))fail('Built-in bits instance already exists',token);
     if(c.intoClass&&heads.every(t=>t.tag==='param'||t.tag==='atom'&&['int','float','byte','char'].includes(t.name)))fail('Built-in conversion instance already exists',token);
     if((c.castClass||c.numClass)&&head.tag==='atom'&&(['int','float','byte'].includes(head.name)||c.castClass&&head.name==='char'))fail('Built-in numeric instance already exists',token);
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);

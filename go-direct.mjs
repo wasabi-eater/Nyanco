@@ -151,7 +151,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const target=definitions.classes.get(m.className).instances.get(instanceKey(type))?.implementations.get(op.value);
       if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,[a,b],1)[0];}
     }
-    return ctx.value(`binary(${str(op.value)},${a},${b},${location(op)})`);
+    return ctx.value(['.&.','.|.','.<<.','.>>.'].includes(op.value)?`m.bitOperation(${str(op.value)},${a},${b},${location(op)})`:`binary(${str(op.value)},${a},${b},${location(op)})`);
   }
   function emit(nodes,values,env,holes,trace,ctx) {
     holes.references ??= new Map();
@@ -268,6 +268,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
           if(!closed)for(let i=1;i<n.operators.length;i++)ctx.lines.push('}');
           values.push(result);continue;
         }
+        if(['&&','||'].includes(n.value)){
+          const a=child(n.left,[],bindings)[0],result=ctx.value(`boolean(${a},${at})`);ctx.lines.push(`if ${n.value==='||'?'!':''}boolean(${result},${at}) {`);
+          try{const b=child(n.right,[],bindings)[0];ctx.lines.push(`${result}=boolean(${b},${at})`);}catch(error){if(!(error instanceof StoppedEmission))throw error;}
+          ctx.lines.push('}');values.push(result);continue;
+        }
         const a=child(n.left,[],bindings)[0],b=child(n.right,[],bindings)[0];
         values.push(binaryCall(n,a,b,info.operatorEffects[0],ctx));
       } else if(info.env.has(n.value)) {
@@ -275,7 +280,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         if(info.env.get(n.value).callable)invoke(ctx,value,values,info.effect,at);
         else values.push(value);
       }
-      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast) {
+      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
         let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
         const target=lookupInstance(definitions.classes.get(m.className),(info.effect.dispatchTypes||[type]).map(t=>{t=T.prune(t);if(t.numericLiterals){T.unify(t,{tag:'atom',name:'int'},n);t=T.prune(t);}return t;}))?.implementations.get(n.value);
@@ -397,11 +402,30 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       }
       ctx.lines.push(`${result}:=[]any{};for _,item:=range ${rows}{${result}=append(${result},item.value)}`);v.push(ctx.value(result));return;
     }
+    if(['max','min','maxBy','minBy','all','any'].includes(name)){
+      const predicate=name==='all'||name==='any',q=['max','min'].includes(name)?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),result=ctx.value(predicate?String(name==='all'):'nil'),found=`found${next++}`,bestKey=`key${next++}`;
+      if(!predicate)ctx.lines.push(`${found}:=false;_=${found};var ${bestKey} any;_=${bestKey}`);
+      ctx.lines.push(`iterationBoundary(func(stop func()){m.loop(func(m *Machine){${walk}(m,func(item any){`);
+      const inner=context();let key='item';if(q){const values=['item'];invoke(inner,q,values,topTypes.at(-1),at);key=values[0]||'nil';}
+      ctx.lines.push(...inner.lines);
+      if(predicate)ctx.lines.push(`${result}=boolean(${key},${at});if ${name==='all'?'!':''}boolean(${result},${at}){stop()}`);
+      else{
+        const cmp=context(),less=binaryCall({...n,value:'<'},key,bestKey,info.comparison,cmp),replace=name.startsWith('max')?'!':'';
+        ctx.lines.push(`if !${found}{${result}=item;${bestKey}=${key};${found}=true}else{`,...cmp.lines,`if ${replace}boolean(${less},${at}){${result}=item;${bestKey}=${key}}}`);
+      }
+      ctx.lines.push(`})},${at},${label})})`);
+      v.push(predicate?result:ctx.value(`optionValue(${result},${found})`));return;
+    }
+    if(['xor','testBit','setBit','clearBit'].includes(name)){
+      const b=pop(),a=pop(),m=definitions.methods.get(name),target=definitions.classes.get(m.className).instances.get(instanceKey(T.prune(topTypes.at(-2))))?.implementations.get(name);
+      if(target){const spec=named(target,info.effect);v.push(...ctx.call(`m.${spec.fn}`,[a,b],1));}
+      else v.push(ctx.value(`m.bitOperation(${str(name)},${a},${b},${at})`));return;
+    }
     if(name==='toVector') {
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`;
       ctx.lines.push(`${result}:=[]any{};m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));return;
     }
-    if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','and','or','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
+    if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','&&','||','.&.','.|.','.<<.','.>>.','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
       const b=pop(),a=pop();v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name)},${a},${b},${at})`));
     } else if(['not','head','tail','length'].includes(name))v.push(ctx.value(`unary(${str(name)},${pop()},${at})`));
     else if(name==='nop'){}

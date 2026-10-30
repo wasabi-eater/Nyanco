@@ -1,3 +1,4 @@
+import {VM as CurrentVM} from '../language.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -95,10 +96,10 @@ test('mutable updates are type stable and runtime failure keeps bindings intact'
   assert.deepEqual(vm.evaluate('x'),[3]);
 });
 test('type inference is read-only and works with every builtin',()=>{
-  const vm=new VM();
+  const vm=new CurrentVM();
   for(const name of builtinNames()) {
     // Operators require section syntax to denote their full stack effect.
-    const expr=/^[+*/%^<>=-]/.test(name)||['and','or'].includes(name)?`(${name})`:name;
+    const expr=/^[+*/%^<>=-]/.test(name)||['&&','||','.&.','.|.','.<<.','.>>.'].includes(name)?`(${name})`:name;
     assert.match(vm.infer(expr),/ -- /,name);
   }
   assert.equal(vm.infer('dup'),"..s 'a -- ..s 'a 'a");
