@@ -6,7 +6,7 @@ const type=body=>compile(header+'f = '+body).types.get('f');
 
 test('blocks infer latent effect arguments with shared type variables',()=>{
   assert.equal(type('{+ 10; yield}'),'..s -- ..s { ..s1 int -- ..s1 / {int yield} }');
-  assert.equal(type('{2 yield; 3}'),'..s -- ..s { ..s1 -- ..s1 int / {int yield} }');
+  assert.equal(type('{2 yield; 3}'),"'a num => ..s -- ..s { ..s1 -- ..s1 'a / {exn, int yield} }");
   assert.equal(type('{ask yield}'),"..s -- ..s { ..s1 -- ..s1 / {'a ask, 'a yield} }");
   assert.equal(type('{2 yield} drop'),'..s -- ..s');
 });
@@ -28,8 +28,10 @@ d = yield`);
 });
 
 test('execution combinators propagate callback effects while compose remains latent',()=>{
-  for(const body of ['{1 yield} call','[1 2] {yield} each','True {1 yield} {} if','True {1 yield} when','{1 yield} {2 yield} compose call','0 {dup; 0 >} {dup yield; - 1} while'])
+  for(const body of ['{1 yield} call','True {1 yield} {} if','True {1 yield} when','{1 yield} {2 yield} compose call'])
     assert.match(type(body),/ \/ \{int yield\}$/);
+  assert.equal(type('[1 2] {yield} each'),"'a num => ..s -- ..s / {exn, 'a yield}");
+  assert.equal(type('0 {dup; 0 >} {dup yield; - 1} while'),"'a num, 'a ord => ..s -- ..s 'a / {exn, 'a yield}");
   assert.equal(type('{1 yield} {2 yield} compose drop'),'..s -- ..s');
 });
 
@@ -49,7 +51,7 @@ test('handlers subtract handled operations through direct and named applications
 f = {1 yield; 2} {yield: {-> x k; k resume}} handle
 g = {1 yield; 2} {yield: {-> x k; k resume}} withHandlers
 h = {ask; yield; 3} {yield: {-> x k; k resume}} handle`);
-  assert.equal(p.types.get('f'),'..s -- ..s int');assert.equal(p.types.get('g'),'..s -- ..s int');
+  assert.equal(p.types.get('f'),"'a num => ..s -- ..s 'a / {exn}");assert.equal(p.types.get('g'),"'a num => ..s -- ..s 'a / {exn}");
   assert.match(p.types.get('h'),/ask/);assert.doesNotMatch(p.types.get('h'),/yield/);
 });
 
@@ -98,7 +100,7 @@ f =
 test('polymorphic handler forwarding specializes every operation occurrence',()=>{
   const source=header+`effect 'a log: 'a ->
 f = {1 yield; "x" yield; 2} {yield: {-> x k; x log; k resume}} handle`;
-  assert.equal(compile(source).types.get('f'),'..s -- ..s int / {int log, string log}');
+  assert.equal(compile(source).types.get('f'),"'a num => ..s -- ..s 'a / {exn, int log, string log}");
   assert.throws(()=>compile(source+'\nf : -> int / {int log}'),/Cannot unify/);
   assert.match(compile(source+'\nf : -> int / {int log, string log}').types.get('f'),/int log, string log/);
 });

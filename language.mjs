@@ -1027,7 +1027,11 @@ export class VM {
           yield* this.binary(t.value,operands,t);
           stack.push(operands[0]);
         }
-        else if (t.kind === 'literal') stack.push(typeof t.value==='number'?scalar(typeIR.numericName(info?.output?.item)|| (t.numericKind==='float'||!Number.isInteger(t.value)?'float':'int'),t.value):t.value);
+        else if(t.kind==='literal'){
+          const literal=info&&typeof t.value==='number'&&t.numericKind!=='float'&&Number.isInteger(t.value)?typeIR.integerLiteralInfo(this.definitions,t,typeIR.prune(info.output).item):null;
+          if(literal?.conversion){const local=[t.value];yield* BUILTINS.get('fromInt')(this,local,{...t,value:'fromInt',conversion:literal.conversion,castEffect:literal.effect});stack.push(local[0]);}
+          else stack.push(typeof t.value==='number'?scalar(literal?.type||typeIR.numericName(info?.output?.item)||(t.numericKind==='float'||!Number.isInteger(t.value)?'float':'int'),t.value):t.value);
+        }
         else if(t.kind==='interpolation') {
           const count=t.fields.filter(f=>f.empty).length;this.need(stack,count,t);
           const values=count?stack.splice(-count):[];let index=0,result=t.chunks[0];

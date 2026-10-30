@@ -273,6 +273,8 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
     result.entries.push(entry);
   }
   for(const d of t.dependencies||[]) {
+    // Keep conversion effects dependent on the literal type until specialization.
+    if(d.literalType){const type=prune(d.literalType);if(!(type.tag==='atom'&&['int','float','byte'].includes(type.name))&&!(type.tag==='var'&&!type.polymorphicNumber)){effectView(effects([{name:'exn',args:[]}]),excluded,seen,result);}continue;}
     const h=d.handlers?prune(d.handlers):null,fields=h?.tag==='record'?flattenRecord(h.row).fields:null;
     if(d.handlerEffects){
       if(fields)for(const [name,q] of fields){
@@ -312,13 +314,13 @@ function mergeEffects(a,b,token) {
   const combined=effects([], [{row:{...a}},{row:{...b}}]);if(a.weak||b.weak)combined.weak=true;
   Object.assign(a,combined);Object.assign(b,combined);
 }
-function effectChildren(t) {
-  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[])])] : [];
+function effectChildren(t,skipLiteral=false) {
+  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(!skipLiteral&&d.literalType?[d.literalType]:[])])] : [];
 }
 function checkEffectPromises(actual,expected,token,seen=new Set()) {
   actual=prune(actual);expected=prune(expected);
   if(seen.has(actual))return;seen.add(actual);
-  if(actual.tag==='quote' && expected.tag==='quote')unify(actual.input,expected.input,token);
+  if(actual.tag==='quote' && expected.tag==='quote'){unify(actual.input,expected.input,token);if(!isBottom(actual.output)&&!isBottom(expected.output))unify(actual.output,expected.output,token);}
   if(expected.effectBound && actual.effects) {
     const allowed=effectView(expected.effectBound),used=effectView(actual.effects);
     if(used.tails.size && !allowed.tails.size)throw new StaticTypeError('Open effect row cannot satisfy a closed effect annotation',token);
@@ -338,10 +340,10 @@ function checkEffectPromises(actual,expected,token,seen=new Set()) {
   const aa=children(actual),bb=children(expected);
   if(aa.length===bb.length)aa.forEach((x,i)=>checkEffectPromises(x,bb[i],token,seen));
 }
-function free(t, found = new Set(), seen=new Set()) {
+function free(t, found = new Set(), seen=new Set(),skipLiteral=false) {
   t = prune(t);if(seen.has(t))return found;seen.add(t);
-  if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.relations)for(const r of t.relations)for(const x of r.args)free(x,found,seen);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen);if(t.eachItem)free(t.eachItem,found,seen);if(t.eachEffects)free(t.eachEffects,found,seen);if(t.handlerAnswer)free(t.handlerAnswer,found,seen);if(t.handlerResidual)free(t.handlerResidual,found,seen);}}
-  else for (const child of [...children(t),...effectChildren(t),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen);
+  if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.relations)for(const r of t.relations)for(const x of r.args)free(x,found,seen,skipLiteral);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen,skipLiteral);if(t.eachItem)free(t.eachItem,found,seen,skipLiteral);if(t.eachEffects)free(t.eachEffects,found,seen,skipLiteral);if(t.handlerAnswer)free(t.handlerAnswer,found,seen,skipLiteral);if(t.handlerResidual)free(t.handlerResidual,found,seen,skipLiteral);}}
+  else for (const child of [...children(t),...effectChildren(t,skipLiteral),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen,skipLiteral);
   return found;
 }
 function keepNativePrefix(t) {t=prune(t);if(t.tag==='var'||t.tag==='push'){t.keepNativePrefix=true;if(t.tag==='push')keepNativePrefix(t.rest);}}
@@ -379,8 +381,8 @@ function unify(a, b, token) {
     if (occurs(a,b)) throw new StaticTypeError('Infinite type or changing stack shape (loop/recursive stack effect)', token);
     if(a.numericLiterals){
       if(b.tag==='var'&&(b.eachItem||b.associated)){unify(a,INT,token);unify(b,INT,token);return;}
-      if(b.tag==='var'){b.numericLiterals=[...b.numericLiterals||[],...a.numericLiterals];}
-      else if(b.tag!=='atom'||!['int','float','byte'].includes(b.name))throw new StaticTypeError('Cannot unify integer literal with a nonnumeric type; expected int, float or byte',token);
+      if(b.tag==='var'){b.numericLiterals=[...new Set([...b.numericLiterals||[],...a.numericLiterals])];if(a.polymorphicNumber)b.polymorphicNumber=true;if(a.numericPattern)b.numericPattern=true;}
+      else if(b.tag!=='atom'||!['int','float','byte'].includes(b.name)){try{requireClass('num',b,token);}catch(error){if(!(error instanceof StaticTypeError))throw error;throw new StaticTypeError('Cannot unify integer literal with '+formatType(b)+'. '+error.message.split('Type error: ').at(-1),token);}}
       else if(b.name==='int'&&a.numericLiterals.some(n=>{try{const x=BigInt(n);return x< -9223372036854775808n||x>9223372036854775807n;}catch{return true;}}))throw new StaticTypeError('int literal is outside signed 64-bit range',token);
       else if(b.name==='byte'&&a.numericLiterals.some(n=>Number(n)<0||Number(n)>255))throw new StaticTypeError('byte literal is outside 0..255',token);
     }
@@ -422,7 +424,7 @@ function clone(t, replacements) {
     if(t.weak && replacements.preserveWeak)return t;
     const result=effects();if(t.weak)result.weak=true;replacements.set(t,result);
     result.entries=t.entries.map(e=>({...e,args:e.args.map(x=>clone(x,replacements))}));
-    result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{})}));return result;
+    result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{}),...(d.literalType?{literalType:clone(d.literalType,replacements)}:{})}));return result;
   }
   if(['tuple','tuple-tail'].includes(t.tag))return {...t,items:t.items.map(x=>clone(x,replacements)),tail:clone(t.tail,replacements)};
   if(t.tag==='record')return {tag:'record',row:clone(t.row,replacements)};
@@ -458,10 +460,19 @@ function generalize(type, excluded = new Set()) {
   if(type.tag==='quote' && isBottom(type.output) && !type.bottomBase)type.bottomBase=stackTail(type.input);
   return { type, vars: new Set([...free(type)].filter(v=>!excluded.has(v))) };
 }
+function generalizeNumbers(scheme,token){
+ // Ignore literal-only effect dependencies: a discarded literal has no public type.
+ const escaping=free(scheme.type,new Set(),new Set(),true);
+ for(const v of scheme.vars)if(v.numericLiterals&&v.tag==='var'){
+  if(v.numericPattern||!escaping.has(v)){unify(v,INT,token);continue;}
+  requireClass('num',v,token);v.polymorphicNumber=true;
+ }
+ return scheme;
+}
 function instantiate(scheme, rigid = false, bindings = null) {
   const top=prune(scheme.type),fixedRows=new Set(top.tag==='quote'?[stackTail(top.input),stackTail(top.output)]:[]);
   const vars=new Set([...scheme.vars].map(prune).filter(v=>v.tag==='var'));
-  const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
+  const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.polymorphicNumber?{polymorphicNumber:true}:{}),...(v.numericPattern?{numericPattern:true}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
   replacements.preserveWeak=true;
   if(bindings)for(const [v,fresh] of replacements)bindings.set(v,fresh);
@@ -474,7 +485,7 @@ function envFree(env) {
 }
 
 export function formatType(type) {
-  for(const v of free(type))if(v.numericLiterals&&v.tag==='var')unify(v,INT);
+  for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&v.tag==='var')unify(v,INT);
   // An open callback row may include break, while every use of that row is
   // beneath a loop's handler. Expose that accepted operation in the signature
   // without injecting a performed effect into the callback's inference graph.
@@ -686,7 +697,7 @@ class Inference {
     const input=row(),candidate=this.block(body,input,new Map(local));
     local.set(name,{type:candidate,vars:sharedRows(candidate),callable:true});
     const checked=row();unify(candidate,this.block(body,checked,new Map(local)),token);
-    return {...generalize(candidate,envFree(env)),callable:true};
+    return {...generalizeNumbers(generalize(candidate,envFree(env)),token),callable:true};
   }
   declare(env,name,type,mutable,node) {
     if(this.constructors?.has(name))throw new StaticTypeError(`Cannot shadow constructor: ${name}`,node);
@@ -696,7 +707,7 @@ class Inference {
     const excluded=envFree(env);
     for(const v of this.excluded || []) excluded.add(v);
     if(mutable)weakEffects(type);
-    for(const v of free(type))if(v.numericLiterals)excluded.add(v);
+    for(const v of free(type))if(v.numericLiterals||hasRelationEvidence(activeClasses.get('num'),[v]))excluded.add(v);
     env.set(name,mutable ? {...mono(type),mutable:true} : generalize(type,excluded));
   }
   pop(current, token) {
@@ -756,7 +767,7 @@ class Inference {
         const body=[...args,head];if(trace)trace.application=body;
         current=this.sequence(body,current,env,bound);
       }
-      else if(node.kind==='literal'){const type=typeof node.value==='number'?((node.numericKind==='float'||!Number.isInteger(node.value))?FLOAT:{...variable(),numericLiterals:[node.numberSource??String(node.value)]}):this.value(node.value,node);current=push(current,type);}
+      else if(node.kind==='literal'){const type=typeof node.value==='number'?((node.numericKind==='float'||!Number.isInteger(node.value))?FLOAT:{...variable(),numericLiterals:[node.numberSource??String(node.value)]}):this.value(node.value,node);current=push(current,type);if(typeof node.value==='number'&&node.numericKind!=='float'&&Number.isInteger(node.value))this.effectSink.dependencies.push({literalType:type});}
       else if(node.kind==='interpolation') {
         const values=[];for(const f of node.fields.filter(f=>f.empty)){let value;[current,value]=this.pop(current,node);values.unshift(value);}
         let index=0;const formatTypes=[],formatEffects=[];
@@ -1044,7 +1055,7 @@ class Inference {
       const items=pattern.fields.map(()=>variable());unify(type,tuple(items),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,items[i],env));
     }
-    else if(pattern.kind==='literal')unify(type,typeof pattern.value==='number'?((pattern.numericKind==='float'||!Number.isInteger(pattern.value))?FLOAT:{...variable(),numericLiterals:[pattern.numberSource??String(pattern.value)]}):this.value(pattern.value,pattern),pattern);
+    else if(pattern.kind==='literal')unify(type,typeof pattern.value==='number'?((pattern.numericKind==='float'||!Number.isInteger(pattern.value))?FLOAT:{...variable(),numericLiterals:[pattern.numberSource??String(pattern.value)],numericPattern:true}):this.value(pattern.value,pattern),pattern);
     else if(pattern.kind==='list-pattern' || pattern.kind==='push-pattern') {
       const item=variable();unify(type,list(item),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,pattern.kind==='push-pattern' && i===0 ? list(item) : item,env));
@@ -1284,7 +1295,7 @@ function prepare(definitions,globalValues,initialized=false) {
         const actual=instantiate(inferred);checkEffectPromises(actual,checked,clauses[0].token);unify(actual,checked,clauses[0].token);
         const restore=new Map([...bindings].map(([v,fresh])=>[fresh,v]));
         published.set(name,{...declared,type:clone(checked,restore)});
-      } else {for(const v of free(inferred.type))if(v.numericLiterals)unify(v,INT,clauses[0].token);published.set(name,inferred);}
+      } else published.set(name,generalizeNumbers(inferred,clauses[0].token));
     }
     for(const [name,scheme] of published)inference.functions.set(name,scheme);
   }
@@ -1342,6 +1353,14 @@ function specializeEffects(actual,expected,token) {
 // Runtime dictionaries are specialized from solved call-site types. Runtime
 // arguments are used to reconnect stored closures to those types, never to
 // guess an instance from a method result.
+function integerLiteralInfo(definitions,node,type){
+ type=prune(type);if(type.tag==='var'){unify(type,INT,node);type=prune(type);}
+ if(type.tag==='atom'&&['int','float','byte'].includes(type.name))return {type:type.name};
+ requireClass('num',type,node);
+ try{const value=BigInt(node.numberSource??String(node.value));if(value< -9223372036854775808n||value>9223372036854775807n)throw new Error();}catch{throw new StaticTypeError('int literal is outside signed 64-bit range',node);}
+ const effect=quote(stack(EMPTY,INT),stack(EMPTY,type),effects([{name:'exn',args:[]}]));effect.dispatchType=type;effect.dispatchTypes=[type];
+ return {effect,conversion:castInfo(definitions,{...node,value:'fromInt'},effect)};
+}
 function castInfo(definitions,node,effect){
  const method=definitions.methods.get(node.value),c=definitions.classes.get(method.className),values=(effect.dispatchTypes||[effect.dispatchType]).map(prune);
  const bindings=new Map(classParameters(c).map((p,i)=>[p,values[i]]));
@@ -1402,11 +1421,12 @@ function executionTypes(base,definitions) {
     for(const node of nodes) {
       const info=trace?.get(node);if(!info)continue;
       if(node.kind==='quote'||node.kind==='local-function')continue;
-      let name=node.value;
+      let name=node.value,callEffect=info.effect;
+      if(node.kind==='literal'&&typeof node.value==='number'&&node.numericKind!=='float'&&Number.isInteger(node.value)){const literal=integerLiteralInfo(definitions,node,prune(info.output).item);if(literal.conversion){name=literal.conversion.target;callEffect=literal.effect;}}
       if(definitions.methods?.has(name)&&info.effect?.dispatchType)name=target(node,info.effect);
-      if(definitions.has(name)&&info.effect) {
-        const key=name+':'+formatType(info.effect);if(seen.has(key))continue;seen.add(key);
-        for(const c of definitions.get(name))validate([...(c.guard||[]),...c.body],clause(c,info.effect),seen);
+      if(definitions.has(name)&&callEffect) {
+        const key=name+':'+formatType(callEffect);if(seen.has(key))continue;seen.add(key);
+        for(const c of definitions.get(name))validate([...(c.guard||[]),...c.body],clause(c,callEffect),seen);
       }
       for(const value of Object.values(node)) {
         if(Array.isArray(value))for(const item of value)if(item&&typeof item==='object') {
@@ -1422,7 +1442,8 @@ export function inferExpression(nodes,definitions=new Map(),globals=new Map(),in
   const inference=prepare(definitions,globals,initialized),input=row();
   const env=new Map(inference.globals);inference.rootEnv=env;
   env.locals=new Set(env.keys());
-  const output=inference.sequence(nodes,input,env);
+  inference.trace=new Map();const output=inference.sequence(nodes,input,env);
+  for(const [node,info] of inference.trace)if(node.kind==='literal'&&typeof node.value==='number'&&node.numericKind!=='float'){const type=prune(info.output).item;if(prune(type).tag==='var'&&prune(type).numericLiterals)unify(type,INT,node);}
   return formatType(quote(input,output,inference.effectSink));
 }
 
@@ -1441,4 +1462,4 @@ export function loweringTypes(definitions) {
   const execution=executionTypes(base,definitions);
   return {validate:execution.validate,globals:base.globals,functions:base.functions,analyze,pattern:(p,t,e)=>base.pattern(p,t,e)};
 }
-export const typeIR={castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};
+export const typeIR={integerLiteralInfo,castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};

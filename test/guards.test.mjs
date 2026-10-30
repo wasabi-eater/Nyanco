@@ -12,7 +12,7 @@ test('guards choose the first true condition and otherwise is a fallback',()=>{
   | otherwise = 1
 x bounded | 3 < x <= 4 = True | otherwise = False`);
   assert.deepEqual(vm.evaluate('-4 sign 0 sign 8 sign 4 bounded 5 bounded'),[-1,0,1,true,false]);
-  assert.equal(vm.infer('sign'),'..s int -- ..s int');
+  assert.equal(vm.infer('sign'),"'a num, 'a ord, 'a1 num => ..s 'a -- ..s 'a1 / {exn}");
 });
 
 test('pattern failures and false guards fall through in source order',()=>{

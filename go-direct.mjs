@@ -35,7 +35,7 @@ function effectParts(effect) {
 }
 function copyEnv(env) {
   const vars=new Set();for(const s of env.values())for(const v of T.free(s.type))vars.add(v);
-  const replacements=new Map([...vars].map(v=>[v,{...T.variable(v.sort),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
+  const replacements=new Map([...vars].map(v=>[v,{...T.variable(v.sort),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.polymorphicNumber?{polymorphicNumber:true}:{}),...(v.numericPattern?{numericPattern:true}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>T.clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>T.clone(t,replacements))]));if(v.eachItem)fresh.eachItem=T.clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=T.clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=T.clone(v.handlerAnswer,replacements);}
   return new Map([...env].map(([name,s])=>[name,{...s,type:T.clone(s.type,replacements),vars:new Set([...s.vars].map(v=>replacements.get(v)||v))}]));
 }
@@ -171,7 +171,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       };
       try {
       if(n.kind==='reference')values.push(holes.references.get(n));
-      else if(n.kind==='literal')values.push(ctx.value(lit(n.value,T.numericName(T.prune(info.output).item)|| (n.numericKind==='float'?'float':'int'),n.numberSource)));
+      else if(n.kind==='literal'){
+        const literal=typeof n.value==='number'&&n.numericKind!=='float'&&Number.isInteger(n.value)?T.integerLiteralInfo(definitions,n,T.prune(info.output).item):null;
+        if(literal?.conversion){const value=ctx.value(lit(n.value,'int',n.numberSource));if(literal.conversion.target==='fromInt')values.push(ctx.value(`m.numericCast(${value},${str(literal.conversion.destination)},${location(n)})`));else{const spec=named(literal.conversion.target,literal.effect);values.push(...ctx.call(`m.${spec.fn}`,[value],1));}}
+        else values.push(ctx.value(lit(n.value,literal?.type||T.numericName(T.prune(info.output).item)||(n.numericKind==='float'?'float':'int'),n.numberSource)));
+      }
       else if(n.kind==='interpolation') {
         const count=n.fields.filter(f=>f.empty).length,arguments_=count?values.splice(-count):[];let index=0;
         const parts=[str(n.chunks[0])];

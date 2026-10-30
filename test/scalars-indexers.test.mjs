@@ -37,7 +37,7 @@ test('numeric inference separates scalar types and contextual integer literals',
  const vm=new VM();assert.match(vm.infer('3'),/--.*int/);assert.match(vm.infer('3.0'),/--.*float/);assert.match(vm.infer("'あ'"),/--.*char/);assert.match(vm.infer('"a".[0]'),/--.*byte/);assert.match(vm.infer('+'),/add 'a/);
  assert.match(compile(defs).types.get('b'),/byte/);assert.match(compile(defs).types.get('f'),/float/);
  for(const expr of ['toByte 1 + toInt 2','toInt 1 + toFloat 2','toFloat 1 == toInt 1',"'a' + 'b'",'3 // 2'])assert.throws(()=>run('main = '+expr),/unify|instance|removed/i,expr);
- assert.throws(()=>run('one = 1\nmain = toByte 2 + one'),/unify/);
+ assert.deepEqual(run('one = 1\nmain = toByte 2 + one').stack,[{kind:'scalar',type:'byte',value:3}]);
  assert.throws(()=>compile("instance indexGet string where\n  key : int\n  item : byte\n  at s i = toByte 0"),/already exists/);
  assert.throws(()=>compile('bad : -> byte\nbad = 256'),/byte literal/);
  assert.throws(()=>run('main = 9223372036854775808'),/64-bit/);
