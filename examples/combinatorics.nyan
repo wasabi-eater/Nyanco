@@ -1,0 +1,7 @@
+-- Nyanco 0.38 prefix
+main =
+  print (toVector (permutations [1,2,3] 2));
+  print (toVector (combinations (1 ..= 4) 2));
+  print (toVector (combinationsWithReplacement [1,2] 2));
+  print (toVector (cartesianProduct [1,2] ["a","b"]));
+  print (toVector (powerset [1,2]))

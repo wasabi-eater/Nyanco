@@ -1,0 +1,4 @@
+-- Nyanco 0.38 prefix
+
+main =
+  0, [1, 2, 3], {( + )}, each, print, 0, [1, 2, 3], {( + ), dup}, vmap, print, print, ((([1, 2]) ++ ([3, 4]))), {print}, each, 10, -> offset, [1, 2], {(((_) + (offset))), print}, each, 3, {( + (1))}, {( * (2))}, compose, call, print

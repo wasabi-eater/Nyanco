@@ -1,0 +1,22 @@
+-- Nyanco 0.38 prefix
+
+data box 'a = Box 'a
+
+data lmap 'c 'a 'b = LMap 'c {'a -> 'b}
+
+class unpack 'c where
+  type item
+  unpack : 'c -> item
+
+instance unpack (box 'a) where
+  item : 'a
+  unpack (Box x) =
+    x
+
+instance streem 'c 'a => streem (lmap 'c 'a 'b) where
+  item : 'b
+  each (LMap c f) g =
+    c, {f, call, g, call}, each
+
+main =
+  3, Box, unpack, print, True, Box, unpack, print, 0, ([1, 2, 3], {( + (10))}, LMap), {( + )}, each, print, [], ((((1) ..= (3))), {show}, LMap), {( :: )}, each, print

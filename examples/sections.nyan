@@ -1,0 +1,10 @@
+-- Nyanco 0.38 prefix
+
+fact =
+  {dup, (( == (0))), {drop, 1}, {dup, (( - (1))), fact, call, (( * ))}, if}
+
+square x =
+  ((x) * (x))
+
+main =
+  3, 4, 5, (( + ((( * ))))), print, 3, 2, (( + )), print, 3, (( + (2))), print, 3, (((2) + )), print, (((3) + (2))), print, 10, fact, call, print, [1, 2, 3, 4, 5, 6], {((((_) % (2))) == (0))}, vfilter, print, 10, 3; (((_1) - (_))), print, (((3) + (2, square))), print, (((3) + ((2, square)))), print

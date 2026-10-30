@@ -1,7 +1,0 @@
--- HaskStack 0.38 prefix
-main =
-  print (fold (map (1 ..= 5) {* 2}) 0 {+});
-  print (reverse (1 ..= 4));
-  print (sort [3, 1, 2, 1]);
-  print (sortBy [{score: 2, name: "a"}, {score: 1, name: "b"}, {score: 2, name: "c"}] {.score});
-  print ([10, 20].?[1])

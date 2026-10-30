@@ -1,10 +1,10 @@
 {
-  "name": "haskstack",
+  "name": "nyanco",
   "version": "0.56.1",
   "private": true,
   "type": "module",
-  "description": "A Haskell-inspired stack-based functional language",
-  "bin": { "haskstack": "./cli.mjs" },
+  "description": "A statically typed concatenative programming language with algebraic effects",
+  "bin": { "nyanco": "./cli.mjs" },
   "scripts": { "test": "node --test", "start": "node cli.mjs" },
   "engines": { "node": ">=20" }
 }

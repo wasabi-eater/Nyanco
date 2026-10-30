@@ -1,0 +1,27 @@
+-- Nyanco 0.38 prefix
+
+sum : [num] -> num
+
+sum [] =
+  0
+
+sum (xs :: x) =
+  ((x) + ((xs, sum)))
+
+reverseByPattern [] =
+  []
+
+reverseByPattern (xs :: x) =
+  (([x]) ++ ((xs, reverseByPattern)))
+
+describe [] =
+  "empty"
+
+describe [_] =
+  "one item"
+
+describe (_ :: _) =
+  "multiple items"
+
+main =
+  (((((([]) :: (1))) :: (2))) :: (3)), -> values, values, sum, print, values, reverseByPattern, print, values, describe, print

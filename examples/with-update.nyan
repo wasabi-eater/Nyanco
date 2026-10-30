@@ -1,0 +1,16 @@
+-- Nyanco 0.38 prefix
+move = with {.x ! + 2; .y ! + 1}
+main =
+  {x: 10, y: 5} -> r;
+  print (r with {.x = 20; .y ! + 2});
+  print r;
+  print (move r);
+  print (#(1, 2, 3) with {.1 = 5});
+  print ([0, 1, 2] with {.[1] = 3});
+  {x: {y: [1, 2, 3]}} -> mut nested;
+  nested -> original;
+  nested.x.y.[1] := 10;
+  nested.x.y.[1] ! _ * _;
+  print original;
+  print nested;
+  handle {nested.x.y.[9] := 0} {exn: {-> message k; print message}}

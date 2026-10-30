@@ -1,4 +1,4 @@
-# HaskStack 0.37 — ユーザー定義の関連型
+# Nyanco 0.37 — ユーザー定義の関連型
 
 Haskell風の宣言とスタック評価を組み合わせた、小さな関数型言語の実行環境です。0.9から型注釈を省略できる静的型付けになりました。ファイル・REPLとも、実行前に型とスタック効果を推論・検査します。詳細は [型システムと移行ガイド](TYPE_SYSTEM.md) を参照してください。
 
@@ -69,18 +69,18 @@ Node.js 20以降で動作します。追加パッケージは不要です。
 ```powershell
 node cli.mjs
 node cli.mjs --eval "3 + 2"
-node cli.mjs examples/demo.hst
-node cli.mjs examples/sections.hst
-node cli.mjs examples/bindings.hst
-node cli.mjs examples/collections.hst
-node cli.mjs examples/control.hst
-node cli.mjs examples/mutable.hst
-node cli.mjs examples/adt.hst
-node cli.mjs examples/list-patterns.hst
-node cli.mjs examples/typed.hst
-node cli.mjs --types examples/typed.hst
+node cli.mjs examples/demo.nyan
+node cli.mjs examples/sections.nyan
+node cli.mjs examples/bindings.nyan
+node cli.mjs examples/collections.nyan
+node cli.mjs examples/control.nyan
+node cli.mjs examples/mutable.nyan
+node cli.mjs examples/adt.nyan
+node cli.mjs examples/list-patterns.nyan
+node cli.mjs examples/typed.nyan
+node cli.mjs --types examples/typed.nyan
 node cli.mjs --type "dup"
-node cli.mjs examples/fizzbuzz.hst
+node cli.mjs examples/fizzbuzz.nyan
 node --test
 ```
 
@@ -88,17 +88,17 @@ node --test
 
 ```powershell
 # Goソースだけを生成（この操作にはGoのインストールは不要）
-node cli.mjs examples/demo.hst --emit-go main.go
+node cli.mjs examples/demo.nyan --emit-go main.go
 
 # GoがPATHにある場合、実行ファイルまでビルド
-node cli.mjs examples/demo.hst --build demo.exe
+node cli.mjs examples/demo.nyan --build demo.exe
 .\demo.exe
 
 # Goソースと実行ファイルを同時に出力
-node cli.mjs examples/adt.hst --emit-go adt.go --build adt.exe
+node cli.mjs examples/adt.nyan --emit-go adt.go --build adt.exe
 
 # main以外の式をエントリポイントに指定
-node cli.mjs examples/demo.hst --eval "6 factorial" --build factorial.exe
+node cli.mjs examples/demo.nyan --eval "6 factorial" --build factorial.exe
 # factorial.exe は [720] を表示
 
 # 生成済みソースをGoで直接ビルドしてもよい
@@ -111,7 +111,7 @@ go build -o demo.exe main.go
 
 コンパイル時に型と入出力の個数を解決し、各値をGoのローカル変数に割り当てます。関数呼び出しは引数と複数戻り値、ループの累積値はローカル変数への代入に変換します。生成コードには評価用スタックやpush/pop処理はありません。リスト・ADTのフィールド・最後の値の表示にはスライスを使います。
 
-quotationは捕捉環境と識別子で表現し、呼び出しの型・入出力数に合わせて生成したGo関数で実行します。再帰、型引数付きADT、リストパターン、mutableセルを捕捉したクロージャ、累積値を保持するコレクション処理にも対応します。実行ファイルにはHaskStackのパーサーやJavaScript処理系を含めません。
+quotationは捕捉環境と識別子で表現し、呼び出しの型・入出力数に合わせて生成したGo関数で実行します。再帰、型引数付きADT、リストパターン、mutableセルを捕捉したクロージャ、累積値を保持するコレクション処理にも対応します。実行ファイルにはNyancoのパーサーやJavaScript処理系を含めません。
 
 現在のバックエンドは値を `any` で保持します。呼び出しの特殊化は行いますが、Goの具体型への最適化は未実装です。特殊化の数にはコンパイル時の上限があります。`num` はインタプリタと同じ64bit浮動小数点です。実行ステップ上限100,000、呼び出し階層上限200も維持します。実行時エラーはソース位置を標準エラー出力に表示して終了コード1で終了します。生成実行ファイルにREPLは含まれません。
 
@@ -126,9 +126,9 @@ x square = x * x
 ```
 
 ```text
-hst> :type square
+nyanco> :type square
 'a mul => ..s 'a -- ..s 'a
-hst> :type dup
+nyanco> :type dup
 ..s 'a -- ..s 'a 'a
 ```
 
@@ -268,7 +268,7 @@ main =
 
 `f = {+}` はquotationを返す関数、`{+} -> f` はquotationを保持する変数です。前者を呼ぶとquotationが積まれ、後者を参照してもquotationが積まれます。どちらもそのquotationの実行には `call` が必要です。`f = +` は関数名の呼び出しだけで加算します。
 
-[ローカル関数のサンプル](examples/local-functions.hst) を `node cli.mjs examples/local-functions.hst` で実行できます。
+[ローカル関数のサンプル](examples/local-functions.nyan) を `node cli.mjs examples/local-functions.nyan` で実行できます。
 
 ## ガード付き関数定義
 
@@ -303,7 +303,7 @@ _ positiveOrZero = 0
 absolute | dup; < 0 = 0 - | otherwise = nop
 ```
 
-[実行可能なサンプル](examples/guards.hst) を `node cli.mjs examples/guards.hst` で試せます。
+[実行可能なサンプル](examples/guards.nyan) を `node cli.mjs examples/guards.nyan` で試せます。
 
 ## case式
 
@@ -334,7 +334,7 @@ classify = case
 
 分岐行はインデントを揃えて記述します。ガードの継続行は最初の `|` に揃えることもできます。インデントが戻る位置、外側の閉じ括弧、または明示的な `end` でcaseを終了します。同じ行で後続の処理を書く場合は `end` または括弧で境界を明示します。例えば `3; (case -> x then x + 1 end) print` は `4` を表示します。各分岐のパターン変数やローカル宣言はcaseの外に漏れません。分岐内の `_n`・`$n` は、その分岐の節で束縛します。
 
-[caseの実行例](examples/case.hst) は `node cli.mjs examples/case.hst` で試せます。
+[caseの実行例](examples/case.nyan) は `node cli.mjs examples/case.nyan` で試せます。
 
 ## 代数的データ型（ADT）
 
@@ -678,10 +678,10 @@ main =
 ## CLIとREPL
 
 ```powershell
-node cli.mjs examples/demo.hst --stack
-node cli.mjs examples/demo.hst --eval "8 factorial"
-node cli.mjs --check examples/demo.hst
-node cli.mjs --types examples/demo.hst
+node cli.mjs examples/demo.nyan --stack
+node cli.mjs examples/demo.nyan --eval "8 factorial"
+node cli.mjs --check examples/demo.nyan
+node cli.mjs --types examples/demo.nyan
 node cli.mjs --type "0 [1 2 3] {+} each"
 ```
 
@@ -700,12 +700,12 @@ node cli.mjs --type "0 [1 2 3] {+} each"
 REPLの出力はスタック全体です。`[[1 2]]` はリスト1個がスタックに載った状態です。1行の定義、1ブロック、またはファイル読み込みで同名の既存定義を置き換えます。複数節は同じブロックに書いてください。`:load` のパスは空白があっても引用符なしで指定します。
 
 ```text
-hst> :{
+nyanco> :{
 ...> 0 fact = 1
 ...> n fact = n * ((n - 1) fact)
 ...> :}
 Defined.
-hst> 6 fact
+nyanco> 6 fact
 [720]
 ```
 
@@ -721,7 +721,7 @@ hst> 6 fact
 
 ```javascript
 import { VM, compile } from './language.mjs';
-const program = compile('x square = x * x', 'sample.hst');
+const program = compile('x square = x * x', 'sample.nyan');
 const vm = new VM(program);
 console.log(vm.evaluate('3 + 2 square')); // [7]
 ```
@@ -762,7 +762,7 @@ exact = .x
 
 `| 'r` がある型は追加フィールドを許し、省略した型は指定したフィールドだけを持つ閉じたrecordです。これは部分型付けではありません。例えば同じリストの要素には同じrecord型が必要です。
 
-実行例: `node cli.mjs examples/records.hst`。ネイティブ化: `node cli.mjs examples/records.hst --build native/records.exe`。
+実行例: `node cli.mjs examples/records.nyan`。ネイティブ化: `node cli.mjs examples/records.nyan --build native/records.exe`。
 
 
 ### 括弧と節の例（0.23）
@@ -827,7 +827,7 @@ render = describe
 
 REPLでは `:{` / `:}` で宣言を入力し、クラス宣言後にinstanceを追加できます。`:words` は公開メソッド名を表示します。
 
-[サンプル](examples/type-classes.hst): `node cli.mjs examples/type-classes.hst`。Go生成・ビルドは `node cli.mjs examples/type-classes.hst --build native/type-classes.exe` です。
+[サンプル](examples/type-classes.nyan): `node cli.mjs examples/type-classes.nyan`。Go生成・ビルドは `node cli.mjs examples/type-classes.nyan --build native/type-classes.exe` です。
 
 
 ## ADTの演算子を実装する（0.25）
@@ -893,7 +893,7 @@ instance vector combine where
 
 同じ演算子を複数のクラスに所属させることはできません。演算子を宣言するクラスには、上表の演算子だけを記述し、各演算子の型を上表の形で指定します。型引数付きのinstanceも前節と同じように定義できます。`::`（Push）や任意の新しい演算子記号の定義には未対応です。
 
-[サンプル](examples/operator-classes.hst)は `node cli.mjs examples/operator-classes.hst` で実行できます。Go生成でも型に応じたinstanceの関数を直接呼び出し、実行時の評価スタックは追加しません。
+[サンプル](examples/operator-classes.nyan)は `node cli.mjs examples/operator-classes.nyan` で実行できます。Go生成でも型に応じたinstanceの関数を直接呼び出し、実行時の評価スタックは追加しません。
 
 
 ## 範囲演算子（0.27）
@@ -1016,7 +1016,7 @@ main =
 
 `walk = each` も多相的に推論されます。表示される `'c 'a each` 制約は「コンテナ型 `'c` の要素型が `'a`」という対応関係を表します。`range` の要素型は `num`、`['a]` の要素型は `'a` です。範囲は `(1 ..= 5)` のように表示し、端点と終端を含むかどうかを保持します。
 
-[実行可能なサンプル](examples/generic-instances.hst)を用意しています。
+[実行可能なサンプル](examples/generic-instances.nyan)を用意しています。
 
 
 ## 代数的エフェクト（0.32）
@@ -1055,7 +1055,7 @@ main =
 
 Go生成ではgoroutineで中断中の呼び出しを保持し、操作の引数・再開値・完了結果をchannelで受け渡します。ソース言語の評価スタックは生成しません。中断・例外時も停止中の計算を終了させます。
 
-[実行例](examples/effects.hst): `node cli.mjs examples/effects.hst`
+[実行例](examples/effects.nyan): `node cli.mjs examples/effects.nyan`
 
 
 ## 戻らない戻り型 !（0.33）
@@ -1087,7 +1087,7 @@ n reciprocal = 1 / n
 
 この関数の正常な戻り型は `num` です。失敗する分岐は `num` を生成する必要がありません。ハンドラは `!` の操作を処理して、計算全体としては通常の値を返せます。Go生成も同じ分岐と打ち切りを保ち、評価スタックは導入しません。
 
-[サンプル](examples/bottom.hst): `node cli.mjs examples/bottom.hst`
+[サンプル](examples/bottom.nyan): `node cli.mjs examples/bottom.nyan`
 
 
 ## 後置型クラスと型引数付きeffect（0.34）
@@ -1134,7 +1134,7 @@ effect 'a fail : 'a -> !
 
 未宣言・重複・未使用の型引数は拒否します。型引数のない既存のeffectも引き続き使用できます。単発継続、deep handler、未処理操作の実行時エラーという規則は変わりません。
 
-[実行可能なサンプル](examples/polymorphic-effects.hst)を追加しています。
+[実行可能なサンプル](examples/polymorphic-effects.nyan)を追加しています。
 
 
 ## エフェクト行（0.35）
@@ -1181,7 +1181,7 @@ main =
 
 `main`やREPLに空の行は強制しません。未処理操作を禁止したい関数に `/ {}` を指定してください。型表示は従来のスタック接頭辞 `..s` と区切り `--` を維持し、後ろに行を表示します。Go生成でも同じ静的検査を行います。
 
-[実行例](examples/effect-rows.hst): `node cli.mjs examples/effect-rows.hst`
+[実行例](examples/effect-rows.nyan): `node cli.mjs examples/effect-rows.nyan`
 
 
 ## handleの結果列（0.36）
@@ -1257,4 +1257,4 @@ instance 'c 'a each => ('c 'a 'b lmap) each where
 
 instanceの対象にはコンテナ型だけを書き、要素型は `item` で指定します。既存の`each`での要素型の省略規則も維持しています。前提制約の引数は型変数で、instanceのheadに現れる必要があります。
 
-[関連型とlmapの実行例](examples/associated-types.hst)
+[関連型とlmapの実行例](examples/associated-types.nyan)

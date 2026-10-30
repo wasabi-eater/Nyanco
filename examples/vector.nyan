@@ -1,0 +1,9 @@
+-- Nyanco 0.38 prefix
+main =
+  [0, 1, 2]; push 3; push 4; print;
+  [1, 2] -> original;
+  print (push original 3);
+  print original;
+  print (toVector (take (map (1 ..= 8) {* 2}) 3));
+  print (vfilter [1, 2, 3, 4] {_ % 2 == 0});
+  print ([1, 2, 3] with {.[1] ! + 10})

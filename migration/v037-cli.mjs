@@ -9,18 +9,18 @@ import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression } from './v037-adapter.mjs';
 import { checkExpression } from './v037-types.mjs';
 
-const help = `HaskStack 0.34.0 — statically typed stack language
+const help = `Nyanco 0.34.0 — statically typed stack language
 Usage:
   node cli.mjs                       Interactive REPL
-  node cli.mjs program.hst           Execute main
-  node cli.mjs program.hst --stack   Execute main and show final stack
+  node cli.mjs program.nyan           Execute main
+  node cli.mjs program.nyan --stack   Execute main and show final stack
   node cli.mjs --eval "2 + 3"         Evaluate and show final stack
-  node cli.mjs program.hst --eval "5 factorial"
-  node cli.mjs --check program.hst   Check syntax and types (no execution)
-  node cli.mjs --types program.hst   Show inferred function stack effects
+  node cli.mjs program.nyan --eval "5 factorial"
+  node cli.mjs --check program.nyan   Check syntax and types (no execution)
+  node cli.mjs --types program.nyan   Show inferred function stack effects
   node cli.mjs --type "dup"          Infer an expression without executing it
-  node cli.mjs program.hst --emit-go main.go   Transpile to standalone Go
-  node cli.mjs program.hst --build program.exe Build a native executable
+  node cli.mjs program.nyan --emit-go main.go   Transpile to standalone Go
+  node cli.mjs program.nyan --build program.exe Build a native executable
   node cli.mjs --help
 REPL: :help, :quit, :stack, :clear, :words, :type EXPR, :load PATH, :{ ... :}
 `;
@@ -43,8 +43,8 @@ async function repl() {
     vm.definitions = program.definitions;
     try { vm.execute([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('HaskStack 0.34.0 — static types; :type EXPR for inference\n');
-  rl.setPrompt('hst> '); if (stdin.isTTY) rl.prompt();
+  stdout.write('Nyanco 0.34.0 — static types; :type EXPR for inference\n');
+  rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of rl) {
     const input = line.trim();
     try {
@@ -74,7 +74,7 @@ async function repl() {
         stdout.write(format(stack) + '\n');
       }
     } catch (error) { stdout.write(`Error: ${error.message}\n`); }
-    rl.setPrompt(block === null ? 'hst> ' : '...> '); if (stdin.isTTY && !rl.closed) rl.prompt();
+    rl.setPrompt(block === null ? 'nyanco> ' : '...> '); if (stdin.isTTY && !rl.closed) rl.prompt();
   }
   if (block !== null) stdout.write('Error: unfinished definition block (expected :})\n');
   rl.close();
@@ -126,7 +126,7 @@ async function main() {
     const source=transpileGo(program,{expression:expression ?? 'main',showStack:showStack || expression!==undefined});
     if(emitGo) { await writeFile(emitGo,source,'utf8');stdout.write(`Go source: ${emitGo}\n`); }
     if(build) {
-      const temp=await mkdtemp(join(dirname(build),'.haskstack-build-'));
+      const temp=await mkdtemp(join(dirname(build),'.nyanco-build-'));
       try {
         const goFile=join(temp,'main.go'),binary=join(temp,'program.exe');
         await writeFile(goFile,source,'utf8');

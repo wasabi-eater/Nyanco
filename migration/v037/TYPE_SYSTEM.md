@@ -39,9 +39,9 @@ makeAdder : 'a add => ..s 'a -- ..s { ..s1 'a -- ..s1 'a }
 ## 型を見る
 
 ```powershell
-node cli.mjs --types examples/typed.hst
+node cli.mjs --types examples/typed.nyan
 node cli.mjs --type "dup"
-node cli.mjs --check examples/typed.hst
+node cli.mjs --check examples/typed.nyan
 ```
 
 REPLでは `:type dup`、`:type square` などを使います。式の型表示は、必要な入力を含む一般的なスタック効果を推論するため、現在スタックが空でも `:type (+)` と入力できます。実行する `(+ )` は値が2個必要なので、空スタックなら型エラーです。

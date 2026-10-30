@@ -52,7 +52,7 @@ main =
   handle {handle {[1].[0.5]} {:}} {exn: {-> msg k; 42}}; print;
   handle {exn "explicit"} {exn: {-> msg k; print msg}}`);
  const output=[],vm=new VM({...p,output:s=>output.push(s)});vm.evaluate('main');
- const dir=mkdtempSync(join(tmpdir(),'hst-index-'));
+ const dir=mkdtempSync(join(tmpdir(),'nyanco-index-'));
  try {
   const source=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(source,transpileGo(p));
   const build=spawnSync('go',['build','-o',exe,source],{encoding:'utf8',windowsHide:true,timeout:120000,env:{...process.env,CGO_ENABLED:'0',GOWORK:'off',GO111MODULE:'off'}});

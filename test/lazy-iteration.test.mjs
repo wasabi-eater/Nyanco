@@ -76,7 +76,7 @@ test('native lazy streams, custom each, effects and early abort agree with inter
   print "created"; each ys {print}; print (toList ys);
   handle {each (fromYield {yield 1; print "unreachable"}) {drop; exn "stop"}} {exn: {-> msg k; print msg}};
   print (toList (fromYield {each (fromYield {yield 1; yield 2}) {+ 10; yield}}))`;
- const {output}=run(source),p=compile(source),dir=mkdtempSync(join(tmpdir(),'hst-stream-'));
+ const {output}=run(source),p=compile(source),dir=mkdtempSync(join(tmpdir(),'nyanco-stream-'));
  try {
   const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));
   const built=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(built.status,0,built.stderr);

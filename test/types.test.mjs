@@ -76,7 +76,7 @@ test('type annotations are checked, including polymorphism and stack signatures'
 test('annotation constraints survive declaration merges and restrict callers',()=>{
   const p=compile('id : num -> num\nx id = x');
   assert.throws(()=>run('True id',p),StaticTypeError);
-  assert.throws(()=>compile('main = True id','next.hst',p.definitions),StaticTypeError);
+  assert.throws(()=>compile('main = True id','next.nyan',p.definitions),StaticTypeError);
 });
 test('quotation annotation syntax supports lists and effects',()=>{
   const p=compile('f : [num] -> [num]\nf = {+ 1} map\ninc : () -> {num -> num}\ninc = {+ 1}\napply = call');
@@ -105,17 +105,17 @@ test('type inference is read-only and works with every builtin',()=>{
   assert.equal(vm.globals.size,0);
 });
 test('source locations are included in static errors',()=>{
-  assert.throws(()=>compile('main = 1 + True','bad.hst'),/bad.hst:1:10: Type error/);
+  assert.throws(()=>compile('main = 1 + True','bad.nyan'),/bad.nyan:1:10: Type error/);
 });
 test('global quotations do not hide dependencies on redefined functions',()=>{
   const vm=new VM(compile('f = 1'));vm.evaluate('{f} -> q;');
-  assert.throws(()=>compile('g = (q call) + 1\nf = True','redefined.hst',new Map(),{globals:vm.globals}),StaticTypeError);
+  assert.throws(()=>compile('g = (q call) + 1\nf = True','redefined.nyan',new Map(),{globals:vm.globals}),StaticTypeError);
 });
 test('global rebinding cannot invalidate already-checked functions',()=>{
   const vm=new VM(compile('f = 1\ng = f + 1'));
   assert.throws(()=>vm.evaluate('True -> f; g'),StaticTypeError);
   const second=new VM();second.evaluate('{} -> q;');
-  second.definitions=compile('g = 1 q call','g.hst',new Map(),{globals:second.globals}).definitions;
+  second.definitions=compile('g = 1 q call','g.nyan',new Map(),{globals:second.globals}).definitions;
   assert.throws(()=>second.evaluate('{not} -> q; g'),StaticTypeError);
   assert.deepEqual(second.evaluate('g'),[1]);
 });
@@ -124,7 +124,7 @@ test('CLI exposes inference, static checking, and error exit codes',()=>{
   const type=cli(['--type','dup']);assert.equal(type.status,0);assert.equal(type.stdout.trim(),"..s 'a -- ..s 'a 'a");
   const silent=cli(['--type','"NOT_PRINTED" print']);assert.equal(silent.status,0);assert.doesNotMatch(silent.stdout,/NOT_PRINTED/);
   const bad=cli(['--eval','"NOT_PRINTED" print 1 + True']);assert.equal(bad.status,1);assert.equal(bad.stdout,'');assert.match(bad.stderr,/Type error/);
-  const path=fileURLToPath(new URL('../examples/demo.hst',import.meta.url));
+  const path=fileURLToPath(new URL('../examples/demo.nyan',import.meta.url));
   const checked=cli(['--check',path]);assert.equal(checked.status,0);assert.match(checked.stdout,/Types OK/);assert.doesNotMatch(checked.stdout,/Squares:/);
   const types=cli(['--types',path]);assert.equal(types.status,0);assert.match(types.stdout,/factorial : \.\.s num -- \.\.s num/);
   const repl=cli([], 'x same = x\n:type same\n:type "NOT_PRINTED" print\n3 -> x;\nTrue -> x;\nx\n:q\n');

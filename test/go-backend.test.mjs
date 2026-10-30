@@ -12,7 +12,7 @@ const root=fileURLToPath(new URL('..',import.meta.url));
 const goAvailable=spawnSync('go',['version'],{windowsHide:true}).status===0;
 const env={...process.env,CGO_ENABLED:'0',GOTOOLCHAIN:'local',GOWORK:'off',GO111MODULE:'off'};
 function native(program,options={}) {
-  const dir=mkdtempSync(join(tmpdir(),'haskstack-go-test-'));
+  const dir=mkdtempSync(join(tmpdir(),'nyanco-go-test-'));
   try {
     const file=join(dir,'main.go'),exe=join(dir,'main.exe');
     const generated=transpileGo(program,options);
@@ -34,12 +34,12 @@ test('Go emission statically checks before generating executable code',()=>{
   const source=transpileGo(compile('main = 1'),{showStack:true});
   assert.match(source,/package main/);assert.match(source,/func\(m \*Machine\) fn\d+/);
   assert.doesNotMatch(source,/exec\.Command|node\.exe|os\/exec|type Stack|\.push\(|\.pop\(|\.take\(/);
-  assert.throws(()=>transpileGo(compile('main = 1 + True','bad.hst',new Map(),{checkTypes:false})),/Type error/);
+  assert.throws(()=>transpileGo(compile('main = 1 + True','bad.nyan',new Map(),{checkTypes:false})),/Type error/);
   assert.throws(()=>transpileGo(compile('main = 1'),{expression:'unknown'}),/Unknown word/);
 });
 
 test('all example programs agree with the interpreter as standalone executables',{skip:!goAvailable},()=>{
-  for(const name of readdirSync(join(root,'examples')).filter(n=>n.endsWith('.hst'))) {
+  for(const name of readdirSync(join(root,'examples')).filter(n=>n.endsWith('.nyan'))) {
     const program=compile(readFileSync(join(root,'examples',name),'utf8'),name);
     const options={showStack:true},result=native(program,options);
     assert.equal(result.status,0,`${name}: ${result.stderr}`);
@@ -88,8 +88,8 @@ test('native errors are nonzero and retain source locations',{skip:!goAvailable}
     ['main = {True} {} while','Execution step limit'],
     ['forever = forever\nmain = forever','Call depth limit'],
   ]) {
-    const result=native(compile(source,'failure.hst'));
-    assert.equal(result.status,1,result.stderr);assert.match(result.stderr,new RegExp(message));assert.match(result.stderr,/failure\.hst:/);
+    const result=native(compile(source,'failure.nyan'));
+    assert.equal(result.status,1,result.stderr);assert.match(result.stderr,new RegExp(message));assert.match(result.stderr,/failure\.nyan:/);
   }
 });
 
@@ -240,7 +240,7 @@ main =
 });
 
 test('CLI emits Go without a toolchain and rejects invalid output combinations',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'haskstack-cli-go-'));
+  const dir=mkdtempSync(join(tmpdir(),'nyanco-cli-go-'));
   try {
     const file=join(dir,'main.go');
     const cli=args=>spawnSync(process.execPath,[join(root,'migration','v037-cli.mjs'),...args],{encoding:'utf8',env:{...process.env,PATH:''},windowsHide:true});
@@ -252,10 +252,10 @@ test('CLI emits Go without a toolchain and rejects invalid output combinations',
 });
 
 test('CLI builds a runnable executable and supports custom entry expressions',{skip:!goAvailable},()=>{
-  const dir=mkdtempSync(join(tmpdir(),'haskstack-cli-build-'));
+  const dir=mkdtempSync(join(tmpdir(),'nyanco-cli-build-'));
   try {
     const exe=join(dir,'with spaces.exe'),file=join(dir,'main.go');
-    const result=spawnSync(process.execPath,[join(root,'migration','v037-cli.mjs'),join(root,'examples/demo.hst'),'--eval','6 factorial','--emit-go',file,'--build',exe],{encoding:'utf8',timeout:120000,windowsHide:true});
+    const result=spawnSync(process.execPath,[join(root,'migration','v037-cli.mjs'),join(root,'examples/demo.nyan'),'--eval','6 factorial','--emit-go',file,'--build',exe],{encoding:'utf8',timeout:120000,windowsHide:true});
     assert.equal(result.status,0,result.stderr);
     const run=spawnSync(exe,[],{encoding:'utf8',env:{...process.env,PATH:''},windowsHide:true});
     assert.equal(run.status,0,run.stderr);assert.equal(run.stdout,'[720]\n');

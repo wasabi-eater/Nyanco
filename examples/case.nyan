@@ -1,0 +1,33 @@
+-- Nyanco 0.38 prefix
+
+data fuga  = Fuga num
+
+runFuga =
+  -> (Fuga x), x
+
+absolute =
+  case
+    -> n | ((n) < (0)) then ((0) - (n))
+    ->  then nop
+  end
+
+absoluteStack =
+  case
+    ->  | dup, ( < (0)) then ((0) - )
+    ->  then nop
+  end
+
+absoluteGuard | dup, ( < (0)) =
+  ((0) - )
+
+absoluteGuard | True =
+  nop
+
+sum =
+  case
+    -> [] then 0
+    -> (xs :: x) then ((x) + ((xs, sum)))
+  end
+
+main =
+  -7, absolute, print, -8, absoluteStack, print, 9, absoluteGuard, print, 42, Fuga, runFuga, print, [1, 2, 3], sum, print, [10, 20], -> [a b], (((a) + (b))), print

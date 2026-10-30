@@ -1,0 +1,18 @@
+-- Nyanco 0.38 prefix
+
+data box 'a = Box 'a
+
+instance add 'a => add (box 'a) where
+  + (Box x) (Box y) =
+    (((x) + (y))), Box
+
+instance streem (box 'a) where
+  item : 'a
+  each (Box x) q =
+    x, q, call
+
+walk =
+  each
+
+main =
+  ((((2, Box)) + ((3, Box)))), print, 10, (2, Box), {( + )}, walk, print, 0, (((1) ..= (5))), {( + )}, walk, print, [], (((5) .. (1))), {Push}, each, print

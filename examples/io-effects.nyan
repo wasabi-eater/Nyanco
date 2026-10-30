@@ -1,0 +1,13 @@
+-- Nyanco 0.38 prefix
+-- I/O effects, version 0.40.
+quiet : -> / {}
+quiet = handle {print "not shown"} {put: {-> text k; resume k}}
+
+main : -> / {io}
+main =
+  print "default output";
+  quiet;
+  [] -> mut logs;
+  handle {print 42; print True} {put: {-> text k; logs ! (:: text); resume k}};
+  print logs;
+  handle {print "forwarded"} {put: {-> text k; put text; resume k}}

@@ -73,6 +73,6 @@ main =
   print (toVector (fromYield @a {yield@a 1; yield@a 2}));
   print (toVector (map [1,2,3] @a {when ($ == 2) {break@a}; * 2}));
   print (handle @h {ask@h; + 1} {ask: {-> k; resume zero k}})`;
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-block-label-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-block-label-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });

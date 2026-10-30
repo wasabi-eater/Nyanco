@@ -58,6 +58,6 @@ counter mut x = {x ! _ + 1; x};;
 main = print (fib 0 1); print (flip 2 3); print (-7 // 3);
   counter 0 -> c; print (call c); print (call c);
   f mut x = x ! _ * _; x;; print (f 4)`;
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-updates-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-updates-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });

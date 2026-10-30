@@ -97,7 +97,7 @@ test('native output-only and nested dispatch agrees with interpreter without a l
   print (map [1,2] {drop; get}; head; + 3);
   print (toList (smap [1,2] {drop; get}); head; + 4);
   print (toList (fromYield {produce}); head; + 5)`;
- const {p,output}=run(body,'produce = yield get\n'),dir=mkdtempSync(join(tmpdir(),'hst-result-dispatch-'));
+ const {p,output}=run(body,'produce = yield get\n'),dir=mkdtempSync(join(tmpdir(),'nyanco-result-dispatch-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe'),code=transpileGo(p);writeFileSync(file,code);
   const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);
   const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');

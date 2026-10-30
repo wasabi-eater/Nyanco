@@ -48,10 +48,10 @@ test('interpolation infers show constraints and effects and rejects malformed or
  assert.throws(()=>run('main = "{} {}" 1'),/underflow/i);
  for(const body of ['nop','1,2','+'])assert.throws(()=>compile(`main = "{${body}}"`),/consume 0.*produce 1|underflow|unify/i);
  for(const source of ['"{1"','"x}"',String.raw`"\q"`])assert.throws(()=>lex(source),/Unterminated|Unescaped|Invalid/);
- assert.throws(()=>compile('main = "value={missingName}"','interpolation.hst'),/interpolation.hst:1:16:.*Unknown word/);
+ assert.throws(()=>compile('main = "value={missingName}"','interpolation.nyan'),/interpolation.nyan:1:16:.*Unknown word/);
  assert.deepEqual(run('main = handle {"{exn "no"}"} {exn: {-> message k; "caught"}}').stack,['caught']);
 });
 test('native interpolation agrees with VM including custom show, nested syntax and effects',()=>{
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-interpolation-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-interpolation-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });

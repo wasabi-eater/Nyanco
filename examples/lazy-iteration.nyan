@@ -1,0 +1,13 @@
+-- Nyanco 0.38 prefix
+data box 'a = Box 'a
+instance streem (box 'a) where
+    item : 'a
+    each (Box x) f = x; call f
+
+main =
+    print (toVector (Box "hello"));
+    filter (map (1 ..= 5) {* 2}) {> 5} -> xs;
+    print (toVector xs);
+    0; each xs {+}; print;
+    fromYield {yield 10; yield 20; yield 30} -> generated;
+    print (toVector generated)

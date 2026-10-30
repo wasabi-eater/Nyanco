@@ -328,7 +328,7 @@ test('list evaluation preserves effects and shares execution limits', () => {
   assert.deepEqual(output,['hello']);
   assert.throws(()=>new VM({maxSteps:3}).evaluate('[1 2 3]'), /step limit/);
   assert.throws(()=>new VM({...compile('loop = [loop]'),maxDepth:10}).evaluate('loop'), /depth limit/);
-  assert.throws(()=>vm.evaluate('[1 / 0]', [], 'list.hst'), /list.hst:1:4: Division by zero/);
+  assert.throws(()=>vm.evaluate('[1 / 0]', [], 'list.nyan'), /list.nyan:1:4: Division by zero/);
 });
 test('dip hides and restores top value', () => assert.deepEqual(run('2 99 { + 3 } dip'),[5,99]));
 test('comments and escaped strings', () => assert.deepEqual(run('"a\\n--b" -- comment\n 2'),['a\n--b',2]));
@@ -338,7 +338,7 @@ test('multiline declaration and annotation', () => {
   assert.deepEqual(run('main',p.definitions),[25]);
 });
 test('syntax errors have source locations', () => {
-  assert.throws(()=>parseExpression('{ 1','broken.hst'),/broken.hst:1:1: Missing/);
+  assert.throws(()=>parseExpression('{ 1','broken.nyan'),/broken.nyan:1:1: Missing/);
   for (const s of [']','"oops','[1 }']) assert.throws(()=>parseExpression(s),LanguageError);
   assert.throws(()=>run('[1 +]'), /underflow/);
   for (const s of ['x x f = x','0 f = 1\nf = 2','dup = 2','f : num','[x x] f = x']) assert.throws(()=>compile(s),LanguageError);
@@ -363,7 +363,7 @@ test('redefinition is atomic and leaves prior map intact', () => {
   assert.deepEqual(run('f',old),[1]);
 });
 test('demo output', () => {
-  const file=new URL('../examples/demo.hst',import.meta.url),output=[];
+  const file=new URL('../examples/demo.nyan',import.meta.url),output=[];
   new VM({...compile(readFileSync(file,'utf8')),output:s=>output.push(s)}).evaluate('main');
   assert.deepEqual(output,['Squares:','[1, 4, 9, 16, 25]','Factorial 6:','720','Even numbers in 1..10:','[2, 4, 6, 8, 10]','Sum 1..100:','5050','Closure (10 + 7):','17']);
 });
@@ -417,11 +417,11 @@ test('REPL definitions, block clauses and stack rollback', () => {
   assert.match(result.stdout,/\[10\]/);
 });
 test('file execution, syntax check, eval with definitions, and REPL load', () => {
-  const path=fileURLToPath(new URL('../examples/demo.hst',import.meta.url));
+  const path=fileURLToPath(new URL('../examples/demo.nyan',import.meta.url));
   assert.equal(cli(['--check',path]).status,0);
   assert.equal(cli([path,'--stack']).stdout.trim().split('\n').at(-1),'[]');
   assert.equal(cli([path,'--eval','5 factorial']).stdout.trim(),'[120]');
   assert.match(cli([],`:load ${path}\n5 square\n:q\n`).stdout,/\[25\]/);
-  const fizz=cli([fileURLToPath(new URL('../examples/fizzbuzz.hst',import.meta.url))]);
+  const fizz=cli([fileURLToPath(new URL('../examples/fizzbuzz.nyan',import.meta.url))]);
   assert.equal(fizz.status,0); assert.match(fizz.stdout,/"1", "2", "Fizz", "4", "Buzz"/);
 });

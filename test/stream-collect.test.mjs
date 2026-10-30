@@ -56,7 +56,7 @@ test('value rendering uses comma vectors and prefix constructors recursively',()
  assert.equal(format(run('main = Some [[1,2], []]').stack[0]),'(Some [[1, 2], []])');
 });
 test('native collectors match VM including class instances, key effects and break',()=>{
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-collect-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-collect-'));
  try {const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });
 

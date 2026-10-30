@@ -1,0 +1,8 @@
+-- Nyanco 0.38 prefix
+main =
+    [10,20,30] -> x;
+    print x.[1];
+    print x.?[1];
+    print x.?[9];
+    handle {x.[9]} {exn: {-> message k; print message; 0}};
+    print

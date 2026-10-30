@@ -18,7 +18,7 @@ export function legacyType(text,definitions=new Map()){
   return out;
 }
 function compileLegacy(source,file,previous=new Map(),options={}){
-  if(source.trimStart().startsWith(marker))return current.compile(source,file,previous,options);
+  if((source.trimStart().startsWith(marker)||source.trimStart().startsWith('-- HaskStack 0.38 prefix')))return current.compile(source,file,previous,options);
   const legacy=old.compile(source,file,histories.get(previous)||new Map(),{...options,checkTypes:false});
   const snapshot=structuredClone({entries:[...legacy.definitions],props:{...legacy.definitions}}),definitions=Object.assign(new Map(snapshot.entries),snapshot.props),dataTypes=legacy.definitions.dataTypes;
   if(definitions.classes.has('each')){const c=definitions.classes.get('each');definitions.classes.delete('each');c.name='streem';definitions.classes.set('streem',c);}

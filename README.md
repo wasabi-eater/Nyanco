@@ -1,6 +1,6 @@
-# HaskStack 0.56 — 外側のスタックcapture
+# Nyanco 0.56 — 外側のスタックcapture
 
-Haskell風の型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つ小さな言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
+型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
 
 0.40では複数操作を持つeffectグループを追加しました。組み込み`io`は`read`と`put`からなり、`print`は`put`を使用します。
 
@@ -194,15 +194,24 @@ main = handle
 
 ## CLI・REPL・Go生成
 
+言語名は**Nyanco（ニャンコ）**、ソースファイルの拡張子は`.nyan`です。プロジェクト内で`npm link`を実行すると、`nyanco`コマンドを利用できます。Windowsではインストールせずに`.\nyanco.cmd`でも実行できます。
+
+```sh
+nyanco examples/demo.nyan
+nyanco --check examples/demo.nyan
+nyanco examples/demo.nyan --build native/demo.exe
+```
+
+
 ```text
 node cli.mjs
-node cli.mjs examples/prefix.hst
+node cli.mjs examples/prefix.nyan
 node cli.mjs --eval "sum [1, 2, 3]"   （sumを定義したファイルを併用）
 node cli.mjs --eval "3 4"
 node cli.mjs --type "each"
-node cli.mjs --check examples/prefix.hst
-node cli.mjs --types examples/prefix.hst
-node cli.mjs examples/prefix.hst --emit-go native/prefix.go --build native/prefix.exe
+node cli.mjs --check examples/prefix.nyan
+node cli.mjs --types examples/prefix.nyan
+node cli.mjs examples/prefix.nyan --emit-go native/prefix.go --build native/prefix.exe
 ```
 
 REPLは`:type`、`:stack`、`:clear`、`:words`、`:load PATH`、`:q`を使えます。複数行定義は`:{`と`:}`で囲みます。警告はstderrへ出力し、通常の結果はstdoutへ出力します。
@@ -214,8 +223,8 @@ Go生成後はNode.js不要です。生成コードには言語の評価スタ�
 0.37のバックアップZIPはワークスペースの`backups/`にあります。旧サンプル24個は新構文へ変換済みで、変更前との出力一致を検証しています。
 
 ```text
-node migrate-v037.mjs old.hst new.hst
-node cli.mjs --check new.hst
+node migrate-v037.mjs old.nyan new.nyan
+node cli.mjs --check new.nyan
 ```
 
 移行補助は旧ソースを解析して順序を明示する`,`などへ変換し、新しい型検査を通してから保存します。コメントや元のレイアウトは保持しません。出力を確認してから使用してください。旧parserは`migration/v037/`に隔離し、通常のコンパイル・実行には読み込みません。
@@ -277,7 +286,7 @@ CLI・REPL・VM・native実行には最外側の標準I/Oハンドラーがあ�
 
 REPLのプロンプト、警告、型表示や`--stack`の表示は実行環境の表示であり、言語のハンドラーの対象外です。
 
-[出力の実行例](examples/io-effects.hst)・[stateの実行例](examples/effect-groups.hst)
+[出力の実行例](examples/io-effects.nyan)・[stateの実行例](examples/effect-groups.nyan)
 
 ## vectorのインデックスアクセス（0.41）
 
@@ -298,7 +307,7 @@ safe = handle {[10,20].[9]} {exn: {-> message k; 0}}
 
 この例は0を返します。`exn`の継続は再開できず、ハンドラーの結果がhandle全体の結果になります。未処理のexnは実行をエラーで終了します。`exn "message"`で明示的に例外を発生させることもできます。
 
-[実行例](examples/list-index.hst)
+[実行例](examples/list-index.nyan)
 
 ## optionを返すvectorアクセス（0.42）
 
@@ -368,7 +377,7 @@ main = toVector logged
 
 streamの型は`stream 要素型 { -> / エフェクト行 }`です。構築自体は純粋で、ブロックや元streamのエフェクトはeach・toVectorなどで走査した時に発生します。fromYieldはyieldだけを内部で処理し、他のエフェクトは走査時に外側へ伝えます。
 
-[実行例](examples/lazy-iteration.hst)
+[実行例](examples/lazy-iteration.nyan)
 
 ## break・ラベル付きエフェクト・mask（0.44）
 
@@ -424,7 +433,7 @@ maskの対象は操作名です。関数やブロックから外へ出てくる�
 
 `break@outer`は`mask break@outer {break}`に相当します。未処理のbreakや、maskで宛先を失った操作は実行エラーです。型推論は操作の宛先とmaskの深さを追跡するため、内側のハンドラーだけで処理済みとは見なしません。
 
-[実行例](examples/labeled-effects.hst)
+[実行例](examples/labeled-effects.nyan)
 
 ## streemクラスと列変換（0.45）
 
@@ -479,7 +488,7 @@ toVector (@mapped map [1,2,3] {
 
 遅延変換のブロックは1要素を消費して1値を返します。新設したvector版の述語・vflatMapブロックも同じです。既存のvmap・vfilter・eachが持つ周囲のスタックを引き継ぐ機能は維持しています。遅延変換は走査ごとに再実行され、結果をキャッシュしません。
 
-[実行例](examples/streem-transforms.hst)
+[実行例](examples/streem-transforms.nyan)
 
 
 ## 出力型からのinstance選択（0.46）
@@ -510,7 +519,7 @@ main = print origin; print emptyText; print (getZero; + 1)
 
 `zero`だけを実行したり、`zero; drop`と書いたりすると、対象型が決まらないため`Ambiguous class method`になります。instanceが一つしかなくても自動選択はしません。`:type zero`は実行しないため制約付きの型を表示できます。`{zero}`を作るだけなら実行時のinstance選択は不要です。
 
-関連型は引き続きinstanceの対象型から決まります。関連型の結果だけから対象型を逆算する規則や、instanceの重複を認める規則は追加していません。サンプルは`examples/result-dispatch.hst`です。
+関連型は引き続きinstanceの対象型から決まります。関連型の結果だけから対象型を逆算する規則や、instanceの重複を認める規則は追加していません。サンプルは`examples/result-dispatch.nyan`です。
 
 
 ## 複数代入・mutable引数・定義区切り（0.47）
@@ -579,7 +588,7 @@ r.x.y.[1] ! + 2  -- r := r with {.x.y.[1] ! + 2}
 
 immutableなコピー更新ではrecordフィールドやtuple要素の型を変えられます。listの要素型は均一のままで、mutable変数への再代入では変数全体の型も維持する必要があります。その他のrecordフィールドはrow polymorphismで保持します。
 
-サンプル: `examples/with-update.hst`。
+サンプル: `examples/with-update.nyan`。
 
 ## vectorとstream（0.49・破壊的変更）
 
@@ -620,7 +629,7 @@ vmap [1, 2, 3] {* 2}                  -- [2 4 6]
 
 各変換は引き続きstreem実装型を入力にでき、breakにも対応します。`each`や`fold`などの消費処理、`Push`・`::`・`++`の既存の値とパターンの意味は維持しています。新しいvector型と衝突するため、旧サンプルのユーザー定義型vectorはvec2へ改名しました。
 
-0.38〜0.48のソースは`node migrate-v048.mjs OLD.hst NEW.hst`で組み込み関数名を移行できます。元ファイルと既存の出力ファイルは上書きしません。独自のvector型を宣言している場合は、予約型との衝突を避けるため先に別名へ変更してください。
+0.38〜0.48のソースは`node migrate-v048.mjs OLD.nyan NEW.nyan`で組み込み関数名を移行できます。元ファイルと既存の出力ファイルは上書きしません。独自のvector型を宣言している場合は、予約型との衝突を避けるため先に別名へ変更してください。
 
 
 ### ループが処理するeffectの型表示
@@ -665,7 +674,7 @@ main = handle @outer {
 
 旧形式の`@name while ...`なども引き続き使えます。`mask break { ... }`はhandlerを一つ飛ばし、`mask break@a { ... }`はblockのラベルへ転送します。
 
-[実行例](examples/block-labels.hst)
+[実行例](examples/block-labels.nyan)
 
 
 ## streamの集約・整列（0.51）
@@ -697,7 +706,7 @@ sortBy [1, 3, 2] {0 -}                  -- [3, 2, 1]
 
 値の表示も現在の前置構文に合わせました。REPL・`show`・`print`・Go native実行で、vectorは`[1, 2, 3]`、コンストラクタは`(Some 1)`や`(Node (Leaf 1) (Leaf 2))`のように表示します。引数のない`None`などの表示はそのままです。
 
-[実行例](examples/stream-collect.hst)
+[実行例](examples/stream-collect.nyan)
 
 
 ## 文字列とshowクラス（0.52）
@@ -763,7 +772,7 @@ instanceは`show`を適用した値の型に対して選びます。デフォル
 
 REPLのstack表示と`print`は従来の汎用表示を維持します。任意の型を受け取るeffect handlerでも利用でき、カスタム表示を出力したい箇所では`print (show value)`と書けます。
 
-[実行例](examples/strings-show.hst)
+[実行例](examples/strings-show.nyan)
 
 
 ## 文字列補間（0.53）
@@ -800,7 +809,7 @@ toVector (powerset [1,2])         -- [[], [1], [2], [1, 2]]
 
 k=0では空vectorを1個返します。kが入力数を超える順列・通常の組み合わせは空streamです。負数・小数・安全な整数でないkは構築時にexnを発生させます。同じ値が複数の入力位置にあれば、同じ値の結果も複数回生成します。入力走査のbreakはそこまでの入力を採用し、結果を読む側のbreakは生成を終了します。
 
-[実行例](examples/combinatorics.hst)
+[実行例](examples/combinatorics.nyan)
 
 
 ## 標準のloopとiterate（0.55）
@@ -828,7 +837,7 @@ contは状態の個数・型を維持し、少なくとも生成する先頭の�
 
 これらは通常の標準関数として提供し、利用側で同名の関数を定義することもできます。
 
-[実行例](examples/iterate.hst)
+[実行例](examples/iterate.nyan)
 
 
 ## 外側のスタックcapture（0.56）

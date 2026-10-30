@@ -1,0 +1,7 @@
+-- Nyanco 0.38 prefix
+
+fizzbuzz n =
+  (((((n) % (15))) == (0))), {"FizzBuzz"}, {(((((n) % (3))) == (0))), {"Fizz"}, {(((((n) % (5))) == (0))), {"Buzz"}, {n, show}, if}, if}, if
+
+main =
+  1, 30, range, {fizzbuzz}, vmap, print

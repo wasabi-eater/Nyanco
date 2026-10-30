@@ -84,7 +84,7 @@ main =
   print (toList (@outer fromYield {yield 1; each (fromYield {yield@outer 2; yield 3}) {yield}}));
   handle {handle {handle {mask ask {mask ask {ask}}} {ask:{-> k; resume 3 k}}} {ask:{-> k; resume 2 k}}} {ask:{-> k; resume 1 k}}; print
 `;
- const {output}=run(source),p=compile(source),dir=mkdtempSync(join(tmpdir(),'hst-label-'));
+ const {output}=run(source),p=compile(source),dir=mkdtempSync(join(tmpdir(),'nyanco-label-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const built=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(built.status,0,built.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });
 

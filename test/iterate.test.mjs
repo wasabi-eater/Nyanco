@@ -24,6 +24,6 @@ test('standard loops and iterate support multiple state values and break in eith
  assert.throws(()=>compile('main = iterate {0} {"bad"}'),/unify|stack/i);
 });
 test('standard iterate lowers to native calls and supports lazy cancellation',()=>{
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-iterate-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-iterate-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr+result.stdout);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });

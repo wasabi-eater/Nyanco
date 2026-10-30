@@ -1,0 +1,15 @@
+-- Nyanco 0.38 prefix
+
+a : #(num string [num])
+
+a =
+  #(0, "Hoge", [])
+
+first =
+  .0
+
+unpack #(x y) =
+  x, y
+
+main =
+  a, print, a, .0, print, a, .1, print, a, .2, print, [#(1, "a"), #(2, "b")], {.1}, vmap, print, #(3, "hello"), unpack, print, print

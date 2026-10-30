@@ -1,0 +1,17 @@
+-- Nyanco 0.38 prefix
+
+effect fail : string -> !
+
+die : string -> !
+
+die =
+  fail
+
+reciprocal 0 =
+  "division by zero", die
+
+reciprocal n =
+  ((1) / (n))
+
+main =
+  4, reciprocal, print, {0, reciprocal}, {fail: ({-> message k, message, print, 0})}, handle, print

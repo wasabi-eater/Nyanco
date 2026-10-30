@@ -57,13 +57,13 @@ test('Go performs proven updates directly and matches the copying implementation
  ([1] -> xs; [xs] -> nested; print (push xs 2); print nested)`;
  const {p,out}=run(source),code=transpileGo(p),slow=transpileGo(p,{optimizeVectors:false});
  assert.match(code,/vectorAppend\(v\d+,v\d+,false,/);assert.doesNotMatch(slow,/vectorAppend\(v\d+,v\d+,false,/);
- const dir=mkdtempSync(join(tmpdir(),'hst-vector-'));
+ const dir=mkdtempSync(join(tmpdir(),'nyanco-vector-'));
  try{for(const [name,text] of [['fast',code],['copy',slow]]){const file=join(dir,name+'.go'),exe=join(dir,name+'.exe');writeFileSync(file,text);const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,out.join('\n')+'\n');}}finally{rmSync(dir,{recursive:true,force:true});}
 });
 
 test('prefix source migration preserves eager and lazy meanings without overwriting files',()=>{
- const dir=mkdtempSync(join(tmpdir(),'hst-vector-migrate-'));
- try{const input=join(dir,'old.hst'),output=join(dir,'new.hst');
+ const dir=mkdtempSync(join(tmpdir(),'nyanco-vector-migrate-'));
+ try{const input=join(dir,'old.nyan'),output=join(dir,'new.nyan');
   const source='main = map [1,2] {* 2}; toList (smap [2,3] {+ 1})';writeFileSync(input,source);
   const result=spawnSync(process.execPath,['migrate-v048.mjs',input,output],{encoding:'utf8',windowsHide:true});assert.equal(result.status,0,result.stderr);
   assert.equal(readFileSync(input,'utf8'),source);const converted=readFileSync(output,'utf8');assert.deepEqual(run(converted).stack,[[2,4],[3,4]]);

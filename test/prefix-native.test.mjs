@@ -52,7 +52,7 @@ main =
   handle {print "forward"} {put: {-> text k; put text; resume k}}`);
   const inputs=['日本語','second',''];
   const expected=[],vm=new VM({...program,input:()=>inputs.shift(),output:x=>expected.push(x),warning:()=>{}}),stack=vm.evaluate('main');expected.push(format(stack));
-  const dir=mkdtempSync(join(tmpdir(),'hst-prefix-'));
+  const dir=mkdtempSync(join(tmpdir(),'nyanco-prefix-'));
   try{
     const file=join(dir,'main.go'),exe=join(dir,'main.exe'),source=transpileGo(program,{showStack:true});
     assert.doesNotMatch(source,/type Stack|\*Stack|\.push\(|\.pop\(/);writeFileSync(file,source);

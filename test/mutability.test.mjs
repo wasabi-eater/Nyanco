@@ -106,7 +106,7 @@ test('CLI REPL supports mut declarations and reassignment', () => {
 test('function redefinition validates quotations stored in mutable cells', () => {
   const vm = new VM(compile('f = 1'));
   vm.evaluate('{f} -> mut q; (1 + (q call)) drop');
-  assert.throws(() => compile('f = True', 'changed.hst', vm.definitions, {globals:vm.globals}), /Cannot unify/);
+  assert.throws(() => compile('f = True', 'changed.nyan', vm.definitions, {globals:vm.globals}), /Cannot unify/);
 });
 
 test('file type checks never execute global initializers', () => {

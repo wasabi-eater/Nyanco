@@ -55,6 +55,6 @@ main = {x: {y: [#(1,2),#(3,4)]}, z: 7} -> mut r; r -> old;
  print (#(1,2) with {.0 = "s"}); print ([1,2] with {.[1] ! ($; *)});
  print ({x: 1,y: 2} with {.x = 10; .y ! + 5});
  handle {r.x.y.[9].0 := 5} {exn: {-> message k; print message}}; print r`;
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-with-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-with-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });

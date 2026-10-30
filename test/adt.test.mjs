@@ -86,12 +86,12 @@ test('constructor names and invalid ADT declarations are rejected atomically',()
     'data Bad =', 'data Bad = Good |', 'data Bad = Good | Good',
     'data Bad = Good "num"', 'Just = 1', '(x x Just) f = x',
     '(x Missing) f = x', 'Just f = 1', 'data Bad = Good (Maybe)',
-  ])assert.throws(()=>compile(source,'bad.hst',previous),undefined,source);
+  ])assert.throws(()=>compile(source,'bad.nyan',previous),undefined,source);
   assert.equal(previous.constructors.size,2);
   const vm=new VM({definitions:previous});
   assert.throws(()=>vm.evaluate('1 -> Just'),/constructor/i);
   assert.throws(()=>vm.evaluate('1 -> mut Nothing'),/pattern variable/);
-  assert.throws(()=>compile('data Other = Captured','bad.hst',previous,{globals:new Map([['Captured',1]])}),/already used/);
+  assert.throws(()=>compile('data Other = Captured','bad.nyan',previous,{globals:new Map([['Captured',1]])}),/already used/);
 });
 
 test('REPL definitions retain ADTs and inspect constructors',()=>{
@@ -105,9 +105,9 @@ test('REPL definitions retain ADTs and inspect constructors',()=>{
 
 test('ADT example executes and CLI types include constructors',()=>{
   const cli=args=>spawnSync(process.execPath,['migration/v037-cli.mjs',...args],{cwd:new URL('..',import.meta.url),encoding:'utf8'});
-  const executed=cli(['examples/adt.hst']);
+  const executed=cli(['examples/adt.nyan']);
   assert.equal(executed.status,0,executed.stderr);
   assert.equal(executed.stdout.trim(),'42\n0\n6\n[1, 0, 3]\nTrue\n(Some 7)');
-  const checked=cli(['--check','examples/adt.hst']);assert.equal(checked.status,0,checked.stderr);
-  const types=cli(['--types','examples/adt.hst']);assert.equal(types.status,0,types.stderr);assert.match(types.stdout,/Some : .*option/);
+  const checked=cli(['--check','examples/adt.nyan']);assert.equal(checked.status,0,checked.stderr);
+  const types=cli(['--types','examples/adt.nyan']);assert.equal(types.status,0,types.stderr);assert.match(types.stdout,/Some : .*option/);
 });

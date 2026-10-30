@@ -32,7 +32,7 @@ test('combinatorial streams enumerate positions, preserve order and handle edges
  assert.throws(()=>new VM({maxSteps:100}).evaluate('combinationsWithReplacement [1] 1000000000; toVector'),/step limit/);
 });
 test('Go combinatorial streams agree with VM including lazy cancellation and effects',()=>{
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-combinations-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-combinations-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });
 

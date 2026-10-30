@@ -3,7 +3,7 @@
 import * as old from './v037/language.mjs';
 import {typeSyntax} from './v037/type-syntax.mjs';
 import {classConstraint} from './v037/class-syntax.mjs';
-export const marker='-- HaskStack 0.38 prefix';
+export const marker='-- Nyanco 0.38 prefix';
 const lit=x=>typeof x==='boolean'?(x?'True':'False'):JSON.stringify(x);
 export function typeText(t){
   if(t.tag==='param'||t.tag==='atom')return t.name;

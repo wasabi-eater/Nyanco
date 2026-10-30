@@ -4,7 +4,7 @@ import {migrate} from './migration/v048.mjs';
 import {compile} from './language.mjs';
 const [input,output]=process.argv.slice(2);
 try {
- if(!input||!output)throw new Error('Usage: node migrate-v048.mjs OLD.hst NEW.hst');
+ if(!input||!output)throw new Error('Usage: node migrate-v048.mjs OLD.nyan NEW.nyan');
  if(resolve(input)===resolve(output))throw new Error('Choose a different output path; the original is preserved');
  const source=migrate(await readFile(input,'utf8'));compile(source,output);
  await writeFile(output,source,{flag:'wx'});console.log(output);

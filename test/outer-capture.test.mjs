@@ -29,6 +29,6 @@ test('outer captures bind once at the enclosing clause and survive repeated invo
  assert.match(compile('f = {__}').types.get('f'),/--.*\{/);
 });
 test('native closures capture the same outer values and do not need the source stack',()=>{
- const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'hst-capture-'));
+ const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-capture-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });
