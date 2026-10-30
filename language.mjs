@@ -63,9 +63,9 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       Object.assign(token,stringToken(token));
     } else {
       const rest = source.slice(i);
-      const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..='].includes(tokens.at(-1)?.value));
+      const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -88,6 +88,8 @@ const isComparison = t => t?.kind === 'word' && ['<','<=','>','>=','==','/='].in
 
 let nextStackCapture=0;
 function parseTokens(tokens, inherited = null, constructors = new Map()) {
+  const obsolete=tokens.find(t=>t.kind==='word'&&t.value===':=');
+  if(obsolete)throw new LanguageError(':= has been removed; use <- for reassignment',obsolete);
   let i = 0;
   function scope(end, opener, context = null) {
     const nodes = [];
@@ -101,7 +103,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       let depth=0;
       for(let k=start;k<tokens.length && tokens[k].line===tokens[start]?.line;k++) {
         const t=tokens[k];
-        if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->',':=','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
+        if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->','<-','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
         if(!depth && t.kind==='word' && t.value==='=')return k;
         if(['(','[','{'].includes(t.kind))depth++;
         if([')',']','}'].includes(t.kind))depth--;
@@ -116,12 +118,12 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         while(tokens[j]?.kind==='word' && tokens[j].value.startsWith('.')) {
           const part=tokens[j++];if(part.value==='.') {if(tokens[j++]?.kind!=='[')return -1;let depth=1;while(j<tokens.length&&depth){if(tokens[j].kind==='[')depth++;if(tokens[j].kind===']')depth--;j++;}}
         }
-        return [':=','!'].includes(tokens[j]?.value)?j:-1;
+        return ['<-','!'].includes(tokens[j]?.value)?j:-1;
       }
       while(tokens[j]?.kind===',' && target(tokens[j+1])){j+=2;}
-      return tokens[j]?.kind==='word' && [':=','!'].includes(tokens[j].value)?j:-1;
+      return tokens[j]?.kind==='word' && ['<-','!'].includes(tokens[j].value)?j:-1;
     };
-    const statement = () => updateAt(i)>=0 || definitionAt(i)>=0 || tokens[i]?.kind === 'word' && (tokens[i].value === 'mut' || tokens[i+1]?.kind === 'word' && [':=', '!'].includes(tokens[i+1].value));
+    const statement = () => updateAt(i)>=0 || definitionAt(i)>=0 || tokens[i]?.kind === 'word' && (tokens[i].value === 'mut' || tokens[i+1]?.kind === 'word' && ['<-', '!'].includes(tokens[i+1].value));
     const boundary = () => done() || [';',';;',','].includes(tokens[i].kind) || statement() || (tokens[i].kind === 'word' && tokens[i].value === '->');
     function slot(t) {
       const match=t.value.match(/^(_+|\$+)(\d*)$/),depth=match[1].length-1,index=Number(match[2]||0),peek=t.value[0]==='$';
@@ -246,7 +248,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       }
       if (t.kind === 'word' && /^(?:_+|\$+)\d*$/.test(t.value)) return [slot(t)];
       if (isOperator(t)) throw new LanguageError('Unexpected binary operator', t);
-      if (t.kind === 'word' && ['=', ':=', '!', '|', 'data', 'mut', ':', '->'].includes(t.value)) throw new LanguageError(`Unexpected ${t.value}`, t);
+      if (t.kind === 'word' && ['=', '<-', '!', '|', 'data', 'mut', ':', '->'].includes(t.value)) throw new LanguageError(`Unexpected ${t.value}`, t);
       if(t.kind==='word' && tokens[i]?.value?.startsWith?.('@') && tokens[i].line===t.endLine && tokens[i].col===t.endCol)return [{...t,targetLabel:tokens[i++].value.slice(1)}];
       return [t];
     }
@@ -267,7 +269,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         const operation=tokens[i++];
         if(!path.length||!['=','!'].includes(operation?.value))throw new LanguageError('Expected update path = value or path ! commands',operation||token);
         const start=i;let depth=0;
-        while(i<tokens.length){const t=tokens[i];if(!depth&&['}',',',';'].includes(t.kind))break;if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;i++;}
+        while(i<tokens.length){const t=tokens[i];if(!depth&&['}',';'].includes(t.kind))break;if(!depth&&t.kind===','&&tokens[i+1]?.value?.startsWith('.')&&['=','!'].includes(tokens[i+2]?.value))throw new LanguageError('Separate with updates using ;',t);if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;i++;}
         if(start===i)throw new LanguageError('Update requires a replacement value',tokens[i]||token);
         fields.push({body:parseTokens(tokens.slice(start,i),operation.value==='!'?{parents:context.parents}:context,constructors)});
         updates.push({...token,kind:'path-update',path,fields,updating:operation.value==='!'});
@@ -356,10 +358,11 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         for(const name of targets)if(['_','mut','data','mask','with'].includes(name.value)||BUILTINS.has(name.value))throw new LanguageError('Expected a variable name',name);
         const names=targets.map(t=>t.value);
         if(new Set(names).size!==names.length)throw new LanguageError('Duplicate assignment target',targets[0]);
+        // Both update operators bind less tightly than comma, for any target count.
         const start=i;let depth=0;
         while(i<tokens.length && (depth || tokens[i].kind!==end)) {
           const t=tokens[i];
-          if(!depth && ([';',';;'].includes(t.kind) || names.length===1&&t.kind===',' || t.line>operator.line))break;
+          if(!depth && ([';',';;'].includes(t.kind) || t.line>operator.line))break;
           if(['(','[','{'].includes(t.kind))depth++;
           if([')',']','}'].includes(t.kind)){if(!depth)break;depth--;}
           i++;

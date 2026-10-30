@@ -3,7 +3,7 @@ fib mut x mut y =
   each (1 ..= 6) {drop; x, y ! _, _1 + _};
   #(x, y)
 ;;
-swapValues mut x mut y = x, y := y, x; #(x, y);;
+swapValues mut x mut y = x, y <- y, x; #(x, y);;
 square mut x = x ! _ * _; x;;
 main =
   print (fib 0 1);
