@@ -1,0 +1,25 @@
+# Generated native code and executables
+/native/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Dependencies and reports
+node_modules/
+coverage/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

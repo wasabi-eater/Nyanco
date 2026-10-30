@@ -1,0 +1,32 @@
+// Standard operator classes are available even without declarations or instances.
+// Primitive fallbacks preserve the language's existing operator semantics.
+export const operatorSpecs=new Map([
+  ...['+','-','*','/','%','^'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom' && t.name==='num',primitive:'num'}]),
+  ...['<','<=','>','>='].map(op=>[op,{result:'bool',accept:t=>t.tag==='atom' && t.name==='num',primitive:'num'}]),
+  ...['==','/='].map(op=>[op,{result:'bool',accept:()=>true,universal:true}]),
+  ...['and','or'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom' && t.name==='bool',primitive:'bool'}]),
+  ['++',{result:"'a",accept:t=>t.tag==='list'}],
+]);
+export const standardOperatorClasses=new Map([
+  ['add',['+']],['sub',['-']],['mul',['*']],['div',['/']],['mod',['%']],['pow',['^']],
+  ['eq',['==','/=']],['ord',['<','<=','>','>=']],['and',['and']],['or',['or']],['append',['++']],
+]);
+export const operatorFallback=(c,t)=>c.operatorClass && [...c.methods.keys()].every(op=>operatorSpecs.get(op).accept(t));
+export const runtimeTypeKey=v=>Array.isArray(v)?'list':v?.kind==='range'?'range':typeof v==='number'?'num':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
+export function primitiveOperatorClass(name,ops,token) {
+  const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a 'a -> ${operatorSpecs.get(op).result}`,token,inputCount:2,dispatchIndex:0}]));
+  return {name,param,methods,instances:new Map(),token,operatorClass:true};
+}
+
+export function installOperatorClasses(classes,methods) {
+  for(const [name,ops] of standardOperatorClasses) {
+    if(classes.has(name) || ops.some(op=>methods.has(op)))continue;
+    const c=primitiveOperatorClass(name,ops);c.standard=true;
+    classes.set(name,c);for(const [op,m] of c.methods)methods.set(op,m);
+  }
+  if(!classes.has('each')) {
+    const m={name:'each',className:'each',param:"'c",specialEach:true,inputCount:2,dispatchIndex:0};
+    classes.set('each',{name:'each',param:"'c",methods:new Map([['each',m]]),instances:new Map(),standard:true});methods.set('each',m);
+  }
+  return {classes,methods};
+}

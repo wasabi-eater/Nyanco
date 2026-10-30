@@ -1,0 +1,22 @@
+-- HaskStack 0.38 prefix
+
+absolute n | ((n) < (0)) =
+  ((0) - (n))
+
+absolute n | True =
+  n
+
+factorial n | ((n) == (0)) =
+  1
+
+factorial n | True =
+  ((n) * (((((n) - (1))), factorial)))
+
+describe x | ((3) < (x) <= (4)) =
+  "in range"
+
+describe x | True =
+  "outside"
+
+main =
+  -7, absolute, print, 6, factorial, print, 4, describe, print, 5, describe, print

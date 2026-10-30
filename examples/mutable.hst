@@ -1,0 +1,9 @@
+-- HaskStack 0.38 prefix
+
+increment =
+  count := (((count) + (1)))
+
+main =
+  increment, increment, count, print, 0, -> mut total, [1, 2, 3], {-> n, total := (((total) + (n)))}, each, total, print, 0, -> mut i, {((i) < (3))}, {i := (((i) + (1)))}, while, i, print, 3, 4, 5, -> x mut y z, y := (((x) + (z))), [x, y, z], print
+
+0, -> mut count

@@ -1,0 +1,16 @@
+-- HaskStack 0.38 prefix
+
+squareA =
+  dup, ( * )
+
+squareB =
+  $, ( * )
+
+squareC =
+  ( * ($))
+
+squareD =
+  ((_) * (_))
+
+main =
+  [5, squareA, 5, squareB, 5, squareC, 5, squareD], print, [10, 20; _1], print, [10, 20; $1], print, [10, 20; $], print, 3, 4, 5; ((_2) + ((((_1) * (_))))), print, 10, 3; ((_) - ), print, [1, 2, 3, 4], {((_) * (_))}, vmap, print, 0, [1, 2, 3, 4], {((_1) + (_))}, each, print

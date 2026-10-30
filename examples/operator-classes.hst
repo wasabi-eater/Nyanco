@@ -1,0 +1,17 @@
+-- HaskStack 0.38 prefix
+
+data vec2  = Vec num num
+
+instance add vec2 where
+  + (Vec x y) (Vec u v) =
+    (((x) + (u))), (((y) + (v))), Vec
+
+instance mul vec2 where
+  * (Vec x y) (Vec u v) =
+    (((x) * (u))), (((y) * (v))), Vec
+
+add =
+  ( + )
+
+main =
+  ((((1, 2, Vec)) + ((3, 4, Vec)))), print, ((((2, 3, Vec)) * ((4, 5, Vec)))), print, (1, 2, Vec), (3, 4, Vec), add, print, (0, 0, Vec), [(1, 2, Vec), (3, 4, Vec)], {( + )}, each, print, (((3) + (4))), print

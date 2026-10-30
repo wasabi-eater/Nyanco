@@ -1,0 +1,33 @@
+-- HaskStack 0.38 prefix
+
+data color  = Red | Blue
+
+class describe 'a where
+  describe : 'a -> string
+
+instance describe num where
+  describe n =
+    n, show
+
+instance describe bool where
+  describe True =
+    "yes"
+  describe False =
+    "no"
+
+instance describe color where
+  describe Red =
+    "red"
+  describe Blue =
+    "blue"
+
+render : describe 'a => 'a -> string
+
+render =
+  describe
+
+renderAll =
+  {describe}, vmap
+
+main =
+  42, render, print, True, render, print, Blue, render, print, [1, 2, 3], renderAll, print, [Red, Blue], renderAll, print

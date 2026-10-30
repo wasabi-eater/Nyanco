@@ -1,0 +1,156 @@
+// Suspended Go calls retain locals on their goroutine call stacks. These
+// messages carry only operation arguments/results, not an evaluation stack.
+type EffectTarget struct{live bool}
+type EffectLabel struct{current *EffectTarget}
+func labelTarget(v any,loc string) *EffectTarget {h,ok:=v.(*EffectLabel);if !ok||h.current==nil||!h.current.live{fail(loc,"Effect label is outside its handler lifetime")};return h.current}
+type EffectHandler func([]any,*Continuation) []any
+type effectReply struct{values []any}
+type effectEvent struct{name,loc string;args []any;reply chan effectReply;result []any;failure any;done bool;never bool;target *EffectTarget;skip int}
+type EffectScope struct{events chan effectEvent;cancel chan struct{}}
+type effectCancelled struct{}
+type Continuation struct{used,active,never bool;resume func([]any) []any}
+func resumeContinuation(value any,args []any,loc string) []any {
+ k,ok:=value.(*Continuation);if !ok{fail(loc,"resume requires a continuation")}
+ if k.never{fail(loc,"Cannot resume a non-returning effect")}
+ if k.used||!k.active{fail(loc,"Continuation is expired or already resumed")}
+ k.used=true;return k.resume(args)
+}
+func(m *Machine) perform(name string,args []any,loc string,never bool) []any {return m.performRoute(name,args,loc,never,nil,0)}
+func(m *Machine) performRoute(name string,args []any,loc string,never bool,target *EffectTarget,skip int) []any {
+ if m.effects==nil{if target!=nil||skip>0{fail(loc,"Unhandled routed effect: "+name)};if name=="exn"{fail(loc,"Exception: "+args[0].(string))};if name=="put"{printValue(args[0]);return nil};if name=="read"{return []any{readLine(loc)}};fail(loc,"Unhandled effect: "+name)}
+ reply:=make(chan effectReply)
+ event:=effectEvent{name:name,loc:loc,args:args,reply:reply,never:never,target:target,skip:skip}
+ select{case m.effects.events<-event:case <-m.effects.cancel:panic(effectCancelled{})}
+ select{case r:=<-reply:return r.values;case <-m.effects.cancel:panic(effectCancelled{})}
+}
+func(m *Machine) handle(body func(*Machine) []any,handlers map[string]EffectHandler,loc string,labels ...*EffectLabel) []any {var label *EffectLabel;if len(labels)>0{label=labels[0]};return m.handleWith(body,handlers,loc,label,"",nil)}
+func(m *Machine) mask(body func(*Machine) []any,name string,target *EffectTarget,loc string) []any {return m.handleWith(body,nil,loc,nil,name,target)}
+func(m *Machine) loop(body func(*Machine),loc string,label *EffectLabel){m.handle(func(m *Machine) []any{body(m);return nil},map[string]EffectHandler{"break":func(args []any,k *Continuation) []any{return nil}},loc,label)}
+func(m *Machine) handleWith(body func(*Machine) []any,handlers map[string]EffectHandler,loc string,label *EffectLabel,maskName string,maskTarget *EffectTarget,boundary ...bool) []any {
+ target:=&EffectTarget{true};defer func(){target.live=false}()
+ if label!=nil{previous:=label.current;label.current=target;defer func(){label.current=previous}()}
+
+ scope:=&EffectScope{make(chan effectEvent),make(chan struct{})};finished:=make(chan struct{})
+ child:=*m;child.effects=scope
+ go func(){
+  defer close(finished)
+  event:=effectEvent{done:true}
+  defer func(){
+   if err:=recover();err!=nil{event.failure=err}
+   select{case scope.events<-event:case <-scope.cancel:}
+  }()
+  event.result=body(&child)
+ }()
+ defer func(){close(scope.cancel);<-finished}()
+ var outerCancel <-chan struct{};if m.effects!=nil{outerCancel=m.effects.cancel}
+ var drive func() []any
+ drive=func() []any {
+  for {
+   var event effectEvent
+   select{case event=<-scope.events:case <-outerCancel:panic(effectCancelled{})}
+   if event.done{if event.failure!=nil{panic(event.failure)};return event.result}
+   if len(boundary)>0 && boundary[0] && event.target==target {event.target=nil}
+   if maskName==event.name && event.target==nil{if maskTarget!=nil{event.target=maskTarget}else{event.skip++}}
+   handler,ok:=handlers[event.name]
+   if ok{if event.target!=nil{ok=event.target==target}else if event.skip>0{event.skip--;ok=false}}
+   if !ok {
+    returned:=m.performRoute(event.name,event.args,event.loc,event.never,event.target,event.skip)
+    select{case event.reply<-effectReply{returned}:case <-outerCancel:panic(effectCancelled{})}
+    continue
+   }
+   k:=&Continuation{active:true,never:event.never}
+   k.resume=func(values []any) []any {
+    select{case event.reply<-effectReply{values}:case <-outerCancel:panic(effectCancelled{})}
+    return drive()
+   }
+   return func() []any {defer func(){k.active=false}();return handler(event.args,k)}()
+  }
+ }
+ return drive()
+}
+
+func(m *Machine) listIndex(value,index any,loc string) any {
+ xs:=list(value,loc);n:=number(index,loc)
+ if math.IsNaN(n)||math.IsInf(n,0)||math.Trunc(n)!=n||n<0||n>=float64(len(xs)) {
+  m.perform("exn",[]any{fmt.Sprintf("Vector index out of bounds: %s (length %d)",text(n),len(xs))},loc,true)
+  fail(loc,"Cannot resume a non-returning effect")
+ }
+ return xs[int(n)]
+}
+
+func(m *Machine) listOptionIndex(value,index any,loc string) any {
+ xs:=list(value,loc);n:=number(index,loc)
+ if math.IsNaN(n)||math.IsInf(n,0)||math.Trunc(n)!=n||n<0||n>=float64(len(xs)) {return &ADT{"option","None",nil}}
+ return &ADT{"option","Some",[]any{xs[int(n)]}}
+}
+
+// Private cancellation is not an effect: user break handlers cannot swallow a take limit.
+type iterationStop struct{marker bool}
+func iterationBoundary(body func(func())) {
+ stop:=&iterationStop{true}
+ defer func(){if err:=recover();err!=nil && err!=stop{panic(err)}}()
+ body(func(){panic(stop)})
+}
+func(m *Machine) iterationCount(value any,name,loc string) float64 {
+ n:=number(value,loc)
+ if math.IsNaN(n)||math.IsInf(n,0)||n<0||n>9007199254740991||math.Trunc(n)!=n {
+  m.perform("exn",[]any{name+": count must be a nonnegative safe integer"},loc,true)
+  fail(loc,"Non-returning effect returned")
+ }
+ return n
+}
+
+// Empty outer containers can leave the nested element's container type unsolved.
+func(m *Machine) walkUnresolved(value any,visit func(any),loc string) {
+ switch xs:=value.(type) {
+ case []any: for _,item:=range xs{visit(item)}
+ case *Range: for i:=0;i<xs.count();i++{m.tick(loc);visit(xs.start+float64(i)*xs.step())}
+ case *Stream: xs.walk(m,visit)
+ default: fail(loc,"Unresolved native streem container")
+ }
+}
+
+type UpdatePart struct {kind,name string;index any}
+func(m *Machine) copyUpdate(value any,path []UpdatePart,replacement any,loc string,reuse bool) any {
+ if len(path)==0{return replacement};p:=path[0]
+ if p.kind=="field" {
+  old:=recordField(value,p.name,loc);r:=value.(*Record);fields:=map[string]any{}
+  for k,v:=range r.fields {fields[k]=v};fields[p.name]=m.copyUpdate(old,path[1:],replacement,loc,false);return &Record{fields}
+ }
+ if p.kind=="tuple" {
+  n:=int(number(p.index,loc));old:=tupleIndex(value,n,loc);items:=append([]any(nil),value.(*Tuple).items...)
+  items[n]=m.copyUpdate(old,path[1:],replacement,loc,false);return &Tuple{items}
+ }
+ old:=m.listIndex(value,p.index,loc);xs:=list(value,loc);if !reuse{xs=append([]any{},xs...)}
+ xs[int(number(p.index,loc))]=m.copyUpdate(old,path[1:],replacement,loc,false);return xs
+}
+
+func(m *Machine) readUpdatePath(value any,path []UpdatePart,loc string) any {
+ for _,p:=range path {switch p.kind {case "field":value=recordField(value,p.name,loc);case "tuple":value=tupleIndex(value,int(number(p.index,loc)),loc);default:value=m.listIndex(value,p.index,loc)}}
+ return value
+}
+
+// Bind the label at invocation, rather than at quotation creation. All named
+// operations cross this boundary before ordinary handler selection resumes.
+func(m *Machine) labelBlock(body func(*Machine,*EffectLabel) []any,loc string) []any {
+ label:=&EffectLabel{}
+ return m.handleWith(func(child *Machine) []any{return body(child,label)},nil,loc,label,"",nil,true)
+}
+
+func(m *Machine) combinations(xs,other []any,count float64,mode string,visit func(any),loc string){
+ if mode=="cartesianProduct"{for _,a:=range xs{for _,b:=range other{m.tick(loc);visit(&Tuple{[]any{a,b}})}};return}
+ if mode=="powerset"{for k:=0;k<=len(xs);k++{m.combinations(xs,nil,float64(k),"combinations",visit,loc)};return}
+ if count==0{visit([]any{});return};if len(xs)==0||mode!="combinationsWithReplacement"&&count>float64(len(xs)){return}
+ // Grow only the live search prefix; no eager allocation proportional to count.
+ indices:=[]int{};next:=[]int{0};depth:=0
+ for depth>=0{
+  m.tick(loc)
+  if float64(depth)==count{result:=make([]any,depth);for i:=range result{result[i]=xs[indices[i]]};visit(result);depth--;continue}
+  i:=next[depth];next[depth]++
+  if i>=len(xs){next=next[:depth];depth--;continue}
+  used:=false;if mode=="permutations"{for j:=0;j<depth;j++{if indices[j]==i{used=true;break}}};if used{continue}
+  if len(indices)<=depth{indices=append(indices,i)}else{indices[depth]=i};depth++
+  start:=0;if mode!="permutations"{start=i;if mode=="combinations"{start++}}
+  if len(next)<=depth{next=append(next,start)}else{next[depth]=start}
+ }
+}
