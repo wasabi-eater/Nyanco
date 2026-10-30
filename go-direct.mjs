@@ -1,3 +1,4 @@
+import {lookupInstance} from './class-relations.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {combinationNames} from './combinatorics.mjs';
 import {vectorOwnership} from './ownership.mjs';
@@ -35,7 +36,7 @@ function effectParts(effect) {
 function copyEnv(env) {
   const vars=new Set();for(const s of env.values())for(const v of T.free(s.type))vars.add(v);
   const replacements=new Map([...vars].map(v=>[v,{...T.variable(v.sort),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
-  for(const [v,fresh] of replacements){if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>T.clone(t,replacements))]));if(v.eachItem)fresh.eachItem=T.clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=T.clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=T.clone(v.handlerAnswer,replacements);}
+  for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>T.clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>T.clone(t,replacements))]));if(v.eachItem)fresh.eachItem=T.clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=T.clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=T.clone(v.handlerAnswer,replacements);}
   return new Map([...env].map(([name,s])=>[name,{...s,type:T.clone(s.type,replacements),vars:new Set([...s.vars].map(v=>replacements.get(v)||v))}]));
 }
 function freshTypes(input,output,latent) {
@@ -71,7 +72,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   const returns=n=>n?`(${Array(n).fill('any').join(',')})`:'';
   const params=n=>Array.from({length:n},(_,i)=>`a${i} any`).join(',');
   const args=n=>Array.from({length:n},(_,i)=>`a${i}`);
-  const typedDispatch=[...definitions.methods?.values()||[]].some(m=>m.dispatchIndex<0);
+  const typedDispatch=[...definitions.methods?.values()||[]].some(m=>m.dispatchIndex<0&&!m.specialCast);
   const latent=effect=>typedDispatch?T.effectSnapshot(effect.effects):undefined;
   const keyOf=(input,output,effect)=>formatType(T.quote(tuple(input),tuple(output),effect&&latent(effect)));
   const finish=(ctx,values)=>ctx.lines.push(values.never?'panic("Non-returning computation returned")':`return ${values.join(',')}`);
@@ -277,7 +278,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
         let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
-        const target=definitions.classes.get(m.className).instances.get(instanceKey(type))?.implementations.get(n.value);
+        const target=lookupInstance(definitions.classes.get(m.className),(info.effect.dispatchTypes||[type]).map(t=>{t=T.prune(t);if(t.numericLiterals){T.unify(t,{tag:'atom',name:'int'},n);t=T.prune(t);}return t;}))?.implementations.get(n.value);
         if(!target)throw new StaticTypeError(`Ambiguous or unresolved class method: ${n.value}; add a type annotation`,n);
         const spec=named(target,info.effect),vs=values.splice(values.length-spec.input.length);
         values.push(...ctx.call(`m.${spec.fn}`,vs,spec.output.length));
@@ -371,10 +372,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       ctx.lines.push(`${parts}:=[]string{};m.loop(func(m *Machine){${walk}(m,func(item any){${parts}=append(${parts},stringValue(item,${at}))})},${at},${label})`);
       v.push(ctx.value(`strings.Join(${parts},stringValue(${separator},${at}))`));return;
     }
-    if(['toInt','toFloat','toByte','toChar'].includes(name)){
-      const value=pop(),type=T.prune(topTypes.at(-1)),target=definitions.classes.get(name)?.instances.get(instanceKey(type))?.implementations.get(name);
-      if(target){const spec=named(target,info.effect);v.push(...ctx.call(`m.${spec.fn}`,[value],1));}
-      else v.push(ctx.value(`m.numericCast(${value},${str(name.slice(2).toLowerCase())},${at})`));return;
+    if(definitions.methods?.get(name)?.specialCast){
+      const value=pop(),conversion=T.castInfo(definitions,n,info.effect),target=conversion.target;
+      if(target!==name){const spec=named(target,info.effect);v.push(...ctx.call(`m.${spec.fn}`,[value],1));}
+      else v.push(ctx.value(`m.numericCast(${value},${str(conversion.destination)},${at})`));return;
     }
     if(name==='bytes'){v.push(ctx.value(`byteValues(${pop()},${at})`));return;}
     if(name==='chars'){v.push(ctx.value(`chars(${pop()},${at})`));return;}

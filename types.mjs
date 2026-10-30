@@ -1,4 +1,5 @@
-import {implies,resolveInheritance} from './class-inheritance.mjs';
+import {classParameters,instanceHeads,relationKey,superConstraints,lookupInstance,builtinConversion} from './class-relations.mjs';
+import {resolveInheritance} from './class-inheritance.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {combinationNames} from './combinatorics.mjs';
 import {transforms,streamTransforms,countTransform,predicateTransform,callbackTransform} from './iteration.mjs';
@@ -23,6 +24,7 @@ let activeProtected=new Set();
 let checkingUniversalHandler=false;
 function requireConstraint(name,args,token) {
   const c=activeClasses.get(name);if(!c)throw new StaticTypeError(`Unknown class: ${name}`,token);
+  if(classParameters(c).length>1){if(args.length===classParameters(c).length&&c.associated?.length)args=[...args,...c.associated.map(()=>variable())];return requireRelation(c,args,token);}
   if(name==='streem'){if(args.length!==1 && args.length!==2)throw new StaticTypeError('Invalid streem constraint arity',token);return requireIterable(args[0],args[1]||variable(),token);}
   if(c.associated?.length){
     if(args.length===1)args=[...args,...c.associated.map(()=>variable())];
@@ -32,14 +34,50 @@ function requireConstraint(name,args,token) {
   if(args.length!==1)throw new StaticTypeError(`Invalid class constraint arity: ${name}`,token);
   return requireClass(name,args[0],token);
 }
-function applyContext(context,parameters,token){for(const [name,...params] of context)requireConstraint(name,params.map(p=>parameters.get(p)),token);}
+function applyContext(context,parameters,token){for(const [name,...params] of context)requireConstraint(name,params.map(p=>typeof p==='string'?(parameters.get(p)||atom(p)):syntaxType(p,parameters)),token);}
+function argumentVariables(args){const out=new Set(),seen=new Set();function visit(t){t=prune(t);if(seen.has(t))return;seen.add(t);if(t.tag==='var'||t.tag==='rigid')out.add(t);else children(t).forEach(visit);}args.forEach(visit);return [...out];}
+function sameType(a,b){a=prune(a);b=prune(b);if(a===b)return true;if(['var','rigid'].includes(a.tag)||['var','rigid'].includes(b.tag)||a.tag!==b.tag||a.name!==b.name)return false;const aa=children(a),bb=children(b);return aa.length===bb.length&&aa.every((t,i)=>sameType(t,bb[i]));}
+function inheritedConstraints(c,args,seen=new Set()){
+ const identity=t=>{t=prune(t);return t.id??[t.tag,t.name,...children(t).map(identity)].join(':');};const key=c.name+':'+args.map(identity).join(',');if(seen.has(key))return [];seen.add(key);
+ const bindings=new Map(classParameters(c).map((p,i)=>[p,args[i]]));for(const [i,a] of (c.associated||[]).entries())bindings.set(a.param,args[classParameters(c).length+i]);
+ return [{name:c.name,args},...superConstraints(c).flatMap(sc=>{const pc=activeClasses.get(sc.name),values=sc.args.map(t=>syntaxType(t,bindings));if(sc.name==='streem'&&c.associated?.some(a=>a.name==='item'))values.push(bindings.get(c.associated.find(a=>a.name==='item').param));else for(const a of pc.associated||[])values.push(bindings.get(a.param));return inheritedConstraints(pc,values,seen);})];
+}
+// Rigid anchors carry declared evidence; mutable anchors carry deferred obligations.
+function constraintFacts(v,wanted){
+ const facts=[...[...v.classes||[]].flatMap(n=>inheritedConstraints(activeClasses.get(n),[v])),...[...v.associated||[]].flatMap(([n,ts])=>inheritedConstraints(activeClasses.get(n),[v,...ts]))];
+ for(const r of v.relations||[])if(v.tag==='rigid'||r.name!==wanted)facts.push(...inheritedConstraints(activeClasses.get(r.name),r.args));
+ return facts;
+}
+function hasRelationEvidence(c,args){
+ return argumentVariables(args).some(v=>constraintFacts(v,c.name).some(r=>r.name===c.name&&r.args.length===args.length&&r.args.every((t,i)=>sameType(t,args[i]))));
+}
+function requireSuperclasses(c,args,token,items=[]){
+ const bindings=new Map(classParameters(c).map((p,i)=>[p,args[i]]));for(const [i,a] of (c.associated||[]).entries())bindings.set(a.param,items[i]);
+ for(const sc of superConstraints(c)){
+  const pc=activeClasses.get(sc.name),values=sc.args.map(t=>syntaxType(t,bindings));
+  if(sc.name==='streem'&&c.associated?.some(a=>a.name==='item'))values.push(items[c.associated.findIndex(a=>a.name==='item')]);
+  else for(const a of pc.associated||[])values.push(items[c.associated.findIndex(x=>x.name===a.name)]);
+  requireConstraint(sc.name,values,token);
+ }
+}
+// A multi-parameter class is a relation, not an associated-type dependency.
+function requireRelation(c,args,token){
+ if(args.length!==classParameters(c).length+(c.associated?.length||0))throw new StaticTypeError('Invalid class constraint arity: '+c.name,token);
+ args=args.map(prune);if(hasRelationEvidence(c,args))return;
+ const n=classParameters(c).length,heads=args.slice(0,n),instance=lookupInstance(c,heads);
+ if(instance||heads.every(t=>!['var','rigid'].includes(t.tag))){
+  if(!instance){if(c.intoClass&&builtinConversion(heads))return;throw new StaticTypeError('No instance: '+c.name+' '+args.map(formatType).join(' '),token);}
+  const params=new Map();instanceHeads(instance).forEach((h,i)=>unify(args[i],syntaxType(h,params),token));for(const [i,a] of (c.associated||[]).entries())unify(args[n+i],syntaxType(instance.associated.get(a.name),params),token);applyContext(instance.context,params,token);requireSuperclasses(c,heads,token,args.slice(n));return;
+ }
+ const vars=argumentVariables(args).filter(v=>v.tag==='var');
+ if(!vars.length)throw new StaticTypeError('Missing constraint: '+c.name+' '+args.map(formatType).join(' '),token);
+ for(const v of vars){v.relations??=[];if(!v.relations.some(r=>r.name===c.name&&r.args.every((t,i)=>sameType(t,args[i]))))v.relations.push({name:c.name,args});}
+}
 function requireAssociated(c,container,items,token) {
   container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(container.tag==='var'||container.tag==='rigid') {
     if(container.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
-    for(const [child,args] of container.associated||[])if(child!==c.name&&implies(activeClasses,child,c.name)){
-      const own=activeClasses.get(child).associated||[];c.associated.forEach((a,i)=>unify(items[i],args[own.findIndex(x=>x.name===a.name)],token));return;
-    }
+    for(const fact of constraintFacts(container,c.name))if(fact.name===c.name&&sameType(fact.args[0],container)){items.forEach((t,i)=>unify(t,fact.args[i+1],token));return;}
     const existing=container.associated?.get(c.name);
     if(existing){existing.forEach((t,i)=>unify(t,items[i],token));return;}
     if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${formatType(container)} ${c.name}`,token);
@@ -53,7 +91,7 @@ function requireAssociated(c,container,items,token) {
   const parameters=new Map();unify(container,syntaxType(instance.head,parameters),token);
   c.associated.forEach((a,i)=>unify(items[i],syntaxType(instance.associated.get(a.name),parameters),token));
   applyContext(instance.context,parameters,token);
-  for(const parent of c.supers||[]){const pc=activeClasses.get(parent);if(parent==='streem')requireIterable(container,items[c.associated.findIndex(a=>a.name==='item')],token);else if(pc.associated?.length)requireConstraint(parent,[container,...pc.associated.map(a=>items[c.associated.findIndex(x=>x.name===a.name)])],token);else requireClass(parent,container,token);}
+  requireSuperclasses(c,[container],token,items);
 }
 function requireClass(name,type,token) {
   if(name==='streem')return requireIterable(type,variable(),token);
@@ -64,15 +102,16 @@ function requireClass(name,type,token) {
   if(c.operatorClass && !c.supers?.length && !c.instances.size && [...c.methods.keys()].every(op=>operatorSpecs.get(op)?.universal))return;
   if(type.tag==='var') {
     if(type.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
-    type.classes ??= new Set();if([...type.classes,...type.associated?.keys()||[]].some(c=>implies(activeClasses,c,name)))return;for(const c of type.classes)if(implies(activeClasses,name,c))type.classes.delete(c);type.classes.add(name);return;
+    type.classes ??= new Set();if(hasRelationEvidence(c,[type]))return;for(const n of type.classes)if(inheritedConstraints(c,[type]).some(f=>f.name===n&&f.args.length===1&&sameType(f.args[0],type)))type.classes.delete(n);type.classes.add(name);return;
   }
   if(type.tag==='rigid') {
-    if(![...type.classes||[],...type.associated?.keys()||[]].some(c=>implies(activeClasses,c,name)))throw new StaticTypeError(`Missing constraint: ${formatType(type)} ${name}`,token);
+    if(!hasRelationEvidence(c,[type])){if(c.conversion){requireSuperclasses(c,[type],token);return;}throw new StaticTypeError(`Missing constraint: ${formatType(type)} ${name}`,token);}
     return;
   }
-  for(const parent of c.supers||[])requireClass(parent,type,token);
+  requireSuperclasses(c,[type],token);
   const key=instanceKey(type),inst=c.instances.get(key);
   if(inst) { const parameters=new Map();unify(type,syntaxType(inst.head,parameters),token);applyContext(inst.context,parameters,token);return; }
+  if(c.conversion)return;
   if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${formatType(type)} ${name}`,token);
 }
 
@@ -80,9 +119,7 @@ function requireIterable(container,item,token,latent=null) {
   container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(latent){if(container.tag==='var'||container.tag==='rigid'){if(container.eachEffects)mergeEffects(latent,container.eachEffects,token);else container.eachEffects=latent;}else mergeEffects(latent,container.tag==='stream'?container.effects:effects(),token);}
   if(container.tag==='stream'){unify(container.item,item,token);return;}
-  for(const [child,args] of container.associated||[])if(implies(activeClasses,child,'streem')){
-    const index=activeClasses.get(child).associated.findIndex(a=>a.name==='item');if(index>=0){unify(item,args[index],token);return;}
-  }
+  if(['var','rigid'].includes(container.tag))for(const fact of constraintFacts(container,'streem'))if(fact.name==='streem'&&sameType(fact.args[0],container)&&fact.args[1]){unify(item,fact.args[1],token);return;}
   if(container.tag==='var') {if(container.eachItem)unify(container.eachItem,item,token);else container.eachItem=item;return;}
   if(container.tag==='rigid') {if(!container.eachItem)throw new StaticTypeError('Missing streem constraint',token);unify(container.eachItem,item,token);return;}
   if(container.tag==='list'){unify(container.item,item,token);return;}
@@ -303,8 +340,8 @@ function checkEffectPromises(actual,expected,token,seen=new Set()) {
 }
 function free(t, found = new Set(), seen=new Set()) {
   t = prune(t);if(seen.has(t))return found;seen.add(t);
-  if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen);if(t.eachItem)free(t.eachItem,found,seen);if(t.eachEffects)free(t.eachEffects,found,seen);if(t.handlerAnswer)free(t.handlerAnswer,found,seen);if(t.handlerResidual)free(t.handlerResidual,found,seen);}}
-  else for (const child of [...children(t),...effectChildren(t),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[])]) free(child, found,seen);
+  if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.relations)for(const r of t.relations)for(const x of r.args)free(x,found,seen);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen);if(t.eachItem)free(t.eachItem,found,seen);if(t.eachEffects)free(t.eachEffects,found,seen);if(t.handlerAnswer)free(t.handlerAnswer,found,seen);if(t.handlerResidual)free(t.handlerResidual,found,seen);}}
+  else for (const child of [...children(t),...effectChildren(t),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen);
   return found;
 }
 function keepNativePrefix(t) {t=prune(t);if(t.tag==='var'||t.tag==='push'){t.keepNativePrefix=true;if(t.tag==='push')keepNativePrefix(t.rest);}}
@@ -353,7 +390,8 @@ function unify(a, b, token) {
     if(a.eachItem)requireIterable(b,a.eachItem,token,a.eachEffects);
     if(a.sort==='record-row')lacks(b,a.lacks||[],token);
     if(a.keepNativePrefix)keepNativePrefix(b);
-    a.link = isBottom(b)?{tag:'bottom',flexible:true}:b; return;
+    a.link = isBottom(b)?{tag:'bottom',flexible:true}:b;
+    for(const r of a.relations||[])requireConstraint(r.name,r.args,token);return;
   }
   if (b.tag === 'var') return unify(b,a,token);
   if(a.tag==='bottom'||b.tag==='bottom') {
@@ -398,6 +436,7 @@ function clone(t, replacements) {
     result.effects=clone(t.effects||effects(),replacements);if(t.effectBound)result.effectBound=clone(t.effectBound,replacements);
     if(t.bottomBase){let source=prune(t.input),target=prune(input),base=prune(t.bottomBase);while(source!==base && source.tag==='push' && target.tag==='push'){source=prune(source.rest);target=prune(target.rest);}if(source===base)result.bottomBase=target;}
     if(t.originalNever)result.originalNever=true;
+    if(t.dispatchTypes)result.dispatchTypes=t.dispatchTypes.map(t=>clone(t,replacements));
     if(t.dispatchType)result.dispatchType=clone(t.dispatchType,replacements);
     if(t.captures)result.captures=t.captures.map(x=>clone(x,replacements));if(t.handledArgs)result.handledArgs=t.handledArgs.map(x=>clone(x,replacements));
     return result;
@@ -423,7 +462,7 @@ function instantiate(scheme, rigid = false, bindings = null) {
   const top=prune(scheme.type),fixedRows=new Set(top.tag==='quote'?[stackTail(top.input),stackTail(top.output)]:[]);
   const vars=new Set([...scheme.vars].map(prune).filter(v=>v.tag==='var'));
   const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
-  for(const [v,fresh] of replacements){if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
+  for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
   replacements.preserveWeak=true;
   if(bindings)for(const [v,fresh] of replacements)bindings.set(v,fresh);
   return clone(scheme.type,replacements);
@@ -511,7 +550,7 @@ export function formatType(type) {
   }
   const t=prune(type);
   const body=t.tag==='quote' ? `${renderStack(t.input)} -- ${renderStack(t.output)}${renderEffects(t)}` : render(t);
-  const constraints=[...free(t)].flatMap(v=>[...[...v.associated||[]].map(([n,ts])=>`${n} ${render(v)} ${ts.map(render).join(' ')}`),...[...v.classes||[]].sort().map(c=>`${c} ${render(v)}`),...(v.eachItem?[`streem ${render(v)} ${render(v.eachItem)}`]:[]),...(v.handlerAnswer?[`handles ${render(v)} ${render(v.handlerAnswer)}`]:[])]);
+  const constraints=[...new Set([...free(t)].flatMap(v=>[...(v.relations||[]).map(r=>r.name+' '+r.args.map(render).join(' ')),...[...v.associated||[]].map(([n,ts])=>`${n} ${render(v)} ${ts.map(render).join(' ')}`),...[...v.classes||[]].sort().map(c=>`${c} ${render(v)}`),...(v.eachItem?[`streem ${render(v)} ${render(v.eachItem)}`]:[]),...(v.handlerAnswer?[`handles ${render(v)} ${render(v.handlerAnswer)}`]:[])]))];
   return constraints.length?`${constraints.join(', ')} => ${body}`:body;
 }
 
@@ -1068,13 +1107,15 @@ function annotation(source, token, dataTypes,extraParameters=[]) {
   const type=syntaxType(result,parameters);
   if(parts.length===2)for(const constraint of parts[0].split(',')) {
     const c=classConstraint(constraint,n=>activeClasses.has(n)||n==='handles');
-    if(!c || !parameters.has(c.args[0]))throw new StaticTypeError('Constraint must name a type variable in the method effect',token);
-    const associatedCount=c.name==='streem'?1:(activeClasses.get(c.name)?.associated?.length||0);
-    if(associatedCount && c.args.length===associatedCount+1)for(const p of c.args.slice(1))if(!parameters.has(p)){if(!p.startsWith("'"))throw new StaticTypeError('Associated constraint arguments must name type variables',token);parameters.set(p,variable());}
-    if(c.args.some(p=>!parameters.has(p)))throw new StaticTypeError('Constraint must name a type variable in the method effect',token);
-    if(c.name==='streem' && c.args.length===2)requireIterable(parameters.get(c.args[0]),parameters.get(c.args[1]),token);
-    else if(c.name==='handles' && c.args.length===2)requireHandlers(parameters.get(c.args[0]),push(EMPTY,parameters.get(c.args[1])),token);
-    else requireConstraint(c.name,c.args.map(p=>parameters.get(p)),token);
+    if(!c)throw new StaticTypeError('Invalid class constraint',token);
+    const cls=activeClasses.get(c.name),associatedCount=c.name==='streem'?1:(cls?.associated?.length||0),count=cls?classParameters(cls).length:1;
+    const parser=typeSyntax(c.args,dataTypes,null,m=>{throw new StaticTypeError(m,token);}),syntax=parser.types();if(!parser.done())throw new StaticTypeError('Invalid class constraint type',token);
+    const args=syntax.map((t,i)=>{
+      function check(t){if(t?.tag==='param'&&!parameters.has(t.name)){if(associatedCount&&i>=count&&t.name.startsWith("'"))parameters.set(t.name,variable());else throw new StaticTypeError('Constraint must name a type variable in the method effect',token);}else if(t&&typeof t==='object')for(const v of Object.values(t))if(Array.isArray(v))v.forEach(check);else if(v&&typeof v==='object')check(v);}
+      check(t);return syntaxType(t,parameters);
+    });
+    if(c.name==='handles'&&args.length===2)requireHandlers(args[0],push(EMPTY,args[1]),token);
+    else requireConstraint(c.name,args,token);
   }
   return {...generalize(type),parameters};
 }
@@ -1142,19 +1183,20 @@ function prepare(definitions,globalValues,initialized=false) {
   for(const [name,op] of inference.effects){const params=new Map();if(op.grouped)for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,params);const type=syntaxType(op.syntax,params);type.effects=effects([{name:op.group||name,...(op.grouped?{operation:name}:{}),args:(op.parameters||[]).map(n=>params.get(n))}]);inference.functions.set(name,generalize(type));}
   for(const [name,m] of operators.methods) {
     if(m.specialEach){inference.functions.set(name,eachEffect());continue;}
-    const associated=activeClasses.get(m.className).associated||[],scheme=annotation(`${m.className} ${[m.param,...associated.map(a=>a.param)].join(' ')} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),associated.map(a=>a.param));
+    const associated=activeClasses.get(m.className).associated||[],scheme=annotation(`${m.className} ${[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)].join(' ')} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)]);
     if(!scheme.type.effectBound)scheme.type.effects=effects();
     const input=[];let t=prune(scheme.type.input);while(t.tag==='push'){input.unshift(prune(t.item));t=prune(t.rest);}
     const index=input.indexOf(scheme.parameters.get(m.param));
     scheme.type.dispatchType=scheme.parameters.get(m.param);
+    scheme.type.dispatchTypes=classParameters(activeClasses.get(m.className)).map(p=>scheme.parameters.get(p));
     m.inputCount=input.length;m.dispatchIndex=index;
     inference.functions.set(name,scheme);
   }
   inference.dataTypes=definitions.dataTypes;
   inference.constructors=definitions.constructors || new Map();
   for(const c of activeClasses.values())if(c.supers?.length)for(const instance of c.instances.values()){
-    const params=new Map(),head=syntaxType(instance.head,params);applyContext(instance.context,params,instance.token);
-    const args=[head,...(c.associated||[]).map(a=>syntaxType(instance.associated.get(a.name),params))];
+    const params=new Map(),heads=instanceHeads(instance).map(h=>syntaxType(h,params));applyContext(instance.context,params,instance.token);
+    const args=[...heads,...(c.associated||[]).map(a=>syntaxType(instance.associated.get(a.name),params))];
     const checked=instantiate(generalize(tuple(args)),true);requireConstraint(c.name,checked.items,instance.token);
   }
 
@@ -1256,7 +1298,7 @@ export function checkExpression(nodes,definitions=new Map(),globals=new Map(),va
   inference.trace??=new Map();
   const input=stack(EMPTY,...values.map(v=>inference.value(v))),output=inference.sequence(nodes,input,env);
   if(true) {
-    plan.dispatch=executionTypes(inference,definitions);plan.dispatch.numericOnly=![...definitions.methods?.values()||[]].some(m=>m.dispatchIndex<0);
+    plan.dispatch=executionTypes(inference,definitions);plan.dispatch.numericOnly=![...definitions.methods?.values()||[]].some(m=>m.dispatchIndex<0&&!m.specialCast);
     plan.dispatch.validate([...(initialized?[]:definitions.initializers||[]),...nodes],inference.trace);
   }
   for(const type of [...inference.cells.values(),...[...env.values()].map(s=>s.type)])for(const v of free(type))if(v.numericLiterals)unify(v,INT);
@@ -1285,6 +1327,15 @@ function specializeEffects(actual,expected,token) {
 // Runtime dictionaries are specialized from solved call-site types. Runtime
 // arguments are used to reconnect stored closures to those types, never to
 // guess an instance from a method result.
+function castInfo(definitions,node,effect){
+ const method=definitions.methods.get(node.value),c=definitions.classes.get(method.className),values=(effect.dispatchTypes||[effect.dispatchType]).map(prune);
+ const bindings=new Map(classParameters(c).map((p,i)=>[p,values[i]]));
+ const args=c.intoClass?values:c.conversion.map(t=>syntaxType(t,bindings));
+ for(let i=0;i<args.length;i++){let t=prune(args[i]);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}args[i]=t;if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous conversion: '+node.value+'; add a type annotation for source and result',node);}
+ const instance=lookupInstance(definitions.classes.get('into'),args),target=instance?.implementations.get('from');
+ if(!target&&!builtinConversion(args))throw new StaticTypeError('No instance: into '+args.map(formatType).join(' '),node);
+ return {target:target||node.value,destination:args[1].name,types:args};
+}
 function executionTypes(base,definitions) {
   const hostTypes=new WeakMap();
   const activate=()=>{activeClasses=base.classes;activeEffects=base.effects;activeFamilies=effectFamilies(activeEffects);};
@@ -1293,9 +1344,9 @@ function executionTypes(base,definitions) {
     Object.assign(inf,{functions:base.functions,globals:base.globals,constructors:base.constructors,dataTypes:base.dataTypes,effects:base.effects,trace:new Map(),quotations:new Map(),hostTypes});return inf;
   }
   function target(node,effect) {
-    activate();const method=definitions.methods.get(node.value);let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
+    activate();const method=definitions.methods.get(node.value);if(method.specialCast)return castInfo(definitions,node,effect).target;let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
-    const result=definitions.classes.get(method.className).instances.get(instanceKey(type))?.implementations.get(node.value);
+    const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
     if(!result && (method.specialShow||method.specialIndex||method.specialCast))return node.value;
     if(!result && operatorFallback(definitions.classes.get(method.className),type))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
@@ -1350,7 +1401,7 @@ function executionTypes(base,definitions) {
       }
     }
   }
-  return {trace:base.trace,target,clause,argumentsPlan,local,runtimeCall,validate,observe};
+  return {trace:base.trace,castInfo:(node,effect)=>{activate();return castInfo(definitions,node,effect);},target,clause,argumentsPlan,local,runtimeCall,validate,observe};
 }
 export function inferExpression(nodes,definitions=new Map(),globals=new Map(),initialized=false) {
   const inference=prepare(definitions,globals,initialized),input=row();
@@ -1375,4 +1426,4 @@ export function loweringTypes(definitions) {
   const execution=executionTypes(base,definitions);
   return {validate:execution.validate,globals:base.globals,functions:base.functions,analyze,pattern:(p,t,e)=>base.pattern(p,t,e)};
 }
-export const typeIR={numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};
+export const typeIR={castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};

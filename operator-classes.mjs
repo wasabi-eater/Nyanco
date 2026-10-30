@@ -16,7 +16,7 @@ export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='range'?'rang
 export function builtinInstance(c,t) {
   if(!c)return false;
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
-  return !!(c.showClass||operatorFallback(c,t)||c.castClass&&(numeric||c.name==='toChar'&&t.tag==='atom'&&t.name==='char')||c.numClass&&numeric||c.indexClass&&(t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
+  return !!(c.showClass||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
 }
 export function primitiveOperatorClass(name,ops,token) {
   const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a 'a -> ${operatorSpecs.get(op).result}`,token,inputCount:2,dispatchIndex:0}]));
@@ -29,11 +29,17 @@ export function installOperatorClasses(classes,methods) {
     const c=primitiveOperatorClass(name,ops);c.standard=true;
     classes.set(name,c);for(const [op,m] of c.methods)if(!methods.has(op))methods.set(op,m);
   }
-  for(const [name,result] of [['toInt','int'],['toFloat','float'],['toByte','byte'],['toChar','char']])if(!classes.has(name)){
-    const m={name,className:name,param:"'a",signature:`'a -> ${result} / {exn}`,inputCount:1,dispatchIndex:0,specialCast:true};
-    classes.set(name,{name,param:"'a",methods:new Map([[name,m]]),instances:new Map(),standard:true,castClass:true});if(!methods.has(name))methods.set(name,m);
+  if(!classes.has('into')){
+    const m={name:'from',className:'into',param:"'a",params:["'a","'b"],signature:"'a -> 'b / {exn}",specialCast:true,specialInto:true};
+    classes.set('into',{name:'into',param:"'a",params:["'a","'b"],methods:new Map([['from',m]]),instances:new Map(),associated:[],standard:true,intoClass:true});methods.set('from',m);
   }
-  if(!classes.has('num'))classes.set('num',{name:'num',param:"'a",methods:new Map(),instances:new Map(),associated:[],standard:true,numClass:true,supers:['add','sub','mul','div','mod','pow','toInt','toFloat','toByte','toChar']});
+  for(const direction of ['to','from'])for(const type of ['int','float','byte','char']){
+    const name=direction+type[0].toUpperCase()+type.slice(1);if(classes.has(name))continue;
+    const source=direction==='to'?{tag:'param',name:"'a"}:{tag:'atom',name:type},target=direction==='to'?{tag:'atom',name:type}:{tag:'param',name:"'a"};
+    const m={name,className:name,param:"'a",signature:direction==='to'?`'a -> ${type} / {exn}`:`${type} -> 'a / {exn}`,specialCast:true};
+    classes.set(name,{name,param:"'a",methods:new Map([[name,m]]),instances:new Map(),standard:true,castClass:true,conversion:[source,target],supers:['into'],superConstraints:[{name:'into',args:[source,target]}]});if(!methods.has(name))methods.set(name,m);
+  }
+  if(!classes.has('num'))classes.set('num',{name:'num',param:"'a",methods:new Map(),instances:new Map(),associated:[],standard:true,numClass:true,supers:['add','sub','mul','div','mod','pow','toInt','toFloat','toByte','toChar','fromInt','fromFloat','fromByte']});
   for(const [name,method] of [['indexGet','at'],['indexSet','setAt']])if(!classes.has(name)){
     const associated=[{name:'key',owner:name,param:"'indexKey"},{name:'item',owner:name,param:"'indexItem"}],param="'c";
     const m={name:method,className:name,param,signature:method==='at'?"'c 'indexKey -> 'indexItem / {exn}":"'c 'indexKey 'indexItem -> 'c / {exn}",inputCount:method==='at'?2:3,dispatchIndex:0,specialIndex:true};

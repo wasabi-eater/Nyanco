@@ -64,12 +64,15 @@ instance num amount where
   toFloat (Amount x) = toFloat x
   toByte (Amount x) = toByte x
   toChar (Amount x) = toChar x
+  fromInt x = Amount x
+  fromFloat x = Amount (toInt x)
+  fromByte x = Amount (toInt x)
 data settings = Settings int
 instance indexGet settings where
   key : string
   item : int
   at (Settings value) key = value
-main = print ((Amount 7) / (Amount 2)); print ((Settings 9).["key"]); print (toByte (-0.5))`;
- const {output}=run(source);assert.deepEqual(output,['(Amount 3)','9','0']);assert.equal(native(source),output.join('\n')+'\n');
+main = print ((fromInt 3) + (Amount 4)); print ((Amount 7) / (Amount 2)); print ((Settings 9).["key"]); print (toByte (-0.5))`;
+ const {output}=run(source);assert.deepEqual(output,['(Amount 7)','(Amount 3)','9','0']);assert.equal(native(source),output.join('\n')+'\n');
  assert.throws(()=>compile(source+'\nbad = (Settings 9) with {.["key"] = 1}'),/indexSet/);
 });

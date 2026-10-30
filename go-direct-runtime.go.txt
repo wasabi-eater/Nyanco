@@ -169,7 +169,7 @@ func(m *Machine) parseNumber(value any,optional bool,loc string) any {
 func(m *Machine) numericCast(value any,target,loc string) any {
  if target=="char"{if _,ok:=value.(Char);ok{return value}}
  if target=="int"{if _,ok:=value.(int64);ok{return value}}
- n:=number(value,loc)
+ var n float64;if c,ok:=value.(Char);ok{n=float64(c)}else{n=number(value,loc)}
  if math.IsNaN(n)||math.IsInf(n,0)||target=="byte"&&(math.Trunc(n)<0||math.Trunc(n)>=256)||target=="int"&&(n< -9223372036854775808.0||n>=9223372036854775808.0)||target=="char"&&(math.Trunc(n)<0||math.Trunc(n)>0x10ffff||math.Trunc(n)>=0xd800&&math.Trunc(n)<=0xdfff){m.perform("exn",[]any{"Invalid numeric cast to "+target},loc,true);fail(loc,"Non-returning effect returned")}
  switch target{case "char":return Char(n);case "float":return n;case "byte":return uint8(n);case "int":if _,ok:=value.(int64);ok{return value};return int64(n)};return nil
 }

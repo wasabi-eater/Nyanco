@@ -1,4 +1,4 @@
-# Nyanco 0.58 — クラス継承と文字変換
+# Nyanco 0.59 — intoによる変換と複数引数の型クラス
 
 型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
 
@@ -946,7 +946,7 @@ instance indexSet (box 'a) where
 
 ## クラス継承・toChar・bytes（0.58）
 
-`class 親制約, 親制約 => 子クラス 'a where`で継承します。親には子と同じ型引数を渡します。子の制約があれば親のメソッドも使えます。
+`class 親制約, 親制約 => 子クラス 'a where`で継承します。0.59から、親の型引数に固定の型や子の複数の型引数を渡せます。子の制約があれば親のメソッドも使えます。
 
 ```haskell
 class show 'a => named 'a where
@@ -979,3 +979,41 @@ chars "あ"         -- ['あ'] : [char]
 `toChar : toChar 'a => 'a -> char / {exn}`は数値をUnicodeスカラー値として解釈します。floatは0方向へ切り捨て、0〜0x10FFFFの範囲外やサロゲート領域0xD800〜0xDFFFはexnになります。charに対するtoCharはその文字を返します。ADTにも変換のinstanceを実装できます。`bytes : string -> [byte]`はUTF-8の各byteをvectorにします。
 
 [実行例](examples/class-inheritance.nyan)
+
+
+## intoによる変換（0.59）
+
+`into 'a 'b`は型'aから型'bへの変換を表すクラスです。メソッドは`from : into 'a 'b => 'a -> 'b / {exn}`です。入力と戻り型の両方でinstanceを選びます。同じ入力型から複数の型へ変換でき、戻り型が決まらない呼び出しは曖昧な変換としてエラーになります。
+
+```haskell
+data distance = Distance float
+instance into int distance where
+  from n = Distance (toFloat n)
+instance into distance int where
+  from (Distance n) = toInt n
+
+makeDistance : int -> distance / {exn}
+makeDistance = from             -- fromIntでも同じ
+
+asInt : distance -> int / {exn}
+asInt = from                    -- toIntでも同じ
+
+main = print (asInt (makeDistance 42))
+```
+
+標準のtoInt・toFloat・toByte・toCharクラスは、それぞれ`into 'a int`などを継承します。fromInt・fromFloat・fromByte・fromCharクラスは、それぞれ`into int 'a`などを継承します。これらの関数は同じinto instanceを利用するので、intoを実装すれば両方の名前で呼び出せます。以前の`instance toInt 型 where`形式も使え、その実装をintoにも登録します。変換クラスのinstanceではメソッド名に自身の名前、またはfromを指定できます。
+
+numは演算クラス6種・to系4種に加え、fromInt・fromFloat・fromByteも継承します。ADTのnum instanceには、対応する入力変換の実装も必要です。これらをfromIntなどのメソッドとしてまとめて定義しても、intoのinstanceとして別々に定義しても構いません。
+
+標準スカラーint・float・byte・char間にはinto instanceがあります。charから数値への変換はUnicodeコードポイントを使います。範囲外などの失敗は引き続きexnになります。
+
+一般のクラスでも複数の型引数を使え、instanceの文脈制約や継承に対応します。関連型と違い、複数の型引数間に一意性は仮定しません。
+
+```haskell
+class pair 'a 'b where
+  pairText : 'a 'b -> string
+
+class into 'a int => intReadable 'a where
+```
+
+[実行例](examples/into-conversions.nyan)

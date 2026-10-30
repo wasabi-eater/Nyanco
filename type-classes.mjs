@@ -1,3 +1,4 @@
+import {classParameters,instanceHeads,relationKey,superConstraints,substitute,ancestorArguments,lookupInstance,builtinConversion,syntaxSource} from './class-relations.mjs';
 import {resolveInheritance} from './class-inheritance.mjs';
 import {classConstraint} from './class-syntax.mjs';
 import {lowerName,instanceKey} from './type-names.mjs';
@@ -38,15 +39,16 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       }
       pending.push({head,context,body,token:first});continue;
     }
-    const superArrow=header.findIndex(t=>t.value==='=>'),supers=[];
-    if(superArrow>=0){const own=header.slice(superArrow+1,-1);if(own.length!==2)fail('Class requires one type parameter',first);name=lowerName(own[0].value);arg=own[1].value;
-      for(const part of header.slice(1,superArrow).map(t=>t.value).join(' ').split(',')){const constraint=classConstraint(part,n=>classes.has(n)||standardOperatorClasses.has(n));if(!constraint||constraint.args.length!==1||constraint.args[0]!==arg)fail('Superclass must use the class parameter',first);supers.push(constraint.name);}
-    }else if(header.length!==4)fail('Class requires one type parameter',first);
-    if(!/^[a-z][A-Za-z0-9_]*$/.test(name) || !/^'[a-z][A-Za-z0-9_']*$/.test(arg))fail('Class requires a lowercase name and one type parameter',first);
+    const superArrow=header.findIndex(t=>t.value==='=>'),superParts=superArrow<0?[]:header.slice(1,superArrow).map(t=>t.value).join(' ').split(',');
+    const own=header.slice(superArrow<0?1:superArrow+1,-1);name=lowerName(own[0]?.value);
+    const classParams=own.slice(1).map(t=>t.value);arg=classParams[0];
+    if(!/^[a-z][A-Za-z0-9_]*$/.test(name||'')||!classParams.length||new Set(classParams).size!==classParams.length||classParams.some(p=>!/^'[a-z][A-Za-z0-9_']*$/.test(p)))fail('Class requires a lowercase name and distinct type parameters',first);
     if(classes.has(name))fail(`Class already declared: ${name}`,first);
-    const c={name,param:arg,supers,associated:[],methods:new Map(),instances:new Map(),token:first};
+    const constraints=superParts.map(part=>{const sc=classConstraint(part,n=>classes.has(n)||standardOperatorClasses.has(n));if(!sc)fail('Invalid superclass constraint',first);const parser=typeSyntax(sc.args,definitions.dataTypes,new Set(classParams),m=>fail('Superclass: '+m,first)),args=parser.types();if(!parser.done())fail('Invalid superclass arguments',first);return {name:sc.name,args};});
+    const supers=[...new Set(constraints.map(sc=>sc.name))];
+    const c={name,param:arg,params:classParams,supers,superConstraints:constraints,associated:[],methods:new Map(),instances:new Map(),token:first};
     const classMembers=members(body),associatedParts=classMembers.filter(p=>p[0]?.value==='type');
-    const used=new Set(body.map(t=>t.value));
+    const used=new Set([...body.map(t=>t.value),...classParams]);
     for(const part of associatedParts){
       const label=part[1]?.value;
       if(part.length!==2 || !/^[a-z][A-Za-z0-9_]*$/.test(label||''))fail('Associated type declaration requires type name',part[0]);
@@ -59,7 +61,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       const [method,colon]=part;
       if(method.kind!=='word' || (!/^[a-z][A-Za-z0-9_']*$/.test(method.value) && !operatorSpecs.has(method.value)) || colon?.value!==':' || part.length<3)fail('Class member requires method : input -> output',method);
       if(methods.has(method.value) || builtins.has(method.value) && !operatorSpecs.has(method.value) || definitions.has(method.value) || globals.has(method.value) || definitions.constructors.has(method.value))fail(`Method name already used: ${method.value}`,method);
-      const m={name:method.value,className:name,param:arg,signature:part.slice(2).map((t,i,ts)=>ts[i+1]?.value===':'?t.value:(c.associated.find(a=>a.name===t.value)?.param||t.value)).join(' '),token:method};
+      const m={name:method.value,className:name,param:arg,params:classParams,signature:part.slice(2).map((t,i,ts)=>ts[i+1]?.value===':'?t.value:(c.associated.find(a=>a.name===t.value)?.param||t.value)).join(' '),token:method};
       c.methods.set(m.name,m);methods.set(m.name,m);
     }
     if(!c.methods.size&&!supers.length)fail('Class requires a method or superclass',first);
@@ -97,23 +99,25 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     enableStandard(name,token);
     const c=classes.get(name);if(!c)fail(`Unknown class: ${name}`,token);
     const parser=typeSyntax(headTokens,definitions.dataTypes,null,m=>fail(m,token)),heads=parser.types();
-    if(!parser.done() || heads.length!==1)fail('Instance requires one complete type',token);
-    const head=heads[0],target=instanceKey(head);
-    if(!target)fail('Instance head must be a data type, scalar or vector',token);
+    if(!parser.done() || heads.length!==classParameters(c).length)fail('Instance requires '+classParameters(c).length+' complete type argument(s)',token);
+    const head=heads[0],target=relationKey(heads);
+    if(!target||heads.length===1&&head.tag==='param')fail('Instance head must be a data type, scalar or vector',token);
     const params=new Set();
-    const visit=t=>{if(t?.tag==='param')params.add(t.name);else if(t && typeof t==='object')for(const v of Object.values(t)){if(Array.isArray(v))v.forEach(visit);else visit(v);}};visit(head);
-    for(const [cls,...args] of context){
-      const constraintClass=classes.get(cls);if(!constraintClass)fail('Unknown class: '+cls,token);
-      const count=cls==='streem'?2:1+(constraintClass.associated?.length||0);
-      if(args.length!==count && !(args.length===1 && count>1))fail('Invalid instance constraint arity: '+cls,token);
-      if(args.some(param=>!params.has(param)))fail('Instance constraint variable must occur in its head',token);
+    const visit=t=>{if(t?.tag==='param')params.add(t.name);else if(t && typeof t==='object')for(const v of Object.values(t)){if(Array.isArray(v))v.forEach(visit);else visit(v);}};heads.forEach(visit);
+    for(let i=0;i<context.length;i++){
+      const [cls,...tokens]=context[i],constraintClass=classes.get(cls);if(!constraintClass)fail('Unknown class: '+cls,token);
+      const parser=typeSyntax(tokens,definitions.dataTypes,params,m=>fail('Instance constraint: '+m,token)),args=parser.types();if(!parser.done())fail('Invalid instance constraint',token);
+      const count=cls==='streem'?2:classParameters(constraintClass).length+(constraintClass.associated?.length||0);
+      if(args.length!==count&&!(args.length===classParameters(constraintClass).length&&count>args.length))fail('Invalid instance constraint arity: '+cls,token);
+      context[i]=[cls,...args];
     }
-    if((c.castClass||c.numClass)&&head.tag==='atom'&&(['int','float','byte'].includes(head.name)||c.castClass&&name==='toChar'&&head.name==='char'))fail('Built-in numeric instance already exists',token);
+    if(c.intoClass&&heads.every(t=>t.tag==='param'||t.tag==='atom'&&['int','float','byte','char'].includes(t.name)))fail('Built-in conversion instance already exists',token);
+    if((c.castClass||c.numClass)&&head.tag==='atom'&&(['int','float','byte'].includes(head.name)||c.castClass&&head.name==='char'))fail('Built-in numeric instance already exists',token);
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);
     if(c.indexClass&&(head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
     if(name==='streem' && ['vector','range'].includes(target))fail('Built-in streem instance already exists',token);
-    if(c.instances.has(target))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
-    const instance={target,head,context,implementations:new Map(),token};c.instances.set(target,instance);
+    if([...c.instances.values()].some(i=>instanceHeads(i).every((t,n)=>t.tag==='param'||heads[n].tag==='param'||instanceKey(t)===instanceKey(heads[n]))))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
+    const instance={target,head,heads,context,implementations:new Map(),token};c.instances.set(target,instance);
     const parts=members(body);instance.associated=new Map();instance.associatedSources=new Map();
     for(const associated of c.associated||[]) {
       const matches=parts.filter(p=>p[0]?.value===associated.name && p[1]?.value===':');
@@ -133,25 +137,26 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       let depth=0,sep=-1;
       for(let i=0;i<part.length;i++){const t=part[i];if(!depth && ['=','|'].includes(t.value)){sep=i;break;}if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
       if(part[0]?.kind==='(' && part[2]?.kind===')'){part.splice(0,3,part[1]);sep-=2;}
+      if(c.conversion&&part[0]?.value==='from')part[0]={...part[0],value:c.name};
       const method=part[0];
       if(sep<1 || !c.methods.has(method.value))fail('Instance must define a method declared by its class',method||part[0]);
-      const owner=classes.get(c.methods.get(method.value).className);if(owner!==c&&(owner.instances.get(target)?.implementations.has(method.value)||!owner.showClass&&builtinInstance(owner,head)))fail('Inherited method already has a superclass instance: '+method.value,method);
-      const hidden=`__tc_${name.length}_${name}_${target.length}_${target}_${[...method.value].map(c=>c.charCodeAt(0)).join('_')}`;
+      const owner=classes.get(c.methods.get(method.value).className);if(owner!==c&&(lookupInstance(owner,ancestorArguments(classes,c,heads,owner.name))?.implementations.has(method.value)||!owner.showClass&&(owner.intoClass?builtinConversion(ancestorArguments(classes,c,heads,owner.name)):builtinInstance(owner,head))))fail('Inherited method already has a superclass instance: '+method.value,method);
+      const hidden=`__tc_${name.length}_${name}_${target.length}_${[...target].map(c=>c.charCodeAt(0)).join('_')}_${[...method.value].map(c=>c.charCodeAt(0)).join('_')}`;
       instance.implementations.set(method.value,hidden);
       ordinary.push(part.map((t,i)=>i===0?{...t,value:hidden,internal:true}:t));
     }
     for(const [method,m] of c.methods) {
       if(!instance.implementations.has(method)){
-        const owner=classes.get(m.className),parent=owner?.instances.get(target);
-        if(parent){instance.implementations.set(method,parent.implementations.get(method));continue;}
-        if(builtinInstance(owner,head))continue;
+        const owner=classes.get(m.className),parent=owner!==c&&owner&&lookupInstance(owner,ancestorArguments(classes,c,heads,owner.name));
+        if(parent&&parent.implementations.get(method)){instance.implementations.set(method,parent.implementations.get(method));continue;}
+        if(builtinInstance(owner,head)||owner?.intoClass&&builtinConversion(ancestorArguments(classes,c,heads,owner.name))||owner?.conversion&&lookupInstance(classes.get('into'),owner.conversion.map(t=>substitute(t,new Map([[owner.param,ancestorArguments(classes,c,heads,owner.name)[0]]])))))continue;
         fail(`Missing instance method: ${method}`,token);
       }
       const used=new Set(m.signature?.match(/'[A-Za-z0-9_]+/g)||[]);let fresh=0;
       const renamed=new Map([...params].map(p=>{let n;do{n=`'instance${fresh++}`;}while(used.has(n));used.add(n);return [p,n];}));
-      const targetSource='( '+headTokens.map(t=>renamed.get(t)||t).join(' ')+' )';
-      const prefix=context.map(([cls,...ps])=>`${cls} ${ps.map(p=>renamed.get(p)).join(' ')}`).join(', ');
-      const signature=m.specialEach?{each:instance}: (prefix?prefix+' => ':'')+m.signature.split(' ').map(t=>t===c.param?targetSource:instance.associatedSources.has(t)?'( '+instance.associatedSources.get(t).map(x=>renamed.get(x)||x).join(' ')+' )':t).join(' ');
+      const sources=new Map(classParameters(c).map((p,i)=>[p,'( '+(heads.length===1?headTokens.map(t=>renamed.get(t)||t).join(' '):syntaxSource(substitute(heads[i],new Map([...renamed].map(([a,b])=>[a,{tag:'param',name:b}])))))+' )']));
+      const prefix=context.map(([cls,...ps])=>`${cls} ${ps.map(p=>syntaxSource(substitute(p,new Map([...renamed].map(([a,b])=>[a,{tag:'param',name:b}]))))).join(' ')}`).join(', ');
+      const signature=m.specialEach?{each:instance}: (prefix?prefix+' => ':'')+m.signature.split(' ').map(t=>sources.has(t)?sources.get(t):instance.associatedSources.has(t)?'( '+instance.associatedSources.get(t).map(x=>renamed.get(x)||x).join(' ')+' )':t).join(' ');
       const hidden=instance.implementations.get(method);
       // compile() installs these specialized signatures after all bodies are parsed.
       instance.signatures ??= new Map();instance.signatures.set(hidden,signature);
@@ -159,11 +164,14 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     publishParents(c,instance);
   }
   function publishParents(c,instance,seen=new Set()){
-    if(seen.has(c.name))return;seen.add(c.name);
-    for(const name of c.supers||[]){const parent=classes.get(name);let inherited=parent.instances.get(instance.target);
-      const builtin=builtinInstance(parent,instance.head);
-      if(!inherited&&builtin&&![...parent.methods.keys()].some(m=>instance.implementations.has(m)))continue;
-      if(!inherited){inherited={...instance,implementations:new Map([...parent.methods.keys()].map(m=>[m,instance.implementations.get(m)])),signatures:new Map()};parent.instances.set(instance.target,inherited);}
+    const identity=c.name+':'+instance.target;if(seen.has(identity))return;seen.add(identity);
+    const bindings=new Map(classParameters(c).map((p,i)=>[p,instanceHeads(instance)[i]]));
+    for(const sc of superConstraints(c)){const parent=classes.get(sc.name),heads=sc.args.map(t=>substitute(t,bindings)),key=relationKey(heads);let inherited=lookupInstance(parent,heads);
+      const implementations=c.conversion&&parent.intoClass?new Map([['from',instance.implementations.get(c.name)]]):new Map([...parent.methods.keys()].map(m=>[m,instance.implementations.get(m)]));
+      const hasImplementation=[...implementations.values()].some(Boolean),builtin=parent.intoClass?builtinConversion(heads):builtinInstance(parent,heads[0]);
+      if(!inherited&&builtin&&!hasImplementation)continue;
+      if(!inherited){inherited={...instance,target:key,head:heads[0],heads,implementations,signatures:new Map()};parent.instances.set(key,inherited);}
+      else if(hasImplementation&&[...implementations].some(([m,fn])=>fn&&inherited.implementations.get(m)!==fn))fail('Conflicting superclass instance: '+parent.name,instance.token);
       publishParents(parent,inherited,seen);
     }
   }
