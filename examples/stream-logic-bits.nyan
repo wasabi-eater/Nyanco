@@ -1,11 +1,14 @@
 -- Nyanco 0.38 prefix
 main =
-  print (max (map (1 ..= 5) {* 2}));
-  print (min [3,1,2]);
-  print (maxBy [{score: 2}, {score: 5}] {.score});
+  print (max 3 5);
+  print (min 3 5);
+  print (fromSome (Some 42));
+  print (maxi (map (1 ..= 5) {* 2}));
+  print (mini [3,1,2]);
+  print (maxiBy [{score: 2}, {score: 5}] {.score});
   print (all (1 ..= 5) {> 0});
   print (any [1,2,3] {== 2});
-  print (maxBy [1,2,3] {when ($ == 3) {break}; nop});
+  print (maxiBy [1,2,3] {when ($ == 3) {break}; nop});
   print (False && (exn "skipped"));
   print (True || (exn "skipped"));
   print (7 .&. 3);

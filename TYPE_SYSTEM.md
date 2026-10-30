@@ -238,8 +238,15 @@ intoのfromは一般の複数引数クラスメソッドです。to系・from系
 
 ## stream集約・短絡論理・ビット演算（0.61）
 
-集約関数の型はstreem c a制約を持ち、max/min系はord key制約とoption aの戻り値を持ちます。Byのblockはa -> key、all/anyのblockはa -> boolです。producerとcallbackの潜在エフェクトを合成してbreakだけを除外します。比較には既存のord辞書を使い、そのエフェクトも伝播します。VMとGoの両方で逐次走査し、述語の短絡にはbreakとは別のprivate cancellationを使ってproducerを閉じます。
+集約関数の型はstreem c a制約を持ち、maxi/min系はord key制約とoption aの戻り値を持ちます。Byのblockはa -> key、all/anyのblockはa -> boolです。producerとcallbackの潜在エフェクトを合成してbreakだけを除外します。比較には既存のord辞書を使い、そのエフェクトも伝播します。VMとGoの両方で逐次走査し、述語の短絡にはbreakとは別のprivate cancellationを使ってproducerを閉じます。
 
 &&/||の両辺はboolとして検査し、RHSのbottomが演算全体をbottomにすることはありません。RHSだけで作った捕捉参照は後続コードの保証済み参照に含めません。VMは必要な枝だけを評価し、Goは条件分岐内にRHSをloweringします。
 
 and/orクラスのメソッド名は.&./.|.です。xor・shl・shr・bitsの標準辞書も登録し、int・byteを実装します。AND/OR/XORはboolにも対応します。シフトの右辺とbit位置はintで、範囲検査のexnを型に含めます。VMはBigIntを使ってJSの32bitビット演算を避け、Goはint64・uint8で処理します。
+
+
+## extremaの区別とoptionの取り出し（0.62）
+
+stream集約はmaxi/mini/maxiBy/miniByへ改称し、従来のstream型・エフェクト・break処理を維持します。二項max/minは同じ型の2値を受け取り、ord辞書による比較で片方をそのまま返します。比較のエフェクトを呼び出し元へ伝播し、独自のbreakハンドラーは設けません。
+
+fromSomeはoption a -> a / {exn}の型を持ちます。Someのpayloadを型を保って取り出し、Noneは非復帰のexnとして処理します。VM・Goとも標準optionの表現を使い、異なるoption宣言は静的に拒否します。No instanceとMissing constraintの単一引数クラスの表示は、クラス名・型引数の順に統一します。

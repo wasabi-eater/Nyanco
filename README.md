@@ -1,4 +1,4 @@
-# Nyanco 0.61 — stream集約・短絡評価・ビット演算
+# Nyanco 0.62 — 二項min/maxとoptionの取り出し
 
 型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
 
@@ -1046,18 +1046,18 @@ r.x <- 5, + 2            -- r.x = 7
 
 ## streamの集約・判定とビット演算（0.61）
 
-max・min・maxBy・minBy・all・anyはstreemクラスのコンテナを受け取り、vector・range・遅延stream・ユーザー定義コンテナに使えます。
+maxi・mini・maxiBy・miniBy・all・anyはstreemクラスのコンテナを受け取り、vector・range・遅延stream・ユーザー定義コンテナに使えます。
 
 ```haskell
-max (map (1 ..= 4) {* 2})       -- Some 8
-min [3,1,2]                    -- Some 1
-max []                         -- None
-maxBy [{score: 1}, {score: 3}] {.score}  -- Some {score: 3}
+maxi (map (1 ..= 4) {* 2})       -- Some 8
+mini [3,1,2]                    -- Some 1
+maxi []                         -- None
+maxiBy [{score: 1}, {score: 3}] {.score}  -- Some {score: 3}
 all (1 ..= 5) {> 0}            -- True
 any [1,2,3] {== 2}             -- True
 ```
 
-max・minは要素にord制約を要求し、By版はsortByと同じくキーを返すblockを受け取ります。結果は選ばれた要素のoptionです。同値のキーではmax系が最後、min系が最初の要素を返し、キーは要素ごとに一度だけ計算します。
+maxi・minは要素にord制約を要求し、By版はsortByと同じくキーを返すblockを受け取ります。結果は選ばれた要素のoptionです。同値のキーではmax系が最後、min系が最初の要素を返し、キーは要素ごとに一度だけ計算します。
 
 all・anyは要素を1個受け取りboolを返す述語blockが必要です。allは最初のFalse、anyは最初のTrueで走査を止めます。空の入力ではallはTrue、anyはFalseです。これら6関数は全てbreakに対応し、中断時は完了した要素までの結果を返します。まだ要素を確定していないmax系・min系はNone、allはTrue、anyはFalseを返します。blockのIOなど、break以外の効果は呼び出し元に伝わります。ラベル付きblockで外側の反復へbreakすることもできます。
 
@@ -1082,3 +1082,28 @@ clearBit 15 2                    -- 11
 優先順位は低い順に`||`、`&&`、比較、`.|.`、`.&.`、range・cons、シフト、加減算、乗除算、累乗です。空白による適用は引き続き二項演算子より優先されます。標準クラス名はand・or・xor・shl・shr・bitsです。
 
 [実行例](examples/stream-logic-bits.nyan)
+
+
+## maxi/mini・二項max/min・fromSome（0.62）
+
+stream用の最大・最小関数をmaxi・mini・maxiBy・miniByへ改称しました。all・anyの名前はそのままで、stream関数のbreak対応も維持します。
+
+max・minは同じ型の2引数から大きい方・小さい方を返します。ordクラスのinstanceを使うため、数値・charや、ordを実装したADTに使えます。同順位ではmaxは第2引数、minは第1引数を返します。
+
+```haskell
+max 3 5                       -- 5
+min 3 5                       -- 3
+maxi [3,1,2]                  -- Some 3
+mini []                       -- None
+maxiBy [{score: 1}, {score: 3}] {.score}  -- Some {score: 3}
+fromSome (Some 42)             -- 42
+fromSome (maxi [3,1,2])        -- 3
+```
+
+`fromSome : option 'a -> 'a / {exn}`はSomeの中身を返します。Noneではメッセージ`fromSome: None`のexnを発生させ、通常のhandleで処理できます。
+
+```haskell
+handle {fromSome None} {exn: {-> message k; 0}}  -- 0
+```
+
+型クラスの診断も前置形式へ揃えました。たとえば`No instance: ord bool`、`No instance: into string int`、`Missing constraint: add 'a`と表示します。

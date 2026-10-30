@@ -18,7 +18,7 @@ test('classes infer constraints and dispatch multiple instances',()=>{
   assert.equal(vm.infer('render'),"'a describe => ..s 'a -- ..s string");
   assert.match(p.types.get('describe'),/describe/);
   assert.ok([...p.types.keys()].every(n=>!n.startsWith('__tc_')));
-  assert.throws(()=>vm.evaluate('"unsupported" render'),/No instance: string describe/);
+  assert.throws(()=>vm.evaluate('"unsupported" render'),/No instance: describe string/);
 });
 
 test('constraints propagate through quotes, records, local functions and map',()=>{
@@ -86,7 +86,7 @@ instance count int where
 both = dup describe; swap count`));
   assert.deepEqual(vm.evaluate('3 both'),['3',3]);
   assert.match(vm.infer('both'),/'a count, 'a describe =>/);
-  assert.throws(()=>vm.evaluate('True both'),/No instance: bool count/);
+  assert.throws(()=>vm.evaluate('True both'),/No instance: count bool/);
 });
 
 test('REPL can add instances after class definitions without changing older programs',()=>{

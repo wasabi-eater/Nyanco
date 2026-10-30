@@ -16,7 +16,7 @@ walk = each`;
 test('generic instances substitute their head parameters and enforce context constraints',()=>{
   const vm=new VM(compile(generic));
   assert.deepEqual(vm.evaluate('3 Box describe; [1 2] describe; 4 Box Box describe'),['3','["1", "2"]','4']);
-  assert.throws(()=>vm.evaluate('True Box describe'),/No instance: bool describe/);
+  assert.throws(()=>vm.evaluate('True Box describe'),/No instance: describe bool/);
   assert.throws(()=>compile(generic.replace("instance 'a describe => describe ('a box)","instance describe ('a box)")),/Missing constraint/);
 });
 test('each supports generic user containers and threads the ambient stack',()=>{
@@ -25,7 +25,7 @@ test('each supports generic user containers and threads the ambient stack',()=>{
   assert.deepEqual(vm.evaluate('"prefix" 10 (2 Box) {+} each'),['prefix',12]);
   assert.match(vm.infer('walk'),/^'a.* each =>/);
   assert.throws(()=>vm.evaluate('0 (True Box) {+} walk'),/Cannot unify/);
-  assert.throws(()=>vm.evaluate('3 {drop} each'),/No instance: int streem/);
+  assert.throws(()=>vm.evaluate('3 {drop} each'),/No instance: streem int/);
   assert.throws(()=>vm.evaluate('(3 Box) {dup} each'),/Infinite type|shape|underflow/);
 });
 test('nonparametric each instances declare an item type',()=>{
@@ -45,7 +45,7 @@ instance 'a add => add ('a box) where
 f = +`),vm=new VM(p);
   assert.equal(format(vm.evaluate('(2 Box) + (3 Box)')),'[(Box 5)]');
   assert.equal(format(vm.evaluate('(2 Box Box) (3 Box Box) f')),'[(Box (Box 5))]');
-  assert.throws(()=>vm.evaluate('(True Box) + (False Box)'),/No instance: bool add/);
+  assert.throws(()=>vm.evaluate('(True Box) + (False Box)'),/No instance: add bool/);
 });
 test('instance heads reject duplicates, invalid variables and builtin each overrides',()=>{
   assert.throws(()=>compile(generic+`\ninstance each ('a box) where\n  each = drop drop`),/Duplicate instance/);
@@ -79,5 +79,5 @@ instance 'a add, 'a eq => eq ('a box) where
   (x Box) (y Box) /= = (x + y) /= x
 same = ==`));
   assert.deepEqual(vm.evaluate('(1 Box) (0 Box) same'),[true]);
-  assert.throws(()=>vm.evaluate('(True Box) (False Box) same'),/No instance: bool add/);
+  assert.throws(()=>vm.evaluate('(True Box) (False Box) same'),/No instance: add bool/);
 });

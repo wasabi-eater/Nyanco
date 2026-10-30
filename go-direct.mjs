@@ -402,15 +402,20 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       }
       ctx.lines.push(`${result}:=[]any{};for _,item:=range ${rows}{${result}=append(${result},item.value)}`);v.push(ctx.value(result));return;
     }
-    if(['max','min','maxBy','minBy','all','any'].includes(name)){
-      const predicate=name==='all'||name==='any',q=['max','min'].includes(name)?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),result=ctx.value(predicate?String(name==='all'):'nil'),found=`found${next++}`,bestKey=`key${next++}`;
+    if(name==='max'||name==='min'){
+      const b=pop(),a=pop(),less=binaryCall({...n,value:'<'},b,a,info.comparison,ctx),result=ctx.value(name==='max'?b:a);
+      ctx.lines.push(`if boolean(${less},${at}){${result}=${name==='max'?a:b}}`);v.push(result);return;
+    }
+    if(name==='fromSome'){v.push(ctx.value(`m.fromSome(${pop()},${at})`));return;}
+    if(['maxi','mini','maxiBy','miniBy','all','any'].includes(name)){
+      const predicate=name==='all'||name==='any',q=['maxi','mini'].includes(name)?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),result=ctx.value(predicate?String(name==='all'):'nil'),found=`found${next++}`,bestKey=`key${next++}`;
       if(!predicate)ctx.lines.push(`${found}:=false;_=${found};var ${bestKey} any;_=${bestKey}`);
       ctx.lines.push(`iterationBoundary(func(stop func()){m.loop(func(m *Machine){${walk}(m,func(item any){`);
       const inner=context();let key='item';if(q){const values=['item'];invoke(inner,q,values,topTypes.at(-1),at);key=values[0]||'nil';}
       ctx.lines.push(...inner.lines);
       if(predicate)ctx.lines.push(`${result}=boolean(${key},${at});if ${name==='all'?'!':''}boolean(${result},${at}){stop()}`);
       else{
-        const cmp=context(),less=binaryCall({...n,value:'<'},key,bestKey,info.comparison,cmp),replace=name.startsWith('max')?'!':'';
+        const cmp=context(),less=binaryCall({...n,value:'<'},key,bestKey,info.comparison,cmp),replace=name.startsWith('maxi')?'!':'';
         ctx.lines.push(`if !${found}{${result}=item;${bestKey}=${key};${found}=true}else{`,...cmp.lines,`if ${replace}boolean(${less},${at}){${result}=item;${bestKey}=${key}}}`);
       }
       ctx.lines.push(`})},${at},${label})})`);

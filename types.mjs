@@ -80,14 +80,14 @@ function requireAssociated(c,container,items,token) {
     for(const fact of constraintFacts(container,c.name))if(fact.name===c.name&&sameType(fact.args[0],container)){items.forEach((t,i)=>unify(t,fact.args[i+1],token));return;}
     const existing=container.associated?.get(c.name);
     if(existing){existing.forEach((t,i)=>unify(t,items[i],token));return;}
-    if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${formatType(container)} ${c.name}`,token);
+    if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${c.name} ${formatType(container)}`,token);
     container.associated??=new Map();container.associated.set(c.name,items);return;
   }
   if(c.indexClass&&(container.tag==='list'||container.tag==='atom'&&container.name==='string')){
     unify(items[0],INT,token);unify(items[1],container.tag==='list'?container.item:BYTE,token);return;
   }
   const instance=c.instances.get(instanceKey(container));
-  if(!instance)throw new StaticTypeError(`No instance: ${formatType(container)} ${c.name}`,token);
+  if(!instance)throw new StaticTypeError(`No instance: ${c.name} ${formatType(container)}`,token);
   const parameters=new Map();unify(container,syntaxType(instance.head,parameters),token);
   c.associated.forEach((a,i)=>unify(items[i],syntaxType(instance.associated.get(a.name),parameters),token));
   applyContext(instance.context,parameters,token);
@@ -105,14 +105,14 @@ function requireClass(name,type,token) {
     type.classes ??= new Set();if(hasRelationEvidence(c,[type]))return;for(const n of type.classes)if(inheritedConstraints(c,[type]).some(f=>f.name===n&&f.args.length===1&&sameType(f.args[0],type)))type.classes.delete(n);type.classes.add(name);return;
   }
   if(type.tag==='rigid') {
-    if(!hasRelationEvidence(c,[type])){if(c.conversion){requireSuperclasses(c,[type],token);return;}throw new StaticTypeError(`Missing constraint: ${formatType(type)} ${name}`,token);}
+    if(!hasRelationEvidence(c,[type])){if(c.conversion){requireSuperclasses(c,[type],token);return;}throw new StaticTypeError(`Missing constraint: ${name} ${formatType(type)}`,token);}
     return;
   }
   requireSuperclasses(c,[type],token);
   const key=instanceKey(type),inst=c.instances.get(key);
   if(inst) { const parameters=new Map();unify(type,syntaxType(inst.head,parameters),token);applyContext(inst.context,parameters,token);return; }
   if(c.conversion)return;
-  if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${formatType(type)} ${name}`,token);
+  if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${name} ${formatType(type)}`,token);
 }
 
 function requireIterable(container,item,token,latent=null) {
@@ -125,7 +125,7 @@ function requireIterable(container,item,token,latent=null) {
   if(container.tag==='list'){unify(container.item,item,token);return;}
   if(container.tag==='atom' && container.name==='range'){unify(item,INT,token);return;}
   const instance=activeClasses.get('streem')?.instances.get(instanceKey(container));
-  if(!instance)throw new StaticTypeError(`No instance: ${formatType(container)} streem`,token);
+  if(!instance)throw new StaticTypeError(`No instance: streem ${formatType(container)}`,token);
   const parameters=new Map();unify(container,syntaxType(instance.head,parameters),token);
   unify(item,syntaxType(instance.item,parameters),token);
   applyContext(instance.context,parameters,token);
@@ -615,9 +615,11 @@ function builtinSchemes() {
     if(name!=='reverse')requireClass('ord',key);
     out.set(name,generalize(quote(stack(s,...args),push(s,list(a)),effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
   }
-  for(const name of ['max','min','maxBy','minBy','all','any']){
+  for(const name of ['max','min']){const s=row(),a=variable();requireClass('ord',a);out.set(name,generalize(quote(stack(s,a,a),push(s,a),effects())));}
+  {const s=row(),a=variable();out.set('fromSome',generalize(quote(push(s,adt('option',[a])),push(s,a),effects([{name:'exn',args:[]}]))));}
+  for(const name of ['maxi','mini','maxiBy','miniBy','all','any']){
     const s=row(),c=variable(),a=variable(),predicate=name==='all'||name==='any',key=name.endsWith('By')?variable():a,latent=variable('effect-row');requireIterable(c,a,null,latent);
-    const args=[c],dependencies=[{row:latent}];if(!['max','min'].includes(name)){const q=quote(stack(EMPTY,a),stack(EMPTY,predicate?BOOL:key));args.push(q);dependencies.push({row:q.effects});}
+    const args=[c],dependencies=[{row:latent}];if(!['maxi','mini'].includes(name)){const q=quote(stack(EMPTY,a),stack(EMPTY,predicate?BOOL:key));args.push(q);dependencies.push({row:q.effects});}
     if(!predicate)requireClass('ord',key);
     out.set(name,generalize(quote(stack(s,...args),push(s,predicate?BOOL:adt('option',[a])),effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
   }
@@ -939,9 +941,9 @@ class Inference {
         current=concatRows(current,answer);
       }
       else if(this.functions.has(node.value)) {
-        if(['max','min','maxBy','minBy'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
+        if(['maxi','mini','maxiBy','miniBy','fromSome'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
         if(node.value==='toNum' && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('toNum requires data option a = None | Some a',node);
-        if((['each','vmap','vfilter','fold','sortBy','maxBy','minBy','all','any','while','when'].includes(node.value)||transforms.has(node.value))) {
+        if((['each','vmap','vfilter','fold','sortBy','maxiBy','miniBy','all','any','while','when'].includes(node.value)||transforms.has(node.value))) {
           const adapt=(type)=>{type=prune(type);if(type.tag!=='quote'||!isBottom(type.output))return type;
             return {...type,output:row(),originalNever:true};
           };
@@ -958,11 +960,11 @@ class Inference {
         if(trace)trace.effect=effect;
         current=this.apply(effect,current,node);
         if(this.effects.has(node.value))for(const v of free(effect.input))if(v.numericLiterals)unify(v,INT,node);
-        if(['sort','sortBy','max','min','maxBy','minBy'].includes(node.value)) {
-          const input=prune(before),key=['sortBy','maxBy','minBy'].includes(node.value)?prune(prune(input.item).output).item:node.value==='sort'?prune(prune(current).item).item:prune(prune(current).item).args[0];
+        if(['sort','sortBy','maxi','mini','maxiBy','miniBy','max','min'].includes(node.value)) {
+          const input=prune(before),key=['sortBy','maxiBy','miniBy'].includes(node.value)?prune(prune(input.item).output).item:node.value==='sort'?prune(prune(current).item).item:['max','min'].includes(node.value)?prune(current).item:prune(prune(current).item).args[0];
           const comparison=instantiate(this.functions.get('<'));
           unify(comparison,quote(stack(EMPTY,key,key),stack(EMPTY,BOOL)),node);
-          this.effectSink.dependencies.push({row:comparison.effects,exclude:['break'],loop:true,label:node.handlerLabel});
+          this.effectSink.dependencies.push(['max','min'].includes(node.value)?{row:comparison.effects}:{row:comparison.effects,exclude:['break'],loop:true,label:node.handlerLabel});
           if(trace)trace.comparison=comparison;
         }
         if(node.value==='while') {

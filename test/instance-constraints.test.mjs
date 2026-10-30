@@ -16,13 +16,13 @@ test('postfix instance contexts propagate through nested ADTs, lists and inferre
   const p=compile(base+'\nboxed = Box describe'),vm=new VM(p);
   assert.match(p.types.get('boxed'),/'a describe =>/);
   assert.deepEqual(vm.evaluate('3 Box Box render; [1 Box 2 Box] render; 4 boxed'),['3','["1", "2"]','4']);
-  for(const code of ['True Box render','[True Box] render','True boxed','{True Box render} call','[True] {Box render} map'])assert.throws(()=>vm.evaluate(code),/No instance: bool describe/);
+  for(const code of ['True Box render','[True Box] render','True boxed','{True Box render} call','[True] {Box render} map'])assert.throws(()=>vm.evaluate(code),/No instance: describe bool/);
 });
 
 test('instance assumptions are required even when the implementation does not use them',()=>{
   const vm=new VM(compile(base.replace('(x Box) describe = x describe','(x Box) describe = "constant"')));
   assert.deepEqual(vm.evaluate('3 Box describe'),['constant']);
-  assert.throws(()=>vm.evaluate('True Box describe'),/No instance: bool describe/);
+  assert.throws(()=>vm.evaluate('True Box describe'),/No instance: describe bool/);
 });
 
 test('multiple instance constraints are checked independently for different head parameters',()=>{
@@ -33,8 +33,8 @@ instance 'a describe, 'b add => ('a 'b pair) describe where
 both = Pair describe`),vm=new VM(p);
   assert.match(p.types.get('both'),/describe/);assert.match(p.types.get('both'),/add/);
   assert.deepEqual(vm.evaluate('1 2 both'),['1']);
-  assert.throws(()=>vm.evaluate('True 2 both'),/bool describe/);
-  assert.throws(()=>vm.evaluate('1 True both'),/bool add/);
+  assert.throws(()=>vm.evaluate('True 2 both'),/describe bool/);
+  assert.throws(()=>vm.evaluate('1 True both'),/add bool/);
 });
 
 test('instance bodies and caller annotations cannot omit required constraints',()=>{
@@ -50,7 +50,7 @@ instance 'a describe => ('a box) each where
   (x Box) q each = x q call
 walk = each`));
   assert.deepEqual(vm.evaluate('10 (2 Box) {+} walk'),[12]);
-  assert.throws(()=>vm.evaluate('(True Box) {drop} walk'),/No instance: bool describe/);
+  assert.throws(()=>vm.evaluate('(True Box) {drop} walk'),/No instance: describe bool/);
 });
 
 test('instance constraints remain distinct from algebraic effect rows',()=>{
@@ -65,13 +65,13 @@ instance 'a emit => ('a box) emit where
 f = Box emit`),vm=new VM(p);
   assert.match(p.types.get('f'),/'a emit =>/);assert.match(p.types.get('f'),/string yield/);
   assert.deepEqual(vm.evaluate('{1 Box emit} {yield: {-> x k; k resume}} handle'),[]);
-  assert.throws(()=>vm.evaluate('{True Box emit} {yield: {-> x k; k resume}} handle'),/bool emit/);
+  assert.throws(()=>vm.evaluate('{True Box emit} {yield: {-> x k; k resume}} handle'),/emit bool/);
 });
 
 test('REPL instance extension preserves old contexts and rejects errors before side effects',()=>{
   const initial=compile(base),extended=compile('instance bool describe where\n  describe = show','<repl>',initial.definitions);
   assert.deepEqual(new VM(extended).evaluate('True Box Box render'),['True']);
   const output=[],vm=new VM({...initial,output:x=>output.push(x)});
-  assert.throws(()=>vm.evaluate('"must not print" print; True Box render'),/bool describe/);
+  assert.throws(()=>vm.evaluate('"must not print" print; True Box render'),/describe bool/);
   assert.deepEqual(output,[]);
 });

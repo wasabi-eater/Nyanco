@@ -430,7 +430,7 @@ function resolveLabels(nodes,scope=new Map()) {
     }
     if(n.kind==='label') {
       const root=n.body.length===1?n.body[0]:null,head=root?.kind==='application'?root.body[0]:root;
-      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','max','min','maxBy','minBy','all','any','join','toVector','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
+      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
       n.key??=`@label${nextLabel++}`;head.handlerLabel=n.key;
       const nested=new Map(scope);nested.set(n.name,n.key);resolveLabels(n.body,nested);continue;
     }
@@ -1116,7 +1116,7 @@ export class VM {
         }
         else if (BUILTINS.has(t.value)) {
           const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
-          if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxBy','minBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
+          if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxiBy','miniBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
         }
         else if(this.definitions.constructors?.has(t.value)) {
@@ -1257,12 +1257,14 @@ for(const name of ['reverse','sort','sortBy'])define(name,name==='sortBy'?2:1,fu
   })(),t);
   s.push(rows.map(row=>row.value));
 });
-for(const name of ['max','min','maxBy','minBy','all','any'])define(name,['max','min'].includes(name)?1:2,function*(vm,s,t){t={...t};
- const predicate=name==='all'||name==='any',q=['max','min'].includes(name)?null:vm.expect(s.pop(),'quotation',t),xs=s.pop(),stop={};let best,key,found=false,result=name==='all';
+for(const name of ['max','min'])define(name,2,function*(vm,s,t){const b=s.pop(),a=s.pop(),pair=[b,a];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);s.push(name==='max'?(less?a:b):(less?b:a));});
+define('fromSome',1,function*(vm,s,t){const value=s.pop();if(value?.kind==='adt'&&value.typeName==='option'&&value.constructor==='Some'){s.push(value.fields[0]);return;}yield {operation:ioEffects().get('exn'),args:['fromSome: None'],token:t};throw new LanguageError('Non-returning effect returned',t);});
+for(const name of ['maxi','mini','maxiBy','miniBy','all','any'])define(name,['maxi','mini'].includes(name)?1:2,function*(vm,s,t){t={...t};
+ const predicate=name==='all'||name==='any',q=['maxi','mini'].includes(name)?null:vm.expect(s.pop(),'quotation',t),xs=s.pop(),stop={};let best,key,found=false,result=name==='all';
  try{yield* vm.loop(vm.walk(xs,function*(value){
   let next=value;if(q){const local=[value];yield* vm.call(q,local,t);vm.need(local,1,t);next=local.pop();}
   if(predicate){result=vm.expect(next,'boolean',t);if(name==='all'?!result:result)throw stop;return;}
-  let replace=!found;if(found){const pair=[next,key];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);replace=name.startsWith('max')?!less:less;}
+  let replace=!found;if(found){const pair=[next,key];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);replace=name.startsWith('maxi')?!less:less;}
   if(replace){best=value;key=next;found=true;}
  },t),t);}catch(error){if(error!==stop)throw error;}
  s.push(predicate?result:{kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[best]:[]});
