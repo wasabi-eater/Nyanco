@@ -9,6 +9,6 @@ export function withStandardFunctions(definitions){
  add('loop',[],'while {True} _');
  // The outer loop also catches break during initialization. The inner loop
  // ends on break in cont; the final break prevents initialization restarting.
- add('iterate',['start','cont'],'fromYield {while {True} {call start; while {True} {yield $; call cont}; break}}');
+ add('iterate',['start','cont'],'fromYield {while {True} {call start; while {True} {yield $; call cont}; cancel}}');
  return result;
 }

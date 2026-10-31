@@ -16,7 +16,7 @@ main =
   2; {3; {__ + ___}}; call; call; print;
   print (call make);
   8; @a {"outer={__}"}; call; print;
-  9; {mask break {__}}; call; print`;
+  9; {mask cancel {__}}; call; print`;
 test('outer captures bind once at the enclosing clause and survive repeated invocation',()=>{
  assert.deepEqual(run(source).output,['3','3','4','4','5','30','5','49','outer=8','9']);
  const vm=new VM();assert.equal(vm.evaluate('3; {__} -> q').length,0);assert.deepEqual(vm.evaluate('call q'),[3]);assert.deepEqual(vm.evaluate('100; drop; call q'),[3]);

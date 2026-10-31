@@ -72,9 +72,9 @@ instance streem (many 'a) where
 `;
  assert.deepEqual(run('0; each (Many [1,2]) {drop; get; +}',extra).stack,[0]);
 });
-test('typed dictionaries coexist with effect handlers, break, and mutable captures',()=>{
+test('typed dictionaries coexist with effect handlers, cancel, and mutable captures',()=>{
  assert.deepEqual(run('0 -> mut acc; each [1,2] {drop; acc := acc + number}; acc').stack,[0]);
- assert.deepEqual(run('toList (smap [1,2] {when ($ == 2) {break}; drop; get}); head; + 1').stack,[1]);
+ assert.deepEqual(run('toList (smap [1,2] {when ($ == 2) {cancel}; drop; get}); head; + 1').stack,[1]);
  assert.deepEqual(run('handle {ask; + 1} {ask: {-> k; call {resume number k}}}','effect ask : -> int\n').stack,[1]);
 });
 test('ambiguous calls fail before direct expression or named function side effects',()=>{

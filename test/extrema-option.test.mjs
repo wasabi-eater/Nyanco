@@ -20,7 +20,7 @@ main =
   print (vmap [1,7,3] {min 5});
   print (fromSome (Some "hi")); print (fromSome (maxi [1,3,2])); print (mini []);
   print (maxiBy [1,2,3] {0 -}); print (miniBy [1,2,3] {0 -});
-  print (maxiBy [1,2,3] {when ($ == 3) {break}; nop});
+  print (maxiBy [1,2,3] {when ($ == 3) {cancel}; nop});
   print (handle {fromSome None} {exn: {-> message k; message}});
   print (call 7 (fromSome (Some {+ 1})))`;
 

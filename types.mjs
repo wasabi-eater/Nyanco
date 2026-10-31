@@ -144,7 +144,7 @@ function requireHandlers(handlers,answer,token,residual=null) {
   const bodyEntries=bodyEffects?effectView(bodyEffects).entries:[];
   for(const [name,type] of fields.fields){
     const op=activeEffects.get(name);if(!op)throw new StaticTypeError(`Unknown effect: ${name}`,token);
-    let parameters=new Map();
+    let parameters=new Map((op.rowParameters||[]).map(p=>[p,row()]));
     if(op.grouped){
       if(!groupParameters.has(op.group)){
         const shared=new Map();for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,shared);
@@ -153,10 +153,11 @@ function requireHandlers(handlers,answer,token,residual=null) {
       parameters=groupParameters.get(op.group);
       for(const entry of bodyEntries.filter(e=>e.name===op.group && (e.target?e.target===residual?.dependencies?.[0]?.label:!e.skip)))op.parameters.forEach((p,i)=>unify(parameters.get(p),entry.args[i],token));
     }
-    const inputs=op.syntax.input.map(t=>syntaxType(t,parameters)),outputs=op.syntax.output.map(t=>syntaxType(t,parameters)),s=row();
-    const continuation={tag:'continuation',effects:residual||variable('effect-row'),input:op.syntax.never?BOTTOM:stack(s,...outputs),output:concatRows(s,answer)};
-    const handler=quote(stack(EMPTY,...inputs,continuation),answer);
-    if(op.parameters?.length && !op.grouped) {
+    const signature=syntaxType(op.syntax,parameters),s=row();
+    if(op.rowParameters?.length)for(const entry of bodyEntries.filter(e=>(e.operation||e.name)===(op.group||name)&&(e.target?e.target===residual?.dependencies?.[0]?.label:!e.skip)))op.parameters.forEach((p,i)=>unify(parameters.get(p),entry.args[i],token));
+    const continuation={tag:'continuation',effects:residual||variable('effect-row'),input:op.syntax.never?BOTTOM:syntaxStack(op.syntax.output,parameters,s),output:concatRows(s,answer)};
+    const handler=quote(push(syntaxStack(op.syntax.input,parameters,EMPTY),continuation),answer);
+    if(op.parameters?.length && !op.grouped && !op.rowParameters?.length) {
       const skolems=new Map(op.parameters.map(name=>{const v=parameters.get(name);return [v,{tag:'rigid',sort:sortOf(prune(v)),id:nextId++,...(v.lacks?{lacks:new Set(v.lacks)}:{})}];}));
       const captured=(prune(type).captures||[]),protectedVars=new Set([...activeProtected,...free(answer),...captured.flatMap(t=>[...free(t)])]);
       const candidate=instantiate({type,vars:new Set([...free(type)].filter(v=>!protectedVars.has(v)))}),universal=clone(handler,skolems);
@@ -177,7 +178,7 @@ function eachEffect(instance) {
   if(instance)applyContext(instance.context,parameters,instance.token);
   else requireIterable(container,item);
   const latent=variable('effect-row');requireIterable(container,item,null,latent);
-  const callback=quote(push(s,item),s),combined=effects([],[{row:callback.effects},{row:latent}]);return generalize(quote(stack(s,container,callback),s,instance?combined:effects([],[{row:combined,exclude:['break'],loop:true}])));
+  const callback=quote(push(s,item),s),combined=effects([],[{row:callback.effects},{row:latent}]);return generalize(quote(stack(s,container,callback),s,instance?combined:effects([],[{row:combined,exclude:['cancel','break'],loop:true,breakOutput:s}])));
 }
 
 const variable = (sort = 'value') => ({ tag: 'var', sort, id: nextId++ });
@@ -285,6 +286,7 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
       }
       continue;
     }
+    if(d.breakOutput)for(const entry of effectView(d.row).entries.filter(e=>e.name==='break'&&(e.target?e.target===d.label:!e.skip)))unify(d.breakOutput,entry.args[0]);
     if(d.yieldItem)for(const entry of effectView(d.row).entries.filter(e=>(e.operation||e.name)==='yield' && (e.target?e.target===d.label:!e.skip)))unify(d.yieldItem,entry.args[0]);
     if(d.blockLabel){
       const inner=effectView(d.row,[],new Map(seen));
@@ -315,7 +317,7 @@ function mergeEffects(a,b,token) {
   Object.assign(a,combined);Object.assign(b,combined);
 }
 function effectChildren(t,skipLiteral=false) {
-  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(!skipLiteral&&d.literalType?[d.literalType]:[])])] : [];
+  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(d.breakOutput?[d.breakOutput]:[]),...(!skipLiteral&&d.literalType?[d.literalType]:[])])] : [];
 }
 function checkEffectPromises(actual,expected,token,seen=new Set()) {
   actual=prune(actual);expected=prune(expected);
@@ -424,7 +426,7 @@ function clone(t, replacements) {
     if(t.weak && replacements.preserveWeak)return t;
     const result=effects();if(t.weak)result.weak=true;replacements.set(t,result);
     result.entries=t.entries.map(e=>({...e,args:e.args.map(x=>clone(x,replacements))}));
-    result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{}),...(d.literalType?{literalType:clone(d.literalType,replacements)}:{})}));return result;
+    result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{}),...(d.literalType?{literalType:clone(d.literalType,replacements)}:{}),...(d.breakOutput?{breakOutput:clone(d.breakOutput,replacements)}:{})}));return result;
   }
   if(['tuple','tuple-tail'].includes(t.tag))return {...t,items:t.items.map(x=>clone(x,replacements)),tail:clone(t.tail,replacements)};
   if(t.tag==='record')return {tag:'record',row:clone(t.row,replacements)};
@@ -489,7 +491,7 @@ export function formatType(type) {
   // An open callback row may include break, while every use of that row is
   // beneath a loop's handler. Expose that accepted operation in the signature
   // without injecting a performed effect into the callback's inference graph.
-  const acceptsBreak=new WeakSet(),visitedTypes=new Set();
+  const acceptsBreak=new WeakMap(),visitedTypes=new Set();
   function inspect(t) {
     t=prune(t);if(visitedTypes.has(t))return;visitedTypes.add(t);
     if(t.tag==='quote' && t.effects) {
@@ -506,15 +508,15 @@ export function formatType(type) {
             if(handlers.tag==='record')for(const q of flattenRecord(handlers.row).fields.values()){const callback=prune(q);if(callback.effects)scan(callback.effects,false);}
           }
           if(!d.row)continue;
-          if(d.mask==='break') {for(const tail of effectView(d.row).tails)states.set(tail,(states.get(tail)||0)|1);continue;}
-          scan(d.row,handled || !!(d.loop && d.exclude?.includes('break')));
+          if(d.mask==='cancel') {for(const tail of effectView(d.row).tails)states.set(tail,(states.get(tail)||0)|1);continue;}
+          scan(d.row,handled || !!(d.loop && d.exclude?.includes('cancel')));
         }
       }
       scan(t.effects);
       let input=prune(t.input);
       while(input.tag==='push') {
         const callback=prune(input.item);
-        if(callback.tag==='quote' && callback.effects){const tails=[...effectView(callback.effects).tails];if(tails.length && tails.every(tail=>states.get(tail)===2))acceptsBreak.add(callback);}
+        if(callback.tag==='quote' && callback.effects){const tails=[...effectView(callback.effects).tails];if(tails.length && tails.every(tail=>states.get(tail)===2))acceptsBreak.set(callback,t.output);}
         input=prune(input.rest);
       }
     }
@@ -548,8 +550,8 @@ export function formatType(type) {
   }
   function renderEffects(t) {
     if(!t.effects)return '';
-    const view=effectView(t.effects),parts=[...new Set(view.entries.map(e=>[e.name+(e.target?'@'+e.target:(e.skip?'^'+e.skip:'')),...e.args.map(render)].join(' ')))].sort();
-    if(acceptsBreak.has(t) && !parts.includes('break')){parts.push('break');parts.sort();}
+    const view=effectView(t.effects),parts=[...new Set(view.entries.map(e=>[e.name+(e.target?'@'+e.target:(e.skip?'^'+e.skip:'')),...e.args.map(a=>sortOf(prune(a))==='row'?`(${renderStack(a)})`:render(a))].join(' ')))].sort();
+    if(acceptsBreak.has(t) && !parts.includes('cancel')){parts.push('cancel');parts.push(`break (${renderStack(acceptsBreak.get(t))})`);parts.sort();}
     const tails=[...view.tails].map(render).sort();
     return parts.length||tails.length ? ` / {${parts.join(', ')}${tails.length?` | ${tails.join(', ')}`:''}}` : '';
   }
@@ -573,7 +575,7 @@ function builtinSchemes() {
     if(name==='compose'){const result=prune(type.output).item;result.effects=effects([],callbacks.map(q=>({row:q.effects})));type.effects=effects();}
     else type.effects=effects([],callbacks.map(q=>({row:q.effects??=variable('effect-row')})));
     if(['vmap','vfilter','fold'].includes(name)){const c=name==='fold'?prune(prune(type.input).rest).rest.item:prune(type.input).rest.item,latent=variable('effect-row');requireIterable(c,variable(),null,latent);type.effects.dependencies.push({row:latent});}
-    if(['while','vmap','vfilter','fold'].includes(name))type.effects=effects([],[{row:type.effects,exclude:['break'],loop:true}]);
+    if(['while','vmap','vfilter','fold'].includes(name))type.effects=effects([],[{row:type.effects,exclude:['cancel','break'],loop:true,breakOutput:type.output}]);
     out.set(name,generalize(type));
   } };
   add('+ - * / % ^',()=>{const s=row();return quote(stack(s,INT,INT),push(s,INT));});
@@ -595,7 +597,7 @@ function builtinSchemes() {
   add('toNum',()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'adt',name:'option',args:[FLOAT]}));});
   {const s=row();out.set('parseNum',generalize(quote(push(s,STRING),push(s,FLOAT),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),latent=variable('effect-row');requireIterable(c,STRING,null,latent);
-    out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['break'],loop:true}]))));}
+    out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));}
   add('show',()=>{const s=row(),a=variable();return quote(push(s,a),push(s,STRING));});
   add('swap',()=>{const s=row(),a=variable(),b=variable();return quote(stack(s,a,b),stack(s,b,a));});
   add('over',()=>{const s=row(),a=variable(),b=variable();return quote(stack(s,a,b),stack(s,a,b,a));});
@@ -609,14 +611,14 @@ function builtinSchemes() {
   add('compose',()=>{const r=row(),s=row(),t=row(),u=row();return quote(stack(r,quote(s,t),quote(t,u)),push(r,quote(s,u)));});
   {
     const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);
-    out.set('toVector',generalize(quote(stack(s,c),stack(s,list(a)),effects([],[{row:latent,exclude:['break'],loop:true}]))));
+    out.set('toVector',generalize(quote(stack(s,c),stack(s,list(a)),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));
   }
   for(const name of combinationNames){
     const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);
     const args=[c],deps=[{row:latent}];let item=list(a);
     if(name==='cartesianProduct'){const d=variable(),b=variable(),other=variable('effect-row');requireIterable(d,b,null,other);args.push(d);deps.push({row:other});item=tuple([a,b]);}
     else if(name!=='powerset')args.push(INT);
-    const traversal=effects([],[{row:effects([],deps),exclude:['break'],loop:true}]);
+    const traversal=effects([],[{row:effects([],deps),exclude:['cancel','break'],loop:true,breakOutput:EMPTY}]);
     out.set(name,generalize(quote(stack(s,...args),push(s,{tag:'stream',item,effects:traversal}),effects(['powerset','cartesianProduct'].includes(name)?[]:[{name:'exn',args:[]}]))));
   }
   for(const name of ['reverse','sort','sortBy']) {
@@ -624,7 +626,7 @@ function builtinSchemes() {
     const args=[c],dependencies=[{row:latent}];
     if(name==='sortBy'){const q=quote(stack(EMPTY,a),stack(EMPTY,key));args.push(q);dependencies.push({row:q.effects});}
     if(name!=='reverse')requireClass('ord',key);
-    out.set(name,generalize(quote(stack(s,...args),push(s,list(a)),effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
+    out.set(name,generalize(quote(stack(s,...args),push(s,list(a)),effects([],[{row:effects([],dependencies),exclude:['cancel','break'],loop:true}]))));
   }
   for(const name of ['max','min']){const s=row(),a=variable();requireClass('ord',a);out.set(name,generalize(quote(stack(s,a,a),push(s,a),effects())));}
   {const s=row(),a=variable();out.set('fromSome',generalize(quote(push(s,adt('option',[a])),push(s,a),effects([{name:'exn',args:[]}]))));}
@@ -632,7 +634,7 @@ function builtinSchemes() {
     const s=row(),c=variable(),a=variable(),predicate=name==='all'||name==='any',key=name.endsWith('By')?variable():a,latent=variable('effect-row');requireIterable(c,a,null,latent);
     const args=[c],dependencies=[{row:latent}];if(!['maxi','mini'].includes(name)){const q=quote(stack(EMPTY,a),stack(EMPTY,predicate?BOOL:key));args.push(q);dependencies.push({row:q.effects});}
     if(!predicate)requireClass('ord',key);
-    out.set(name,generalize(quote(stack(s,...args),push(s,predicate?BOOL:adt('option',[a])),effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
+    out.set(name,generalize(quote(stack(s,...args),push(s,predicate?BOOL:adt('option',[a])),effects([],[{row:effects([],dependencies),exclude:['cancel','break'],loop:true}]))));
   }
   for(const [name,mode] of transforms) {
     const s=row(),c=variable(),a=variable(),b=variable(),latent=variable('effect-row'),nested=variable('effect-row');requireIterable(c,a,null,latent);
@@ -643,10 +645,10 @@ function builtinSchemes() {
       if(mode==='flatMap'){item=variable();requireIterable(b,item,null,nested);dependencies.push({row:nested});}
     } else if(mode==='flatten'){item=b;requireIterable(a,b,null,nested);dependencies.push({row:nested});}
     else inputs.push(INT);
-    const traversal=effects([],[{row:effects([],dependencies),exclude:['break'],loop:true}]);
+    const traversal=effects([],[{row:effects([],dependencies),exclude:['cancel','break'],loop:true}]);
     const construction=effects(countTransform(mode)?[{name:'exn',args:[]}]:[]);
     const lazy=streamTransforms.has(name),result=lazy?{tag:'stream',item,effects:traversal}:list(item);
-    out.set(name,generalize(quote(stack(s,...inputs),stack(s,result),lazy?construction:effects(construction.entries,[{row:effects([],dependencies),exclude:['break'],loop:true}]))));
+    out.set(name,generalize(quote(stack(s,...inputs),stack(s,result),lazy?construction:effects(construction.entries,[{row:effects([],dependencies),exclude:['cancel','break'],loop:true}]))));
   }
   out.set('each',eachEffect());
   add('vmap',()=>{const s=row(),a=variable(),b=variable(),c=variable();requireIterable(c,a);return quote(stack(s,c,quote(push(s,a),push(s,b))),push(s,list(b)));});
@@ -660,6 +662,9 @@ function builtinSchemes() {
   add('tail',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,list(a)));});
   add('.. ..=',()=>{const s=row();return quote(stack(s,INT,INT),push(s,atom('range')));});
   add('range',()=>{const s=row();return quote(stack(s,INT,INT),push(s,list(INT)));});
+  for(const scheme of out.values()){
+    const seen=new Set(),walk=(type)=>{type=prune(type);if(seen.has(type))return;seen.add(type);const visit=(effect)=>{effect=prune(effect);for(const d of effect.dependencies||[]){if(d.loop&&!d.breakOutput)d.breakOutput=type.tag==='stream'?EMPTY:type.output||EMPTY;if(d.row)visit(d.row);}};if(type.effects)visit(type.effects);for(const child of children(type))walk(child);};walk(scheme.type);
+  }
   return out;
 }
 
@@ -963,24 +968,24 @@ class Inference {
         }
         if(node.value==='while') {
           const top=prune(current),rest=top.tag==='push'?prune(top.rest):null,condition=rest?.tag==='push'?prune(rest.item):null;
-          if(condition?.tag==='quote' && effectView(condition.effects).entries.some(e=>(e.operation||e.name)==='break' && (e.target?e.target===node.handlerLabel:!e.skip)))unify(condition.output,push(condition.input,BOOL),node);
+          if(condition?.tag==='quote' && effectView(condition.effects).entries.some(e=>(e.operation||e.name)==='cancel' && (e.target?e.target===node.handlerLabel:!e.skip)))unify(condition.output,push(condition.input,BOOL),node);
         }
         const effect=instantiate(this.functions.get(node.value)),before=current;
         if(node.target)effect.effects=effects(effectView(effect.effects).entries.map(e=>({...e,target:node.target})));
         if(node.handlerLabel){for(const dependency of effect.effects?.dependencies||[])if(dependency.loop)dependency.label=node.handlerLabel;const output=prune(effect.output);if(output.tag==='push' && prune(output.item).tag==='stream')for(const d of prune(output.item).effects.dependencies||[])if(d.loop)d.label=node.handlerLabel;}
         if(trace)trace.effect=effect;
         current=this.apply(effect,current,node);
-        if(this.effects.has(node.value))for(const v of free(effect.input))if(v.numericLiterals)unify(v,INT,node);
+        if(this.effects.has(node.value)&&!this.effects.get(node.value).rowParameters?.length)for(const v of free(effect.input))if(v.numericLiterals)unify(v,INT,node);
         if(['sort','sortBy','maxi','mini','maxiBy','miniBy','max','min'].includes(node.value)) {
           const input=prune(before),key=['sortBy','maxiBy','miniBy'].includes(node.value)?prune(prune(input.item).output).item:node.value==='sort'?prune(prune(current).item).item:['max','min'].includes(node.value)?prune(current).item:prune(prune(current).item).args[0];
           const comparison=instantiate(this.functions.get('<'));
           unify(comparison,quote(stack(EMPTY,key,key),stack(EMPTY,BOOL)),node);
-          this.effectSink.dependencies.push(['max','min'].includes(node.value)?{row:comparison.effects}:{row:comparison.effects,exclude:['break'],loop:true,label:node.handlerLabel});
+          this.effectSink.dependencies.push(['max','min'].includes(node.value)?{row:comparison.effects}:{row:comparison.effects,exclude:['cancel','break'],loop:true,breakOutput:effect.output,label:node.handlerLabel});
           if(trace)trace.comparison=comparison;
         }
         if(node.value==='while') {
           const input=prune(before),rest=input.tag==='push'?prune(input.rest):null,condition=rest?.tag==='push'?prune(rest.item):null;
-          if(condition?.tag==='quote' && isBottom(condition.output) && !effectView(condition.effects).entries.some(e=>e.name==='break')){current=BOTTOM;effect.output=BOTTOM;}
+          if(condition?.tag==='quote' && isBottom(condition.output) && !effectView(condition.effects).entries.some(e=>['cancel','break'].includes(e.name))){current=BOTTOM;effect.output=BOTTOM;}
         }
       }
       else throw new StaticTypeError(`Unknown word: ${node.value}`,node);
@@ -1008,7 +1013,7 @@ class Inference {
       if(value.mode==='combinatorial'){
         const a=variable(),latent=variable('effect-row'),deps=[{row:latent}];requireIterable(this.value(value.source,token),a,token,latent);let item=list(a);
         if(value.operation==='cartesianProduct'){const b=variable(),other=variable('effect-row');requireIterable(this.value(value.right,token),b,token,other);deps.push({row:other});item=tuple([a,b]);}
-        return {tag:'stream',item,effects:effects([],[{row:effects([],deps),exclude:['break'],loop:true}])};
+        return {tag:'stream',item,effects:effects([],[{row:effects([],deps),exclude:['cancel','break'],loop:true,breakOutput:EMPTY}])};
       }
       if(value.mode==='split')return {tag:'stream',item:STRING,effects:effects()};
       if(value.mode==='fromYield') {const block=this.value(value.block,token),item=variable();unify(block,quote(EMPTY,row()),token);for(const e of effectView(block.effects).entries.filter(e=>(e.operation||e.name)==='yield' && (e.target?e.target===value.label?.key:!e.skip)))unify(item,e.args[0],token);return {tag:'stream',item,effects:effects([],[{row:block.effects,exclude:['yield'],label:value.label?.key}])};}
@@ -1016,7 +1021,7 @@ class Inference {
       const deps=[{row:latent}];let result=item;
       if(callbackTransform(mode)) {const block=this.value(value.block,token),mapped=variable();unify(block,quote(stack(EMPTY,item),stack(EMPTY,predicateTransform(mode)?BOOL:mapped)),token);deps.push({row:block.effects});if(mode==='map')result=mapped;if(mode==='flatMap'){result=variable();requireIterable(mapped,result,token,nested);deps.push({row:nested});}}
       if(mode==='flatten'){result=variable();requireIterable(item,result,token,nested);deps.push({row:nested});}
-      return {tag:'stream',item:result,effects:effects([],[{row:effects([],deps),exclude:['break'],label:value.label?.key}])};
+      return {tag:'stream',item:result,effects:effects([],[{row:effects([],deps),exclude:['cancel','break'],breakOutput:EMPTY,label:value.label?.key}])};
     }
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
@@ -1073,8 +1078,12 @@ class Inference {
   }
 }
 
+function syntaxValue(syntax,parameters){const value=syntaxType(syntax,parameters);if(sortOf(prune(value))!=='value')throw new StaticTypeError('Stack row used as a value type');return value;}
+function syntaxStack(nodes,parameters,base=row()){let result=base;for(const [i,node] of nodes.entries()){if(node.tag==='stack-row'){if(i)throw new StaticTypeError('Stack row must precede stack values');result=syntaxType(node,parameters);}else result=push(result,syntaxValue(node,parameters));}return result;}
 function syntaxType(syntax,parameters) {
-  if(syntax.tag==='stream'){const block=syntaxType(syntax.block,parameters);return {tag:'stream',item:syntaxType(syntax.item,parameters),effects:block.effects,effectBound:block.effectBound};}
+  if(syntax.tag==='stack-sequence')return syntaxStack(syntax.items,parameters,EMPTY);
+  if(syntax.tag==='stack-row'){if(!parameters.has(syntax.name))parameters.set(syntax.name,row());const value=parameters.get(syntax.name);if(sortOf(prune(value))!=='row')throw new StaticTypeError('Stack row parameter used as another kind of type');value.keepNativePrefix=true;return value;}
+  if(syntax.tag==='stream'){const block=syntaxType(syntax.block,parameters);return {tag:'stream',item:syntaxValue(syntax.item,parameters),effects:block.effects,effectBound:block.effectBound};}
   if(syntax.tag==='param') {
     if(!parameters.has(syntax.name))parameters.set(syntax.name,variable());
     const type=parameters.get(syntax.name);if(sortOf(prune(type))!=='value')throw new StaticTypeError('Record row parameter used as a value type');return type;
@@ -1082,23 +1091,23 @@ function syntaxType(syntax,parameters) {
   if(syntax.tag==='tuple') {
     let tail=TEND;
     if(syntax.tail){if(!parameters.has(syntax.tail))parameters.set(syntax.tail,variable('tuple-row'));tail=parameters.get(syntax.tail);if(sortOf(prune(tail))!=='tuple-row')throw new StaticTypeError('Tuple row parameter used as another kind of type');}
-    return tuple(syntax.items.map(t=>syntaxType(t,parameters)),tail);
+    return tuple(syntax.items.map(t=>syntaxValue(t,parameters)),tail);
   }
   if(syntax.tag==='record') {
     let tail=REMPTY;
     if(syntax.tail){if(!parameters.has(syntax.tail))parameters.set(syntax.tail,variable('record-row'));tail=parameters.get(syntax.tail);if(sortOf(prune(tail))!=='record-row')throw new StaticTypeError('Record row parameter used as a value type');}
-    return record(syntax.fields.map(([k,v])=>[k,syntaxType(v,parameters)]),tail);
+    return record(syntax.fields.map(([k,v])=>[k,syntaxValue(v,parameters)]),tail);
   }
   if(syntax.tag==='atom')return atom(syntax.name);
-  if(syntax.tag==='list')return list(syntaxType(syntax.item,parameters));
-  if(syntax.tag==='adt')return adt(syntax.name,syntax.args.map(t=>syntaxType(t,parameters)));
+  if(syntax.tag==='list')return list(syntaxValue(syntax.item,parameters));
+  if(syntax.tag==='adt')return adt(syntax.name,syntax.args.map(t=>syntaxValue(t,parameters)));
   const s=row();
-  const result=quote(stack(s,...syntax.input.map(t=>syntaxType(t,parameters))),syntax.never?BOTTOM:stack(s,...syntax.output.map(t=>syntaxType(t,parameters))));
+  const result=quote(syntaxStack(syntax.input,parameters,s),syntax.never?BOTTOM:syntaxStack(syntax.output,parameters,s));
   if(syntax.effects) {
     result.effects=effects(syntax.effects.map(e=>{
       const op=activeFamilies.get(e.name);if(!op)throw new StaticTypeError(`Unknown effect: ${e.name}`);
       if(e.args.length!==(op.parameters?.length||0))throw new StaticTypeError(`Effect ${e.name} requires ${op.parameters?.length||0} type arguments`);
-      return {name:e.name,args:e.args.map(t=>syntaxType(t,parameters))};
+      const args=e.args.map(t=>syntaxType(t,parameters));args.forEach((t,i)=>{if(sortOf(prune(t))!==(op.rowParameters?.includes(op.parameters[i])?'row':'value'))throw new StaticTypeError(`Wrong kind of argument for effect ${e.name}`);});return {name:e.name,args};
     }));
     if(syntax.effectTail){
       if(!parameters.has(syntax.effectTail))parameters.set(syntax.effectTail,variable('effect-row'));
@@ -1111,7 +1120,7 @@ function syntaxType(syntax,parameters) {
 }
 function constructorTypes(constructor) {
   const parameters=new Map(constructor.parameters.map(name=>[name,variable()]));
-  return {fields:constructor.fields.map(t=>syntaxType(t,parameters)),result:adt(constructor.typeName,[...parameters.values()])};
+  return {fields:constructor.fields.map(t=>syntaxValue(t,parameters)),result:adt(constructor.typeName,[...parameters.values()])};
 }
 
 // Declarations use : syntax. A single arrow separates input
@@ -1121,7 +1130,7 @@ function annotation(source, token, dataTypes,extraParameters=[]) {
   const parts=source.split('=>');
   if(parts.length>2)throw new StaticTypeError('Invalid constraint annotation',token);
   const effectSource=parts.at(-1),parameters=new Map(extraParameters.map(n=>[n,variable()]));
-  const tokens=effectSource.match(/->|[\[\]{}():,|#!/]|'?[A-Za-z_][A-Za-z0-9_']*/g)||[];
+  const tokens=effectSource.match(/\.\.|->|[\[\]{}():,|#!/]|'?[A-Za-z_][A-Za-z0-9_']*/g)||[];
   if(tokens.join('')!==effectSource.replace(/\s/g,'')) throw new StaticTypeError('Invalid type annotation',token);
   const parser=typeSyntax(tokens,dataTypes,null,message=>{throw new StaticTypeError(message,token);});
   let depth=0,hasArrow=false;
@@ -1206,7 +1215,7 @@ function prepare(definitions,globalValues,initialized=false) {
   const inference=new Inference();
   inference.classes=activeClasses;
   inference.effects=ioEffects(definitions.effects);activeEffects=inference.effects;activeFamilies=effectFamilies(activeEffects);
-  for(const [name,op] of inference.effects){const params=new Map();if(op.grouped)for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,params);const type=syntaxType(op.syntax,params);type.effects=effects([{name:op.group||name,...(op.grouped?{operation:name}:{}),args:(op.parameters||[]).map(n=>params.get(n))}]);inference.functions.set(name,generalize(type));}
+  for(const [name,op] of inference.effects){const params=new Map((op.rowParameters||[]).map(p=>[p,row()]));if(op.grouped)for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,params);const type=syntaxType(op.syntax,params);type.effects=effects([{name:op.group||name,...(op.grouped?{operation:name}:{}),args:(op.parameters||[]).map(n=>params.get(n))}]);inference.functions.set(name,generalize(type));}
   for(const [name,m] of operators.methods) {
     if(m.specialEach){inference.functions.set(name,eachEffect());continue;}
     const associated=activeClasses.get(m.className).associated||[],scheme=annotation(`${m.className} ${[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)].join(' ')} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)]);

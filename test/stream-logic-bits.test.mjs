@@ -24,17 +24,17 @@ main =
   print (maxi (map (1 ..= 4) {* 2})); print (mini (Bag [3,1,2])); print (maxi []);
   print (maxiBy [{n: 2,id: "a"},{n: 2,id: "b"}] {.n});
   print (miniBy [{n: 2,id: "a"},{n: 2,id: "b"}] {.n});
-  print (maxi (fromYield {yield 3; yield 1; break; yield 9}));
-  print (maxiBy [1,2,3,4] {when ($ == 3) {break}; nop});
+  print (maxi (fromYield {yield 3; yield 1; cancel; yield 9}));
+  print (maxiBy [1,2,3,4] {when ($ == 3) {cancel}; nop});
   print (all [] {> 0}); print (any [] {> 0});
   0 -> mut seen;
   print (all (fromYield {seen ! + 1; yield 1; seen ! + 1; yield 0; seen ! + 1; yield 9}) {> 0}); print seen;
   seen <- 0;
   print (any (fromYield {seen ! + 1; yield 0; seen ! + 1; yield 1; seen ! + 1; yield 9}) {> 0}); print seen;
-  print (all (Bag [1,2,3]) {when ($ == 2) {break}; > 0});
-  print (any [1,2,3] {when ($ == 2) {break}; > 2});
-  print (all [1] {break}); print (maxiBy [1] {break});
-  while {True} @outer {drop (all [1] {break@outer}); seen ! + 1}; print seen;
+  print (all (Bag [1,2,3]) {when ($ == 2) {cancel}; > 0});
+  print (any [1,2,3] {when ($ == 2) {cancel}; > 2});
+  print (all [1] {cancel}); print (maxiBy [1] {cancel});
+  while {True} @outer {drop (all [1] {cancel@outer}); seen ! + 1}; print seen;
   print (False && (exn "skipped")); print (True || (exn "skipped"));
   print (False && (print "wrong"; True)); print (True || (print "wrong"; False));
   print (True .|. (print "eager"; False));
@@ -53,12 +53,12 @@ function native(program){const dir=mkdtempSync(join(tmpdir(),'nyanco-stream-bits
 test('stream extrema predicates and bit operations preserve effects and short circuit',()=>{
  assert.deepEqual(run(source).output,['(Some 8)','(Some 1)','None','(Some {id: "b", n: 2})','(Some {id: "a", n: 2})','(Some 3)','(Some 2)','True','False','False','2','True','2','True','False','True','None','2','False','True','False','True','eager','True','False','True','3','7','6','True','15','0','1','-2','1099511627776','True','1099511627776','0','128','True','(Mask 3)','(Mask 6)','99','False']);
  assert.deepEqual(run('main = 100; maxi [1,3,2]; any [0,1] {> 0}').stack.map(v=>v?.kind==='adt'?v.constructor:v),[100,'Some',true]);
- assert.deepEqual(run('main = all (fromYield {yield True; break; yield False}) {nop}; any (fromYield {yield False; break; yield True}) {nop}').stack,[true,false]);
+ assert.deepEqual(run('main = all (fromYield {yield True; cancel; yield False}) {nop}; any (fromYield {yield False; cancel; yield True}) {nop}').stack,[true,false]);
  assert.throws(()=>run('main = all [1]'),/underflow|stack|Cannot unify/i);
  for(const s of ['all [1] {dup}','all [1] {nop}','1 && True','1.0 .&. 2.0','(toByte 1) .|. (toInt 2)','testBit 1.0 0','1 .<<. 1.0'])assert.throws(()=>compile('main = '+s),/Type error|instance/i,s);
  assert.throws(()=>run('main = True and False'),/Unknown word/);
  assert.match(compile('f xs = all xs {print $; > 0}').types.get('f'),/io/);
- assert.doesNotMatch(compile('f xs = any xs {when ($ == 2) {break}; > 0}').types.get('f'),/\/ \{break/);
+ assert.doesNotMatch(compile('f xs = any xs {when ($ == 2) {cancel}; > 0}').types.get('f'),/\/ \{cancel/);
 });
 
 test('native extrema short circuit predicates and bit operations agree with VM',()=>{const {p,output}=run(source);assert.equal(native(p),output.join('\n')+'\n');});

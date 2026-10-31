@@ -32,7 +32,7 @@ const source=declarations+`main =
   print (toVector (split "::a::::" "::"));
   print (join (take (split "a|b|c" "|") 2) "-");
   print (join (Words ["a","b"]) "--");
-  print (join (fromYield {yield "a"; yield "b"; break; yield "bad"}) ",");
+  print (join (fromYield {yield "a"; yield "b"; cancel; yield "bad"}) ",");
   print (toNum "  -1.25e2 ");
   print (toNum "1e999");
   print (toNum "bad");
@@ -47,7 +47,7 @@ const source=declarations+`main =
 test('string streams, conversion and show instances work with effects and generic classes',()=>{
  assert.deepEqual(run(source).output,['abc','a//b/','["日", "本", "😀"]','[]','[""]','["", "a", "", ""]','a-b','a--b','a,b','(Some -125)','None','None','0.5','42','Ada:3','box(Bob:5)','["1", "2"]','0','[1, 2, 3]','"raw"']);
  const vm=new VM();vm.evaluate('split "a,b,c" "," -> words');assert.equal(format(vm.evaluate('toVector words')),'[["a", "b", "c"]]');assert.equal(format(vm.evaluate('join words ":"')),'["a:b:c"]');
- assert.deepEqual(run('main = join (map (1 ..= 4) {when ($ == 3) {break}; show}) ","').stack,['1,2']);
+ assert.deepEqual(run('main = join (map (1 ..= 4) {when ($ == 3) {cancel}; show}) ","').stack,['1,2']);
 });
 test('numeric parsing is strict finite decimal parsing and errors are exn effects',()=>{
  for(const text of ['', ' ', '0x10', '0b11', 'NaN', 'Infinity', '12x', '1_000', '+', '.', '1e', '1e999'])assert.equal(run(`main = toNum ${JSON.stringify(text)}`).stack[0].constructor,'None',text);

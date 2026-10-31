@@ -25,7 +25,9 @@ function items(row) {
 }
 function effectParts(effect) {
   effect=T.prune(effect);
-  if(T.isBottom(effect.output) && effect.bottomBase){const input=[];let t=T.prune(effect.input),base=T.prune(effect.bottomBase);while(t!==base && t.tag==='push'){input.unshift(t.item);t=T.prune(t.rest);}if(t===base)return {input,output:neverValues()};}
+  // A row-valued effect observes the whole input prefix, even on a bottom path.
+  if(T.effectSnapshot(effect.effects).entries.some(e=>e.args.some(a=>{a=T.prune(a);return a.sort==='row'||['push','empty','concat-row'].includes(a.tag);})))return {input:items(effect.input),output:items(effect.output)};
+  if(T.isBottom(effect.output) && effect.bottomBase && !T.prune(effect.bottomBase).keepNativePrefix){const input=[];let t=T.prune(effect.input),base=T.prune(effect.bottomBase);while(t!==base && t.tag==='push'){input.unshift(t.item);t=T.prune(t.rest);}if(t===base)return {input,output:neverValues()};}
   if(T.isBottom(effect.input)||T.isBottom(effect.output))return {input:items(effect.input),output:items(effect.output)};
   const chain=row=>{const out=[];row=T.prune(row);while(true){out.push(row);if(row.tag!=='push')break;row=T.prune(row.rest);}return out;};
   const a=chain(effect.input),b=chain(effect.output);
@@ -299,9 +301,9 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const c=definitions.constructors.get(n.value),vs=c.fields.length?values.splice(-c.fields.length):[];
         values.push(ctx.value(`&ADT{${str(c.typeName)},${str(c.name)},[]any{${vs}}}`));
       } else if(definitions.effects?.has(n.value)) {
-        const op=definitions.effects.get(n.value),args=op.inputCount?values.splice(-op.inputCount):[];
+        const op=definitions.effects.get(n.value),args=op.syntax.input[0]?.tag==='stack-row'?values.splice(0):op.inputCount?values.splice(-op.inputCount):[];
         const result=`effect${next++}`;ctx.lines.push(`${result}:=m.performRoute(${str(n.value)},[]any{${args}},${at},${!!op.never},${n.target?`labelTarget(${env}.read(${str(n.target)}),${at})`:"nil"},0);_=${result}`);
-        for(let i=0;i<op.outputCount;i++)values.push(ctx.value(`${result}[${i}]`));
+        for(let i=0;i<(op.syntax.output[0]?.tag==='stack-row'?items(info.effect.output).length:op.outputCount);i++)values.push(ctx.value(`${result}[${i}]`));
       } else builtin(n,info,values,ctx,env,at);
       if(T.isBottom(info.output)){ctx.lines.push('panic("Non-returning computation returned")');return neverValues();}
       } catch(error){if(error instanceof StoppedEmission)return neverValues();throw error;}
@@ -341,7 +343,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     else inner.lines.push('visit(item);remaining--;if remaining==0{stop()}');
     const prefix=mode==='skipWhile'?'if !skipping{visit(item);return};':'';
     const state=count?`remaining:=${count}.(float64);${mode==='take'?'if remaining==0{return};':''}`:mode==='skipWhile'?'skipping:=true;':'';
-    return ctx.value(`&Stream{func(m *Machine,visit func(any)){iterationBoundary(func(stop func()){${state}m.loop(func(m *Machine){${walk}(m,func(item any){${prefix}${inner.lines.join(';')}})},${at},${label})})}}`);
+    return ctx.value(`&Stream{func(m *Machine,visit func(any)){iterationBoundary(func(stop func()){${state}m.loop(func(m *Machine){${walk}(m,func(item any){${prefix}${inner.lines.join(';')}})},${at},${streamTransforms.has(name)?label:'nil'},${!streamTransforms.has(name)})})}}`);
   }
   function indexCall(name,args,effect,ctx,at,reuse=false){
     const inputs=items(T.prune(effect).input),type=T.prune(effect.dispatchType||inputs.at(name==='at'?-2:-3));
@@ -358,11 +360,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   function builtin(n,info,v,ctx,env,at) {
     const name=n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
     const call=(q,t,values=v)=>invoke(ctx,q,values,T.prune(t),at);
+    const returnedBreak=(result)=>{ctx.lines.push(`_=${result}`);if(v.length)ctx.lines.push(`if ${result}!=nil{${v}=${v.map((_,i)=>`${result}[${i}]`)}}`);};
     if(transforms.has(name)) {
       const mode=transforms.get(name),arg=mode==='flatten'?null:pop(),source=pop(),sourceType=topTypes.at(mode==='flatten'?-1:-2),argType=mode==='flatten'?null:topTypes.at(-1);
       const stream=transformedStream(name,mode,source,sourceType,arg,argType,label,ctx,at);
       if(streamTransforms.has(name))v.push(stream);
-      else {const result=`collected${next++}`;ctx.lines.push(`${result}:=[]any{};${stream}.(*Stream).walk(m,func(item any){${result}=append(${result},item)})`);v.push(ctx.value(result));}
+      else {const result=`collected${next++}`,br=`breakResult${next++}`;ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${stream}.(*Stream).walk(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);}
       return;
     }
     if(['at','setAt'].includes(name)){const args=v.splice(-(name==='at'?2:3));v.push(indexCall(name,args,info.effect,ctx,at));return;}
@@ -377,9 +380,9 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const separator=pop(),source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.walkSplit(${source},${separator},visit,${at})}}`));return;
     }
     if(name==='join') {
-      const separator=pop(),source=pop(),walk=walker(ctx,source,topTypes.at(-2),at),parts=`parts${next++}`;
-      ctx.lines.push(`${parts}:=[]string{};m.loop(func(m *Machine){${walk}(m,func(item any){${parts}=append(${parts},stringValue(item,${at}))})},${at},${label})`);
-      v.push(ctx.value(`strings.Join(${parts},stringValue(${separator},${at}))`));return;
+      const separator=pop(),source=pop(),walk=walker(ctx,source,topTypes.at(-2),at),parts=`parts${next++}`,br=`breakResult${next++}`;
+      ctx.lines.push(`${parts}:=[]string{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${parts}=append(${parts},stringValue(item,${at}))})},${at},${label})`);
+      v.push(ctx.value(`strings.Join(${parts},stringValue(${separator},${at}))`));returnedBreak(br);return;
     }
     if(definitions.methods?.get(name)?.specialCast){
       const value=pop(),conversion=T.castInfo(definitions,n,info.effect),target=conversion.target;
@@ -394,17 +397,17 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.handle(func(m *Machine) []any {${body.lines.join(';')};return nil},map[string]EffectHandler{"yield":func(args []any,k *Continuation) []any {visit(args[0]);return resumeContinuation(k,nil,${at})}},${at},${label})}}`));return;
     }
     if(['reverse','sort','sortBy'].includes(name)) {
-      const q=name==='sortBy'?pop():null,source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),rows=`sorted${next++}`,result=`collected${next++}`;
-      ctx.lines.push(`${rows}:=[]SortItem{};m.loop(func(m *Machine){${walk}(m,func(item any){`);
+      const q=name==='sortBy'?pop():null,source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),rows=`sorted${next++}`,result=`collected${next++}`,br=`breakResult${next++}`;
+      ctx.lines.push(`${rows}:=[]SortItem{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){`);
       const keyCtx=context();let key='item';
       if(q){const values=['item'];invoke(keyCtx,q,values,topTypes.at(-1),at);key=values[0];}
       ctx.lines.push(...keyCtx.lines,`${rows}=append(${rows},SortItem{item,${key}})`, `})},${at},${label})`);
       if(name==='reverse')ctx.lines.push(`for i,j:=0,len(${rows})-1;i<j;i,j=i+1,j-1{${rows}[i],${rows}[j]=${rows}[j],${rows}[i]}`);
       else {
         const cmp=context(),less=binaryCall({...n,value:'<'},'a','b',info.comparison,cmp);
-        ctx.lines.push(`m.loop(func(m *Machine){stableSort(&${rows},func(a,b any) bool {m.tick(${at});${cmp.lines.join(';')};return boolean(${less},${at})})},${at},${label})`);
+        ctx.lines.push(`if ${br}==nil{${br}=m.loop(func(m *Machine){stableSort(&${rows},func(a,b any) bool {m.tick(${at});${cmp.lines.join(';')};return boolean(${less},${at})})},${at},${label})}`);
       }
-      ctx.lines.push(`${result}:=[]any{};for _,item:=range ${rows}{${result}=append(${result},item.value)}`);v.push(ctx.value(result));return;
+      ctx.lines.push(`${result}:=[]any{};for _,item:=range ${rows}{${result}=append(${result},item.value)}`);v.push(ctx.value(result));returnedBreak(br);return;
     }
     if(name==='max'||name==='min'){
       const b=pop(),a=pop(),less=binaryCall({...n,value:'<'},b,a,info.comparison,ctx),result=ctx.value(name==='max'?b:a);
@@ -412,9 +415,9 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     }
     if(name==='fromSome'){v.push(ctx.value(`m.fromSome(${pop()},${at})`));return;}
     if(['maxi','mini','maxiBy','miniBy','all','any'].includes(name)){
-      const predicate=name==='all'||name==='any',q=['maxi','mini'].includes(name)?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),result=ctx.value(predicate?String(name==='all'):'nil'),found=`found${next++}`,bestKey=`key${next++}`;
+      const predicate=name==='all'||name==='any',q=['maxi','mini'].includes(name)?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),result=ctx.value(predicate?String(name==='all'):'nil'),found=`found${next++}`,bestKey=`key${next++}`,br=`breakResult${next++}`;
       if(!predicate)ctx.lines.push(`${found}:=false;_=${found};var ${bestKey} any;_=${bestKey}`);
-      ctx.lines.push(`iterationBoundary(func(stop func()){m.loop(func(m *Machine){${walk}(m,func(item any){`);
+      ctx.lines.push(`var ${br} []any;iterationBoundary(func(stop func()){${br}=m.loop(func(m *Machine){${walk}(m,func(item any){`);
       const inner=context();let key='item';if(q){const values=['item'];invoke(inner,q,values,topTypes.at(-1),at);key=values[0]||'nil';}
       ctx.lines.push(...inner.lines);
       if(predicate)ctx.lines.push(`${result}=boolean(${key},${at});if ${name==='all'?'!':''}boolean(${result},${at}){stop()}`);
@@ -423,7 +426,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         ctx.lines.push(`if !${found}{${result}=item;${bestKey}=${key};${found}=true}else{`,...cmp.lines,`if ${replace}boolean(${less},${at}){${result}=item;${bestKey}=${key}}}`);
       }
       ctx.lines.push(`})},${at},${label})})`);
-      v.push(predicate?result:ctx.value(`optionValue(${result},${found})`));return;
+      v.push(predicate?result:ctx.value(`optionValue(${result},${found})`));returnedBreak(br);return;
     }
     if(['xor','testBit','setBit','clearBit'].includes(name)){
       const b=pop(),a=pop(),m=definitions.methods.get(name),target=definitions.classes.get(m.className).instances.get(instanceKey(T.prune(topTypes.at(-2))))?.implementations.get(name);
@@ -431,8 +434,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else v.push(ctx.value(`m.bitOperation(${str(name)},${a},${b},${at})`));return;
     }
     if(name==='toVector') {
-      const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`;
-      ctx.lines.push(`${result}:=[]any{};m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));return;
+      const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`,br=`breakResult${next++}`;
+      ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);return;
     }
     if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','&&','||','.&.','.|.','.<<.','.>>.','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
       const b=pop(),a=pop();v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name)},${a},${b},${at})`));
@@ -452,7 +455,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         return `${names.length?`${names.join(',')}:=`:''}${call};return []any{${names.join(',')}}`;
       };
       for(const [name,type] of info.handlers){
-        const handler=invocation(type),count=definitions.effects.get(name).inputCount;
+        const handler=invocation(type),count=effectParts(type).input.length-1;
         entries.push(`${str(name)}:func(args []any,k *Continuation) []any {${pack('m',handler,[`recordField(${handlers},${str(name)},${at})`,at,...Array.from({length:count},(_,i)=>`args[${i}]`),'k'].join(','))}}`);
       }
       const result=`results${next++}`;
@@ -478,25 +481,25 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     } else if(name==='while') {
       const body=pop(),condition=pop(),bodyType=T.prune(topTypes.at(-1)),conditionType=T.prune(topTypes.at(-2));
       if(T.isBottom(conditionType.output)){call(condition,conditionType);return;}
-      const state=v.map(x=>ctx.value(x));v.splice(0,v.length,...state);
+      const breakResult=`breakResult${next++}`,state=v.map(x=>ctx.value(x));v.splice(0,v.length,...state);
       ctx.lines.push(`for {m.tick(${at})`);call(condition,conditionType);const flag=pop();
       // The final condition can change the number of carried values.
       const finals=v.map(()=>`v${next++}`);
       const beforeLoop=ctx.lines.findLastIndex(line=>line===`for {m.tick(${at})`);
-      ctx.lines.splice(beforeLoop,0,...finals.map((x,i)=>`var ${x} any${state.length===finals.length?'='+state[i]:''};_=${x}`),'m.loop(func(m *Machine){');
+      ctx.lines.splice(beforeLoop,0,...finals.map((x,i)=>`var ${x} any${state.length===finals.length?'='+state[i]:''};_=${x}`),`${breakResult}:=m.loop(func(m *Machine){`);
       if(state.length===finals.length && finals.length)ctx.lines.splice(beforeLoop+finals.length+2,0,`${finals}=${state}`);
       if(finals.length)ctx.lines.push(`${finals}=${v}`);
       ctx.lines.push(`if !boolean(${flag},${at}) {break}`);call(body,bodyType);
-      if(T.isBottom(bodyType.output))ctx.lines.push('panic("Non-returning loop body returned")');else if(state.length)ctx.lines.push(`${state}=${v}`);ctx.lines.push('}');ctx.lines.push(`},${at},${label})`);v.splice(0,v.length,...finals);
+      if(T.isBottom(bodyType.output))ctx.lines.push('panic("Non-returning loop body returned")');else if(state.length)ctx.lines.push(`${state}=${v}`);ctx.lines.push('}');ctx.lines.push(`},${at},${label});_=${breakResult}`);if(finals.length)ctx.lines.push(`if ${breakResult}!=nil{${finals}=${finals.map((_,i)=>`${breakResult}[${i}]`)}}`);v.splice(0,v.length,...finals);
     } else if(['each','vmap','vfilter','fold'].includes(name)) {
       const containerType=T.prune(topTypes.at(name==='fold'?-3:-2));
 
 
       const q=pop(),qType=T.prune(topTypes.at(-1)),acc=name==='fold'?pop():null,xs=pop();
       const state=v.map(x=>ctx.value(x)),accName=acc?ctx.value(acc):null;
-      const result=`list${next++}`,x=`item${next++}`;
+      const breakResult=`breakResult${next++}`,result=`list${next++}`,x=`item${next++}`;
       if(['vmap','vfilter'].includes(name))ctx.lines.push(`${result}:=[]any{}`);
-      const walk=walker(ctx,xs,containerType,at);ctx.lines.push('m.loop(func(m *Machine){');
+      const walk=walker(ctx,xs,containerType,at);ctx.lines.push(`${breakResult}:=m.loop(func(m *Machine){`);
       ctx.lines.push(`${walk}(m,func(${x} any){`);
       v.splice(0,v.length,...state);if(accName)v.push(accName);v.push(x);call(q,qType);
       if(T.isBottom(qType.output))ctx.lines.push('panic("Non-returning callback returned")');else {
@@ -505,7 +508,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       if(accName)ctx.lines.push(`${accName}=${pop()}`);
       if(state.length)ctx.lines.push(`${state}=${v}`);}
       ctx.lines.push('})');ctx.lines.push(`},${at},${label})`);
-      v.splice(0,v.length,...state);if(accName)v.push(accName);if(['vmap','vfilter'].includes(name))v.push(ctx.value(result));
+      v.splice(0,v.length,...state);if(accName)v.push(accName);if(['vmap','vfilter'].includes(name))v.push(ctx.value(result));ctx.lines.push(`_=${breakResult}`);if(v.length)ctx.lines.push(`if ${breakResult}!=nil{${v}=${v.map((_,i)=>`${breakResult}[${i}]`)}}`);
     } else if(name==='compose') {
       const portable=type=>{const {input,output}=effectParts(T.prune(type)),tail=T.row();return T.mono(T.quote(T.stack(tail,...input),T.stack(tail,...output)));};
       const b=pop(),a=pop(),captured=new Map([['__a',portable(topTypes.at(-2))],['__b',portable(topTypes.at(-1))]]);

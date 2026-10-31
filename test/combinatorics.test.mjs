@@ -17,8 +17,8 @@ const source=`main =
  print (toVector (combinations [] 0));
  print (toVector (permutations [1] 2));
  print (toVector (combinations [1,1,2] 2));
- print (toVector (combinations (fromYield {yield 1; yield 2; break; yield 3}) 1));
- each (powerset [1,2]) {print $; break};
+ print (toVector (combinations (fromYield {yield 1; yield 2; cancel; yield 3}) 1));
+ each (powerset [1,2]) {print $; cancel};
  print (handle {combinations [1] (-1); drop; "valid"} {exn: {-> msg k; "invalid"}})`;
 test('combinatorial streams enumerate positions, preserve order and handle edges',()=>{
  assert.deepEqual(run('main = toVector (combinationsWithReplacement [1,2] 2)').stack,[[[1,1],[1,2],[2,2]]]);

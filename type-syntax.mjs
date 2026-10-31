@@ -5,6 +5,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
   const expect = value => { if (tokens[i++] !== value) fail(`Expected ${value} in type`); };
   function type() {
     const raw = tokens[i++],name=typeName(raw);
+    if(name==='..'){const parameter=tokens[i++];if(!/^'[a-z][a-zA-Z0-9_']*$/.test(parameter||'')||parameters&&!parameters.has(parameter))fail('Expected stack row parameter');return {tag:'stack-row',name:parameter};}
     if(name==='num')fail('num is a class; use float or int as the value type');
     if(name==='vector')return {tag:'list',item:type()};
     if(name==='stream'){const item=type(),block=type();if(block.tag!=='quote'||block.input.length||block.output.length||block.never)fail('stream requires item type and { -> / effects }');return {tag:'stream',item,block};}
@@ -13,7 +14,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
       if(tokens[i]==='|'){i++;tail=tokens[i++];if(!/^'?[a-z][a-zA-Z0-9_']*$/.test(tail||'') || parameters && !parameters.has(tail))fail('Expected tuple row parameter');}
       expect(')');return {tag:'tuple',items,tail};
     }
-    if (name === '(') { const result=types(')'); expect(')'); if(result.length!==1)fail('Expected one grouped type'); return result[0]; }
+    if (name === '(') { const result=types(')'); expect(')'); if(!result.length||result[0]?.tag==='stack-row'&&result.length>1)return {tag:'stack-sequence',items:result};if(result.length!==1)fail('Expected one grouped type'); return result[0]; }
     if (name === '[') { const items=types(']'); expect(']'); if(items.length!==1)fail('Expected one vector element type'); return {tag:'list',item:items[0]}; }
     if(name==='{' && ([':','|'].includes(tokens[i]) || tokens[i+1]===':')) {
       const fields=[],names=new Set();let tail=null;

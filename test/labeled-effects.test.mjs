@@ -7,22 +7,22 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const run=source=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s)});return {p,output,stack:vm.evaluate('main')};};
-test('break leaves last completed loop state and handles producer breaks',()=>{
+test('cancel leaves last completed loop state and handles producer breaks',()=>{
  const result=run(`main =
-  0; each [1,2,3] {when ($ == 2) {break}; +};
-  0; while {$ < 5} {+ 1; when ($ == 3) {break}};
-  map [1,2,3] {when ($ == 2) {break}; * 10};
-  filter [1,2,3] {when ($ == 3) {break}; > 0};
-  fold [1,2,3] 0 {when ($ == 2) {break}; +};
-  toList (fromYield {yield 1; break; yield 2})`);
+  0; each [1,2,3] {when ($ == 2) {cancel}; +};
+  0; while {$ < 5} {+ 1; when ($ == 3) {cancel}};
+  map [1,2,3] {when ($ == 2) {cancel}; * 10};
+  filter [1,2,3] {when ($ == 3) {cancel}; > 0};
+  fold [1,2,3] 0 {when ($ == 2) {cancel}; +};
+  toList (fromYield {yield 1; cancel; yield 2})`);
  assert.deepEqual(result.stack,[1,2,[10],[1,2],1,[1]]);
- assert.doesNotMatch(result.p.types.get('main'),/break/);
- assert.throws(()=>new VM().evaluate('break'),/Unhandled effect: break/);
+ assert.doesNotMatch(result.p.types.get('main'),/cancel/);
+ assert.throws(()=>new VM().evaluate('cancel'),/Unhandled effect: cancel/);
 });
-test('unlabelled break stops the nearest loop; labelled break crosses nested loops',()=>{
+test('unlabelled cancel stops the nearest loop; labelled cancel crosses nested loops',()=>{
  const result=run(`main =
-  @outer each [1,2] {-> x; each [3,4] {-> y; print #(x,y); break}; print x};
-  @outer each [1,2] {-> x; each [3,4] {-> y; print #(x,y); break@outer}; print "unreachable"}`);
+  @outer each [1,2] {-> x; each [3,4] {-> y; print #(x,y); cancel}; print x};
+  @outer each [1,2] {-> x; each [3,4] {-> y; print #(x,y); cancel@outer}; print "unreachable"}`);
  assert.deepEqual(result.output,['#(1 3)','1','#(2 3)','2','#(1 3)']);
 });
 test('plain masks skip one matching handler; nested masks skip two',()=>{
@@ -46,7 +46,7 @@ test('labelled yields cross inner generators and labelled generators survive REP
  const vm=new VM();vm.evaluate('@producer fromYield {yield@producer 7} -> xs');assert.deepEqual(vm.evaluate('toList xs'),[[7]]);assert.deepEqual(vm.evaluate('toList xs'),[[7]]);
 });
 test('labels resolve lexically and invalid or escaping references are rejected',()=>{
- assert.throws(()=>compile('main = break@missing'),/Unknown effect label/);
+ assert.throws(()=>compile('main = cancel@missing'),/Unknown effect label/);
  assert.throws(()=>compile('main = @x each [1] {drop; ask@x}'),/Only effect operations/);
  assert.throws(()=>compile('effect ask: -> int\nmain = @x each [1] {drop; ask@x; drop}'),/does not handle/);
  assert.throws(()=>compile('effect ask: -> int\nmain = @x handle {{ask@x}} {ask:{-> k; resume 1 k}}'),/escapes/);
@@ -55,13 +55,13 @@ test('labels resolve lexically and invalid or escaping references are rejected',
  assert.throws(()=>compile('main = @x each [1] {print@x}'),/Only effect operations/);
  assert.throws(()=>compile('main = mask missing {nop}'),/Unknown effect operation/);
 });
-test('condition break is handled, while mutable changes are retained',()=>{
- assert.deepEqual(run('main = 5; while {break} {nop}').stack,[5]);
- assert.deepEqual(run('main = 0 -> mut n; while {n ! (+ 1); when (n == 3) {break}; True} {nop}; n').stack,[3]);
+test('condition cancel is handled, while mutable changes are retained',()=>{
+ assert.deepEqual(run('main = 5; while {cancel} {nop}').stack,[5]);
+ assert.deepEqual(run('main = 0 -> mut n; while {n ! (+ 1); when (n == 3) {cancel}; True} {nop}; n').stack,[3]);
 });
 test('callbacks from named functions can be masked and mask changes remain visible in types',()=>{
- const result=run('stop = break\nmain = @outer each [1] {drop; each [2] {drop; mask break@outer {stop}}}');assert.deepEqual(result.stack,[]);
- assert.throws(()=>compile('bad : -> / {}\nbad = each [1] {drop; mask break {break}}'),/Effect break is not allowed/);
+ const result=run('stop = cancel\nmain = @outer each [1] {drop; each [2] {drop; mask cancel@outer {stop}}}');assert.deepEqual(result.stack,[]);
+ assert.throws(()=>compile('bad : -> / {}\nbad = each [1] {drop; mask cancel {cancel}}'),/Effect cancel is not allowed/);
 });
 test('Go labelled handlers, loop exits, masks and yielded streams match interpreter',()=>{
  const source=`effect state 'a where
@@ -72,15 +72,15 @@ instance streem box where
   each (Box xs) f = each xs {call f}; 99; call f
 main =
   [] -> mut seen;
-  each (Box [1,2,3]) {-> x; when (x == 2) {break}; seen ! (:: x)}; print seen;
+  each (Box [1,2,3]) {-> x; when (x == 2) {cancel}; seen ! (:: x)}; print seen;
   @outer handle {handle {ask@outer; print; mask ask {ask}; print; ask; print} {ask:{-> k; resume 2 k}}} {ask:{-> k; resume 1 k}};
-  0; each [1,2,3] {when ($ == 2) {break}; +}; print;
-  0; while {$ < 5} {+ 1; when ($ == 3) {break}}; print;
-  5; while {break} {nop}; print;
+  0; each [1,2,3] {when ($ == 2) {cancel}; +}; print;
+  0; while {$ < 5} {+ 1; when ($ == 3) {cancel}}; print;
+  5; while {cancel} {nop}; print;
   @outer handle {handle {ask@outer; print; ask; print} {ask:{-> k; resume "inner" k}}} {ask:{-> k; resume 1 k}};
   print (toList (@outer fromYield {each (fromYield {yield@outer 1; yield "inner"}) {print}}));
-  @outer each [1,2] {-> x; each [3,4] {-> y; print #(x,y); break@outer}; print "unreachable"};
-  print (map [1,2,3] {when ($ == 2) {break}; * 10});
+  @outer each [1,2] {-> x; each [3,4] {-> y; print #(x,y); cancel@outer}; print "unreachable"};
+  print (map [1,2,3] {when ($ == 2) {cancel}; * 10});
   print (toList (@outer fromYield {yield 1; each (fromYield {yield@outer 2; yield 3}) {yield}}));
   handle {handle {handle {mask ask {mask ask {ask}}} {ask:{-> k; resume 3 k}}} {ask:{-> k; resume 2 k}}} {ask:{-> k; resume 1 k}}; print
 `;

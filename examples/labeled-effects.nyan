@@ -6,7 +6,7 @@ main =
         -> x;
         each (1 ..= 3) {
             -> y;
-            when (x + y > 4) {break@outer};
+            when (x + y > 4) {cancel@outer};
             print #(x,y)
         }
     };

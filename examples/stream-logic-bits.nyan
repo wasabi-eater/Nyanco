@@ -8,7 +8,7 @@ main =
   print (maxiBy [{score: 2}, {score: 5}] {.score});
   print (all (1 ..= 5) {> 0});
   print (any [1,2,3] {== 2});
-  print (maxiBy [1,2,3] {when ($ == 3) {break}; nop});
+  print (maxiBy [1,2,3] {when ($ == 3) {cancel}; nop});
   print (False && (exn "skipped"));
   print (True || (exn "skipped"));
   print (7 .&. 3);

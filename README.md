@@ -379,13 +379,13 @@ streamの型は`stream 要素型 { -> / エフェクト行 }`です。構築自�
 
 [実行例](examples/lazy-iteration.nyan)
 
-## break・ラベル付きエフェクト・mask（0.44）
+## cancel・ラベル付きエフェクト・mask（0.44）
 
-組み込みの`break : -> !`は、最も内側のループを終了するエフェクトです。while・each・vmap・vfilter・fold・toVector・reverse・sort・sortByが処理します。各ループから漏れないbreakは、外側のエフェクト行から除かれます。
+組み込みの`cancel : -> !`は、最も内側のループを終了するエフェクトです。while・each・vmap・vfilter・fold・toVector・reverse・sort・sortByが処理します。各ループから漏れないbreakは、外側のエフェクト行から除かれます。
 
 ```haskell
 0; each [1,2,3] {
-    when ($ == 2) {break};
+    when ($ == 2) {cancel};
     +
 }
 -- 1
@@ -400,7 +400,7 @@ streamの型は`stream 要素型 { -> / エフェクト行 }`です。構築自�
     -> x;
     each (1 ..= 3) {
         -> y;
-        when (x + y > 4) {break@outer};
+        when (x + y > 4) {cancel@outer};
         print #(x,y)
     }
 }
@@ -431,7 +431,7 @@ mask ask@outer {call action}    -- outerのaskハンドラーへ送る
 
 maskの対象は操作名です。関数やブロックから外へ出てくる、その操作だけを転送します。ブロック内に新しく設けたハンドラーは通常どおり機能し、すでに`ask@other`のように宛先を指定した操作は変更しません。maskを入れ子にすると飛ばすハンドラーの数が増えます。maskのブロックは実行され、通常のquotationと同じく独立した節から始まります。
 
-`break@outer`は`mask break@outer {break}`に相当します。未処理のbreakや、maskで宛先を失った操作は実行エラーです。型推論は操作の宛先とmaskの深さを追跡するため、内側のハンドラーだけで処理済みとは見なしません。
+`cancel@outer`は`mask cancel@outer {cancel}`に相当します。未処理のbreakや、maskで宛先を失った操作は実行エラーです。型推論は操作の宛先とmaskの深さを追跡するため、内側のハンドラーだけで処理済みとは見なしません。
 
 [実行例](examples/labeled-effects.nyan)
 
@@ -478,13 +478,13 @@ nは非負の安全な整数です。負数・小数・安全な整数の範囲�
 
 ```haskell
 toVector (@mapped map [1,2,3] {
-    when ($ == 2) {break@mapped};
+    when ($ == 2) {cancel@mapped};
     * 10
 })
 -- [10]
 ```
 
-変換を重ねた場合、breakは対応する最も内側の操作を止めます。下流のeachで起きたbreakを上流の変換が捕まえることはありません。`mask break {…}`や`break@outer`で外側を対象にすることもできます。vtakeの個数制限による停止は内部のキャンセルであり、ユーザーのbreakハンドラーには届きません。
+変換を重ねた場合、breakは対応する最も内側の操作を止めます。下流のeachで起きたbreakを上流の変換が捕まえることはありません。`mask cancel {…}`や`cancel@outer`で外側を対象にすることもできます。vtakeの個数制限による停止は内部のキャンセルであり、ユーザーのbreakハンドラーには届きません。
 
 遅延変換のブロックは1要素を消費して1値を返します。新設したvector版の述語・vflatMapブロックも同じです。既存のvmap・vfilter・eachが持つ周囲のスタックを引き継ぐ機能は維持しています。遅延変換は走査ごとに再実行され、結果をキャッシュしません。
 
@@ -634,10 +634,10 @@ vmap [1, 2, 3] {* 2}                  -- [2 4 6]
 
 ### ループが処理するeffectの型表示
 
-`:type while`では、条件・本体の両blockに`break`を明示します。呼び出し全体のeffect行からはbreakを除きます。
+`:type while`では、条件・本体の両blockに`cancel`を明示します。呼び出し全体のeffect行からはbreakを除きます。
 
 ```text
-..s1 { ..s1 -- ..s bool / {break | 'e1} } { ..s -- ..s1 / {break | 'e} } -- ..s / { | 'e, 'e1}
+..s1 { ..s1 -- ..s bool / {cancel | 'e1} } { ..s -- ..s1 / {cancel | 'e} } -- ..s / { | 'e, 'e1}
 ```
 
 このbreakは、そのコールバックで使用でき、whileが処理する操作を表します。純粋なblockがbreakを実際に発生させるという意味ではありません。`loop = while {True} _`などのラッパーにも型情報を保持します。ユーザー定義関数に渡すblockにも、次節の`@label {...}`形式でラベルを指定できます。
@@ -652,11 +652,11 @@ loop = while {True} _
 main = 1; loop @a {
   * 2
   print $
-  when ($ > 2000) {break@a}
+  when ($ > 2000) {cancel@a}
 }
 ```
 
-`break@a`はblock内に作られたloopを通過し、blockの呼び出し位置から外側にある最寄りのbreak handlerへ届きます。`ask@a`や`yield@a`も同じ規則です。ラベルなしの操作は従来どおり、その操作位置から最寄りのhandlerを使います。
+`cancel@a`はblock内に作られたloopを通過し、blockの呼び出し位置から外側にある最寄りのbreak handlerへ届きます。`ask@a`や`yield@a`も同じ規則です。ラベルなしの操作は従来どおり、その操作位置から最寄りのhandlerを使います。
 
 ```haskell
 effect ask : -> int
@@ -672,7 +672,7 @@ main = handle @outer {
 
 ラベルの名前はblock内の字句スコープで解決します。ラベル付きblock自体は変数に保存して再利用でき、呼び出すたびに新しい宛先に結び付きます。ただし、実行中のラベルを参照する内側のblockを返したり、外側のmutable変数へ保存したりすることはできません。`fromYield @a {yield@a 1; yield@a 2}`はstreamの走査ごとにラベルを結び直すため、保存・再走査できます。
 
-旧形式の`@name while ...`なども引き続き使えます。`mask break { ... }`はhandlerを一つ飛ばし、`mask break@a { ... }`はblockのラベルへ転送します。
+旧形式の`@name while ...`なども引き続き使えます。`mask cancel { ... }`はhandlerを一つ飛ばし、`mask cancel@a { ... }`はblockのラベルへ転送します。
 
 [実行例](examples/block-labels.nyan)
 
@@ -702,7 +702,7 @@ sortBy [1, 3, 2] {0 -}                  -- [3, 2, 1]
 
 `sort`と`sortBy`は安定ソートです。同じキーの要素の順序を保ち、`sortBy`のkey blockは各要素に対して一度だけ実行します。key blockは1消費1生産で、IOなどのエフェクトは関数の型に反映されます。数値のほか、`ord`を定義したADTもキーに使えます。
 
-これらは`break`に対応します。`fold`では処理を完了した最後の累積値を返します。収集中やキー評価中のbreakでは、それまでに収集できた要素を逆順化・整列して返します。外側のblockラベル宛てのbreakは外側へ転送します。
+これらは`cancel`に対応します。`fold`では処理を完了した最後の累積値を返します。収集中やキー評価中のbreakでは、それまでに収集できた要素を逆順化・整列して返します。外側のblockラベル宛てのbreakは外側へ転送します。
 
 値の表示も現在の前置構文に合わせました。REPL・`show`・`print`・Go native実行で、vectorは`[1, 2, 3]`、コンストラクタは`(Some 1)`や`(Node (Leaf 1) (Leaf 2))`のように表示します。引数のない`None`などの表示はそのままです。
 
@@ -735,7 +735,7 @@ parseNum ".5"                   -- 0.5
 
 区切りは正規表現ではなく文字列として扱い、複数文字も指定できます。先頭・末尾・連続する区切りで生じる空要素を保持します。空の区切り`""`はUnicodeコードポイント単位の分割で、`split "" ""`は空のstreamです。非空の区切りでは`split "" ","`は空文字列1個を返します。streamは再走査でき、`take`などで途中まで読むこともできます。
 
-`join`はvector・range以外も含むstreem実装型を受け取れますが、要素の型はstringでなければなりません。空の入力は`""`です。`break`に対応し、途中で終了した場合はそれまでの要素を結合して返します。走査時のエフェクトも推論されます。
+`join`はvector・range以外も含むstreem実装型を受け取れますが、要素の型はstringでなければなりません。空の入力は`""`です。`cancel`に対応し、途中で終了した場合はそれまでの要素を結合して返します。走査時のエフェクトも推論されます。
 
 数値変換は前後のASCII空白を取り除き、符号付き10進数・小数・指数表記を受け付けます。空文字、途中に余計な文字があるもの、16進数、NaN、Infinity、有限範囲を超える値は失敗します。`parseNum`の失敗は`handle`で処理できます。
 
@@ -805,7 +805,7 @@ toVector (cartesianProduct [1,2] ["a"]) -- [#(1 "a"), #(2 "a")]
 toVector (powerset [1,2])         -- [[], [1], [2], [1, 2]]
 ```
 
-入力はstreem実装型です。各走査の開始時に有限の入力を収集し、結果を一件ずつ生成します。全結果を事前生成しないため、`take`や`break`で途中終了できます。入力に無限streamを直接渡す場合は、先にtakeなどで有限にしてください。再走査すると入力も再走査し、走査時のエフェクトが再実行されます。
+入力はstreem実装型です。各走査の開始時に有限の入力を収集し、結果を一件ずつ生成します。全結果を事前生成しないため、`take`や`cancel`で途中終了できます。入力に無限streamを直接渡す場合は、先にtakeなどで有限にしてください。再走査すると入力も再走査し、走査時のエフェクトが再実行されます。
 
 k=0では空vectorを1個返します。kが入力数を超える順列・通常の組み合わせは空streamです。負数・小数・安全な整数でないkは構築時にexnを発生させます。同じ値が複数の入力位置にあれば、同じ値の結果も複数回生成します。入力走査のbreakはそこまでの入力を採用し、結果を読む側のbreakは生成を終了します。
 
@@ -822,16 +822,16 @@ k=0では空vectorを1個返します。kが入力数を超える順列・通常
 toVector (take (iterate {1, 0} {_1 + _, _1}) 8)
 -- [0, 1, 1, 2, 3, 5, 8, 13]
 
-toVector (iterate {0} {when ($ >= 3) {break}; + 1})
+toVector (iterate {0} {when ($ >= 3) {cancel}; + 1})
 -- [0, 1, 2, 3]
 
-toVector (iterate {break} {+ 1})
+toVector (iterate {cancel} {+ 1})
 -- []
 
-0; loop {when ($ >= 3) {break}; + 1} -- 3
+0; loop {when ($ >= 3) {cancel}; + 1} -- 3
 ```
 
-startとcontのどちらもbreakに対応します。start中のbreakは生成前に終了し、cont中のbreakはそれまでに生成した要素を残して終了します。blockラベルも使えます。`iterate @s {...} @c {...}`で、start内部の`break@s`、cont内部の`break@c`をそれぞれの反復境界へ届けられます。外側のラベルへのbreakは外側へ転送します。
+startとcontのどちらもbreakに対応します。start中のbreakは生成前に終了し、cont中のbreakはそれまでに生成した要素を残して終了します。blockラベルも使えます。`iterate @s {...} @c {...}`で、start内部の`cancel@s`、cont内部の`cancel@c`をそれぞれの反復境界へ届けられます。外側のラベルへのbreakは外側へ転送します。
 
 contは状態の個数・型を維持し、少なくとも生成する先頭の値を残す必要があります。start・contのエフェクトはstreamの潜在エフェクトとして推論されます。走査するたびにstartから実行し直します。takeやbreakで必要な分だけ走査できます。
 
@@ -1123,3 +1123,38 @@ sum [toByte 1, toByte 2]; print -- 3（byte）
 `one = 1`もnumで多相化され、利用時の文脈からint・float・byteなどを選びます。ユーザー定義のnum instanceでは`fromInt`でリテラルを変換します。fromIntの契約にはexnがあるため、未特殊化の多相関数には`/ {exn}`が表示されます。組み込みint・float・byteへの特殊化ではこのリテラル変換のexnが消え、`sum : [float] -> float / {}`のような純粋な注釈も使えます。
 
 `->`による値の束縛は数値型を多相化しません。`1 -> x`はintで、`one -> x`は同じxへの利用が一つの数値型に統一されます。文脈がなければ実行時にはintへ既定化します。byteの0〜255制限、intの64bitリテラル範囲は特殊化時も検査します。Goへのコンパイルも呼び出しごとの型に特殊化します。
+
+
+## 0.64: スタックを返すbreakとcancel
+
+従来のbreakは`cancel`へ改名しました。新しいbreakは、呼び出し時点のスタックをループの結果として渡す非復帰effectです。
+
+```nyanco
+effect break (..'s) ..'s -> !
+```
+
+breakは標準で定義済みです。同じ構文で独自のスタック行付きeffectも定義でき、`:`を挟む書き方にも対応します。行は値型と別のkindであり、通常の型引数と混同できません。
+
+```nyanco
+0; while {True} {+ 1; when ($ > 3) {break}}  -- 4
+0; while {True} {+ 1; when ($ > 3) {cancel}} -- 3
+```
+
+whileの条件が`..'s -> ..'s2 bool`、本体が`..'s2 -> ..'s`なら、通常終了時の結果は`..'s2`です。breakの引数もその行に一致する必要があります。条件・本体の両方からbreakできます。
+
+```nyanco
+loop : ..'s {..'s -> ..'s / {break (..'s), cancel}} -> ..'s
+loop = while {True} _
+1; loop @outer {* 2; when ($ > 8) {break@outer}} -- 16
+```
+
+`each`・`fold`・vectorを返す走査関数・all/anyなどもbreakとcancelを扱います。breakは通常終了と同じ型・個数の結果を渡します。たとえばfoldでは更新した累積値、vmapでは返したいvectorを含めます。不要な一時値はdropしてください。cancelは従来どおり、一時値を残したまま走査を中断して、保存済みの状態・途中結果を返せます。
+
+```nyanco
+fold [1,2,3] 0 {+; when ($ > 2) {break}} -- 3
+vmap [1,2] {drop; [42]; break} -- [42]
+```
+
+遅延streamの内部走査は値を返さないため、そこで処理するbreakの行は空です。要素の生成はyieldまたは通常のmapper結果で行い、内部走査だけを止める場合は`drop; break`やcancelを使います。fromYield自体はyieldを処理し、break/cancelは走査側へ伝えます。
+
+ラベル・maskも両方の操作に使用できます。`break@outer`は宛先のループの結果型で検査します。Goでは行の各値を関数の引数とeffectの引数として渡し、実行用スタックは導入しません。

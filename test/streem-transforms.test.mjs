@@ -49,20 +49,20 @@ test('skipWhile only calls the predicate until the first false result and restar
   calls; toList xs; calls; toList xs; calls`);
  assert.deepEqual(result.stack,[0,[3,1],3,[3,1],6]);
 });
-test('transforms handle break locally and preserve partial results',()=>{
+test('transforms handle cancel locally and preserve partial results',()=>{
  for(const [lazy,eager,expected] of [['smap','map',[1]],['sfilter','filter',[1]],['stakeWhile','takeWhile',[1]],['sskipWhile','skipWhile',[]],['sflatMap','flatMap',[1,11]]]) {
-  const body=`when ($ == 2) {break}; ${lazy==='sflatMap'?'-> n; [n,n + 10]':lazy==='smap'?'nop':'> 0'}`;
+  const body=`when ($ == 2) {cancel}; ${lazy==='sflatMap'?'-> n; [n,n + 10]':lazy==='smap'?'nop':'> 0'}`;
   assert.deepEqual(run(`main = toList (${lazy} [1,2,3] {${body}}); ${eager} [1,2,3] {${body}}`).stack,[expected,expected]);
  }
- for(const expression of ['stake (fromYield {yield 1; break; yield 2}) 5','sskip (fromYield {yield 1; break; yield 2}) 0','sflatten [fromYield {yield 1; break; yield 2},fromYield {yield 3}]'])
+ for(const expression of ['stake (fromYield {yield 1; cancel; yield 2}) 5','sskip (fromYield {yield 1; cancel; yield 2}) 0','sflatten [fromYield {yield 1; cancel; yield 2},fromYield {yield 3}]'])
   assert.deepEqual(run(`main = toList (${expression})`).stack,[[1]]);
 });
 test('downstream breaks and labelled or masked breaks reach the intended operation',()=>{
  const result=run(`main =
-  0; each (smap [1,2,3] {* 2}) {when ($ == 4) {break}; +};
-  toList (@mapped smap [1,2,3] {when ($ == 2) {break@mapped}; * 2});
-  @outer each [1] {drop; toList (stakeWhile [1,2] {drop; break@outer}); drop; print "bad"};
-  toList (sflatMap [1,2] {-> n; smap [n,9] {when ($ == 9) {mask break {break}}; nop}})`);
+  0; each (smap [1,2,3] {* 2}) {when ($ == 4) {cancel}; +};
+  toList (@mapped smap [1,2,3] {when ($ == 2) {cancel@mapped}; * 2});
+  @outer each [1] {drop; toList (stakeWhile [1,2] {drop; cancel@outer}); drop; print "bad"};
+  toList (sflatMap [1,2] {-> n; smap [n,9] {when ($ == 9) {mask cancel {cancel}}; nop}})`);
  assert.deepEqual(result.stack,[2,[2],[1]]);assert.deepEqual(result.output,[]);
 });
 test('deferred source, mapper and flattened stream effects are inferred',()=>{
@@ -80,7 +80,7 @@ test('counts reject invalid numbers with exn and streams retain types in the REP
  const vm=new VM();vm.evaluate('stake (1 ..= 9) 2 -> xs');assert.deepEqual(vm.evaluate('toList xs'),[[1,2]]);
  vm.evaluate('sflatten [[1],[2]] -> flat');assert.deepEqual(vm.evaluate('toList flat'),[[1,2]]);
 });
-test('native new transforms, cancellation and break routing agree with interpreter',()=>{
+test('native new transforms, cancellation and cancel routing agree with interpreter',()=>{
  const source=box+`main =
   print (flatten []); print (toList (sflatten [])); print (flatMap [] {drop; []});
   print (toList (stake (smap (1 ..= 8) {* 2}) 3));
@@ -90,11 +90,11 @@ test('native new transforms, cancellation and break routing agree with interpret
   print (flatMap (Box [1,2]) {-> n; Box [n,n + 10]});
   fromYield {yield 1; print "after1"; yield 2; print "after2"} -> xs;
   print (toList (stake xs 0)); print (toList (stake xs 1)); print (takeWhile xs {< 2});
-  print (toList (@mapped smap [1,2,3] {when ($ == 2) {break@mapped}; * 2}));
-  @outer each [1] {drop; toList (stakeWhile [1,2] {drop; break@outer}); drop; print "bad"};
-  0; each (smap [1,2,3] {* 2}) {when ($ == 4) {break}; +}; print;
-  print (toList (sflatMap [1,2] {-> n; smap [n,9] {when ($ == 9) {mask break {break}}; nop}}));
-  print (toList (sflatMap [1] {drop; break}));
+  print (toList (@mapped smap [1,2,3] {when ($ == 2) {cancel@mapped}; * 2}));
+  @outer each [1] {drop; toList (stakeWhile [1,2] {drop; cancel@outer}); drop; print "bad"};
+  0; each (smap [1,2,3] {* 2}) {when ($ == 4) {cancel}; +}; print;
+  print (toList (sflatMap [1,2] {-> n; smap [n,9] {when ($ == 9) {mask cancel {cancel}}; nop}}));
+  print (toList (sflatMap [1] {drop; cancel}));
   handle {take [1] -1; drop} {exn: {-> message k; print message}}`;
  const {output}=run(source),p=compile(source),dir=mkdtempSync(join(tmpdir(),'nyanco-streem-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}

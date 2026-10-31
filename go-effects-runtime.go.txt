@@ -25,7 +25,11 @@ func(m *Machine) performRoute(name string,args []any,loc string,never bool,targe
 }
 func(m *Machine) handle(body func(*Machine) []any,handlers map[string]EffectHandler,loc string,labels ...*EffectLabel) []any {var label *EffectLabel;if len(labels)>0{label=labels[0]};return m.handleWith(body,handlers,loc,label,"",nil)}
 func(m *Machine) mask(body func(*Machine) []any,name string,target *EffectTarget,loc string) []any {return m.handleWith(body,nil,loc,nil,name,target)}
-func(m *Machine) loop(body func(*Machine),loc string,label *EffectLabel){m.handle(func(m *Machine) []any{body(m);return nil},map[string]EffectHandler{"break":func(args []any,k *Continuation) []any{return nil}},loc,label)}
+func(m *Machine) loop(body func(*Machine),loc string,label *EffectLabel,cancelOnly ...bool) []any {
+ handlers:=map[string]EffectHandler{"cancel":func(args []any,k *Continuation) []any{return nil}}
+ if len(cancelOnly)==0||!cancelOnly[0]{handlers["break"]=func(args []any,k *Continuation) []any{return append([]any{},args...)}}
+ return m.handle(func(m *Machine) []any{body(m);return nil},handlers,loc,label)
+}
 func(m *Machine) handleWith(body func(*Machine) []any,handlers map[string]EffectHandler,loc string,label *EffectLabel,maskName string,maskTarget *EffectTarget,boundary ...bool) []any {
  target:=&EffectTarget{true};defer func(){target.live=false}()
  if label!=nil{previous:=label.current;label.current=target;defer func(){label.current=previous}()}

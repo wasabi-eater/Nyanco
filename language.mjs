@@ -610,12 +610,13 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   for(const [name,clauses] of withStandardFunctions(definitions))if(!definitions.has(name))definitions.set(name,clauses);
   definitions.effects=ioEffects(previous.effects);
   const families=effectFamilies(definitions.effects);
-  for(const group of groups)if(group[0].value==='effect') {
+  for(let group of groups)if(group[0].value==='effect') {
+    if(!group.some(t=>t.value===':')&&group[2]?.kind==='('){const end=group.findIndex(t=>t.kind===')');if(end>2)group=[...group.slice(0,end+1),{...group[end],value:':'},...group.slice(end+1)];}
     const token=group[0],where=group.findIndex(t=>t.line===token.line && t.value==='where');
-    const grouped=where>=0,colonIndex=group.findIndex(t=>t.value===':'),name=group[1],parameters=group.slice(2,grouped?where:colonIndex).map(t=>t.value);
+    const grouped=where>=0,colonIndex=group.findIndex(t=>t.value===':'),name=group[1],parameterTokens=group.slice(2,grouped?where:colonIndex).map(t=>t.value),rowParameters=parameterTokens.filter((p,i)=>parameterTokens[i-1]==='..'),parameters=parameterTokens.filter(p=>!['(',')','..'].includes(p));
     if((grouped?where<2:colonIndex<2) || !name || !/^[a-z][A-Za-z0-9_']*$/.test(name.value) || parameters.some(p=>!/^'[a-z][A-Za-z0-9_']*$/.test(p)))throw new LanguageError("Expected effect name 'a : signature or effect name 'a where",token);
     if(new Set(parameters).size!==parameters.length)throw new LanguageError('Duplicate effect type parameter',token);
-    if(name.value==='yield' && definitions.effects.get('yield')?.builtin){definitions.effects.delete('yield');families.delete('yield');}
+    if(['yield','break'].includes(name.value) && definitions.effects.get(name.value)?.builtin){definitions.effects.delete(name.value);families.delete(name.value);}
     if(families.has(name.value)||definitions.effects.has(name.value)||definitions.has(name.value)||BUILTINS.has(name.value)||definitions.constructors.has(name.value)||globals.has(name.value))throw new LanguageError(`Effect name already used: ${name.value}`,name);
     const members=[];
     if(grouped){
@@ -634,9 +635,9 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
       if(member[1]?.value!==':'||!opName||!/^[a-z][A-Za-z0-9_']*$/.test(opName.value))throw new LanguageError('Effect operation requires name : signature',opName||token);
       if(definitions.effects.has(opName.value)||definitions.has(opName.value)||BUILTINS.has(opName.value)||definitions.constructors.has(opName.value)||globals.has(opName.value)||families.has(opName.value))throw new LanguageError(`Effect operation name already used: ${opName.value}`,opName);
       const parser=typeSyntax(member.slice(2).map(t=>t.value),definitions.dataTypes,new Set(parameters),m=>{throw new LanguageError(m,opName);});
-      const syntax=parser.effect();if(!parser.done())throw new LanguageError('Unexpected effect signature token',opName);
-      const visit=t=>{if(t&&typeof t==='object'){if(t.tag==='param')used.add(t.name);if(typeof t.tail==='string')used.add(t.tail);Object.values(t).forEach(v=>Array.isArray(v)?v.forEach(visit):visit(v));}};visit(syntax);
-      const operation={name:opName.value,parameters,syntax,inputCount:syntax.input.length,outputCount:syntax.output.length,never:!!syntax.never,token:opName,...(grouped?{group:name.value,grouped:true}:{})};
+      const syntax=parser.effect();if(opName.value==='break'&&(!syntax.never||parameters.length!==1||rowParameters.length!==1||syntax.input.length!==1||syntax.input[0].tag!=='stack-row'||syntax.input[0].name!==rowParameters[0]))throw new LanguageError('break requires one stack row parameter and consumes that row without returning',opName);if(!parser.done())throw new LanguageError('Unexpected effect signature token',opName);
+      const visit=t=>{if(t&&typeof t==='object'){if(t.tag==='param'||t.tag==='stack-row')used.add(t.name);if(typeof t.tail==='string')used.add(t.tail);Object.values(t).forEach(v=>Array.isArray(v)?v.forEach(visit):visit(v));}};visit(syntax);
+      const operation={name:opName.value,parameters,rowParameters,syntax,inputCount:syntax.input.filter(t=>t.tag!=='stack-row').length,outputCount:syntax.output.length,never:!!syntax.never,token:opName,...(grouped?{group:name.value,grouped:true}:{})};
       definitions.effects.set(opName.value,operation);ops.push(operation);
     }
     for(const p of parameters)if(!used.has(p))throw new LanguageError(`Unused effect type parameter: ${p}`,token);
@@ -811,7 +812,7 @@ export class VM {
   accept(request,target) {if(request.bypassUntil){if(request.bypassUntil!==target)return false;delete request.bypassUntil;}if(request.target)return request.target===target;if(request.skip){request.skip--;return false;}return true;}
   *loop(iterator,t) {
     const target={},previous=t.label?.current;t.loopTarget=target;if(t.label)t.label.current=target;
-    try {let result=iterator.next();while(!result.done){const request=result.value;if(request.operation.name==='break' && this.accept(request,target))return false;
+    try {let result=iterator.next();while(!result.done){const request=result.value;if((request.operation.name==='cancel'||request.operation.name==='break'&&!t.cancelOnly) && this.accept(request,target)){if(request.operation.name==='break')t.breakValues=request.args;return false;}
       const returned=yield request;result=iterator.next(returned);
     }return true;}finally{iterator.return();if(t.label)t.label.current=previous;}
   }
@@ -820,7 +821,7 @@ export class VM {
     while(!result.done) {
       const request=result.value,handler=handlers.fields[request.operation.name];
       if(!handler || !this.accept(request,target)){const returned=yield request;result=generator.next(returned);continue;}
-      const vm=this,k={kind:'continuation',used:false,active:true,never:request.operation.never,inputCount:request.operation.outputCount,
+      const vm=this,k={kind:'continuation',used:false,active:true,never:request.operation.never,inputCount:request.outputCount??request.operation.outputCount,
         *resume(returned){return yield* vm.handle(generator,values,handlers,token,returned,target);}};
       const local=[...request.args,k];
       try {yield* this.call(handler,local,{...request.token,quotations:token.quotations});return local;}
@@ -862,7 +863,7 @@ export class VM {
   }
   *walk(xs,consume,t) {
     const vm=this,callback=consume,consumerTarget=t.loopTarget;
-    consume=function*(value){const iterator=callback(value);try{let result=iterator.next();while(!result.done){const request=result.value;if(request.operation.name==='break'&&!request.target&&!request.bypassUntil&&consumerTarget)request.bypassUntil=consumerTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}};
+    consume=function*(value){const iterator=callback(value);try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&consumerTarget)request.bypassUntil=request.operation.name==='break'&&t.cancelOnly?t.breakTarget:consumerTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}};
     if(xs?.kind==='stream') {
       if(xs.mode==='combinatorial') {
         const items=[],right=[];yield* this.loop(this.walk(xs.source,function*(v){items.push(v);},t),{...t});
@@ -889,7 +890,7 @@ export class VM {
           else {const returned=yield request;result=iterator.next(returned);}
         }}finally{iterator.return();if(xs.label)xs.label.current=previous;}
       } else {
-        const mode=xs.mode,iteration={...t,label:xs.label},stop={};let remaining=xs.count,skipping=true;
+        const mode=xs.mode,iteration={...t,label:xs.eager?undefined:xs.label,cancelOnly:!!xs.eager,breakTarget:t.loopTarget},stop={};let remaining=xs.count,skipping=true;
         if(mode==='take' && remaining===0)return;
         const iterator=this.walk(xs.source,function*(value){
           if(mode==='skip' && remaining>0){remaining--;return;}
@@ -910,7 +911,7 @@ export class VM {
       return;
     }
     const target=this.definitions.classes?.get('streem')?.instances.get(runtimeTypeKey(xs))?.implementations.get('each');
-    if(target){const visitor={kind:'closure',native:function*(local){const iterator=consume(local.pop());try{let result=iterator.next();while(!result.done){const request=result.value;if(request.operation.name==='break'&&!request.target&&!request.bypassUntil&&t.loopTarget)request.bypassUntil=t.loopTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}}};yield* this.run([{...t,kind:'word',value:target}],[xs,visitor],new Map(this.globals));return;}
+    if(target){const visitor={kind:'closure',native:function*(local){const iterator=consume(local.pop());try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&t.loopTarget)request.bypassUntil=t.loopTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}}};yield* this.run([{...t,kind:'word',value:target}],[xs,visitor],new Map(this.globals));return;}
     if(xs?.kind==='range'){const step=xs.start<=xs.end?1:-1,count=Math.abs(xs.end-xs.start)+(xs.inclusive?1:0);for(let i=0;i<count;i++){this.steps++;if(this.steps>this.maxSteps)throw new LanguageError('Execution step limit exceeded',t);yield* consume(xs.start+i*step);}}
     else for(const value of this.expect(xs,'list',t))yield* consume(value);
   }
@@ -1113,8 +1114,9 @@ export class VM {
         }
         else if(this.definitions.effects?.has(t.value)) {
           const op=this.definitions.effects.get(t.value);this.need(stack,op.inputCount,t);
-          const args=op.inputCount?stack.splice(-op.inputCount):[];
-          const returned=yield {operation:op,args,token:t,...(t.target?{target:this.labelTarget(env.get(t.target),t)}:{})};
+          const args=op.syntax.input[0]?.tag==='stack-row'?stack.splice(0):op.inputCount?stack.splice(-op.inputCount):[];
+          let outputCount=op.outputCount;if(op.syntax.output[0]?.tag==='stack-row'&&info?.effect){outputCount=0;let out=typeIR.prune(info.effect.output);while(out.tag==='push'){outputCount++;out=typeIR.prune(out.rest);}}
+          const returned=yield {operation:op,args,outputCount,token:t,...(t.target?{target:this.labelTarget(env.get(t.target),t)}:{})};
           if(op.never)throw new LanguageError('Non-returning effect returned',t);
           stack.push(...returned);
         }
@@ -1208,7 +1210,7 @@ define('while',2,function*(vm,s,t){t={...t};
   const body=vm.expect(s.pop(),'quotation',t),condition=vm.expect(s.pop(),'quotation',t);let checkpoint=[...s];
   const completed=yield* vm.loop((function*(){while(true){checkpoint=[...s];if(++vm.steps>vm.maxSteps)throw new LanguageError('Execution step limit exceeded',t);
     yield* vm.call(condition,s,t);vm.need(s,1,t);const flag=vm.expect(s.pop(),'boolean',t);checkpoint=[...s];if(!flag)break;yield* vm.call(body,s,t);
-  }})(),t);if(!completed)s.splice(0,s.length,...checkpoint);
+  }})(),t);if(!completed)s.splice(0,s.length,...(t.breakValues||checkpoint));
 });
 define('dip',2,function*(vm,s,t){ const q=s.pop(),value=s.pop(); yield* vm.call(q,s,t); s.push(value); });
 define('compose',2,(vm,s,t)=>{
@@ -1217,24 +1219,24 @@ define('compose',2,(vm,s,t)=>{
 });
 for(const name of ['vmap','vfilter'])define(name,2,function*(vm,s,t){t={...t};
   const q=vm.expect(s.pop(),'quotation',t),xs=s.pop(),results=[];
-  let checkpoint=[...s];const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(value);yield* vm.call(q,s,t);vm.need(s,1,t);const result=s.pop();if(name==='vmap')results.push(result);else if(vm.expect(result,'boolean',t))results.push(value);},t),t);if(!completed)s.splice(0,s.length,...checkpoint);
-  s.push(results);
+  let checkpoint=[...s];const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(value);yield* vm.call(q,s,t);vm.need(s,1,t);const result=s.pop();if(name==='vmap')results.push(result);else if(vm.expect(result,'boolean',t))results.push(value);},t),t);if(!completed)s.splice(0,s.length,...(t.breakValues||checkpoint));
+  if(!t.breakValues)s.push(results);
 });
-define('each',2,function*(vm,s,t){t={...t};const q=vm.expect(s.pop(),'quotation',t),xs=s.pop();let checkpoint=[...s];const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(value);yield* vm.call(q,s,t);},t),t);if(!completed)s.splice(0,s.length,...checkpoint);});
-define('toVector',1,function*(vm,s,t){t={...t};const xs=s.pop(),result=[];yield* vm.loop(vm.walk(xs,function*(value){result.push(value);},t),t);s.push(result);});
+define('each',2,function*(vm,s,t){t={...t};const q=vm.expect(s.pop(),'quotation',t),xs=s.pop();let checkpoint=[...s];const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(value);yield* vm.call(q,s,t);},t),t);if(!completed)s.splice(0,s.length,...(t.breakValues||checkpoint));});
+define('toVector',1,function*(vm,s,t){t={...t};const xs=s.pop(),result=[];yield* vm.loop(vm.walk(xs,function*(value){result.push(value);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
 for(const [name,mode] of transforms)define(name,mode==='flatten'?1:2,function*(vm,s,t){
   const argument=mode==='flatten'?null:s.pop(),source=s.pop();
   if(countTransform(mode) && (!Number.isSafeInteger(argument)||argument<0)){
     yield {operation:ioEffects().get('exn'),args:[`${name}: count must be a nonnegative safe integer`],token:t};throw new LanguageError('Non-returning effect returned',t);
   }
-  const value={kind:'stream',mode,source,label:t.label,...(countTransform(mode)?{count:argument}:callbackTransform(mode)?{block:vm.expect(argument,'quotation',t)}:{})};
+  const value={kind:'stream',mode,source,label:t.label,eager:!streamTransforms.has(name),...(countTransform(mode)?{count:argument}:callbackTransform(mode)?{block:vm.expect(argument,'quotation',t)}:{})};
   if(streamTransforms.has(name))s.push(value);
-  else {const result=[];yield* vm.walk(value,function*(item){result.push(item);},t);s.push(result);}
+  else {t={...t};const result=[];yield* vm.loop(vm.walk(value,function*(item){result.push(item);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);}
 });
 define('fromYield',1,(vm,s,t)=>{s.push({kind:'stream',mode:'fromYield',label:t.label,block:vm.expect(s.pop(),'quotation',t)});});
 define('fold',3,function*(vm,s,t){t={...t};const q=vm.expect(s.pop(),'quotation',t);let acc=s.pop();const xs=s.pop();let checkpoint=[...s];
   const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(acc,value);yield* vm.call(q,s,t);vm.need(s,1,t);acc=s.pop();},t),t);
-  if(!completed)s.splice(0,s.length,...checkpoint);s.push(acc);
+  if(!completed)s.splice(0,s.length,...(t.breakValues||checkpoint));if(!t.breakValues)s.push(acc);
 });
 // Collection is eager; sort keys run once, and merge passes preserve equal-key order.
 for(const name of ['reverse','sort','sortBy'])define(name,name==='sortBy'?2:1,function*(vm,s,t){t={...t};
@@ -1243,6 +1245,7 @@ for(const name of ['reverse','sort','sortBy'])define(name,name==='sortBy'?2:1,fu
     let key=value;if(q){const local=[value];yield* vm.call(q,local,t);vm.need(local,1,t);key=local.pop();}
     rows.push({value,key});
   },t),t);
+  if(t.breakValues){s.splice(0,s.length,...t.breakValues);return;}
   if(name==='reverse')rows.reverse();
   else yield* vm.loop((function*(){
     for(let width=1;width<rows.length;width*=2){
@@ -1259,7 +1262,7 @@ for(const name of ['reverse','sort','sortBy'])define(name,name==='sortBy'?2:1,fu
       rows=next;
     }
   })(),t);
-  s.push(rows.map(row=>row.value));
+  if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(rows.map(row=>row.value));
 });
 for(const name of ['max','min'])define(name,2,function*(vm,s,t){const b=s.pop(),a=s.pop(),pair=[b,a];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);s.push(name==='max'?(less?a:b):(less?b:a));});
 define('fromSome',1,function*(vm,s,t){const value=s.pop();if(value?.kind==='adt'&&value.typeName==='option'&&value.constructor==='Some'){s.push(value.fields[0]);return;}yield {operation:ioEffects().get('exn'),args:['fromSome: None'],token:t};throw new LanguageError('Non-returning effect returned',t);});
@@ -1271,6 +1274,7 @@ for(const name of ['maxi','mini','maxiBy','miniBy','all','any'])define(name,['ma
   let replace=!found;if(found){const pair=[next,key];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);replace=name.startsWith('maxi')?!less:less;}
   if(replace){best=value;key=next;found=true;}
  },t),t);}catch(error){if(error!==stop)throw error;}
+ if(t.breakValues){s.splice(0,s.length,...t.breakValues);return;}
  s.push(predicate?result:{kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[best]:[]});
 });
 
@@ -1303,7 +1307,7 @@ define('show',1,function*(vm,s,t){
 });
 define('split',2,(vm,s,t)=>{const separator=vm.expect(s.pop(),'string',t),source=vm.expect(s.pop(),'string',t);s.push({kind:'stream',mode:'split',source,separator});});
 define('join',2,function*(vm,s,t){t={...t};const separator=vm.expect(s.pop(),'string',t),xs=s.pop(),parts=[];
-  yield* vm.loop(vm.walk(xs,function*(value){parts.push(vm.expect(value,'string',t));},t),t);s.push(parts.join(separator));
+  yield* vm.loop(vm.walk(xs,function*(value){parts.push(vm.expect(value,'string',t));},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(parts.join(separator));
 });
 const numberText=/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
 for(const name of ['toNum','parseNum'])define(name,1,function*(vm,s,t){
