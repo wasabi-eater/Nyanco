@@ -939,6 +939,7 @@ class Inference {
         const scheme=env.get(node.value),type=instantiate(scheme);
         if(scheme.callable){if(trace)trace.effect=type;current=this.apply(type,current,node);}
         else current=push(current,type);
+        if(node.ephemeral){env.delete(node.value);env.locals?.delete(node.value);}
       }
       else if(node.value==='fromYield') {
         let body;[current,body]=this.pop(current,node);const expected=quote(EMPTY,row());unify(body,expected,node);

@@ -287,6 +287,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const value=ctx.value(`${env}.read(${str(n.value)})`);
         if(info.env.get(n.value).callable)invoke(ctx,value,values,info.effect,at);
         else values.push(value);
+        if(n.ephemeral)ctx.lines.push(`delete(${env}.values,${str(n.value)});delete(${env}.locals,${str(n.value)})`);
       }
       else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);

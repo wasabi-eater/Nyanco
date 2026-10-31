@@ -66,7 +66,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -192,7 +192,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(head.value==='->')previous=patterns;
         const condition=head.value==='|'?part.slice(1,then):bar<0?null:part.slice(bar+1,then);
         if(condition && !condition.length)throw new LanguageError('Empty case guard',head);
-        branches.push({patterns,guard:condition?parseTokens(condition,{parents:context.parents},constructors):null,body:parseTokens(part.slice(then+1),{parents:context.parents},constructors),token:head});
+        branches.push({patterns,guard:condition?[...patternStack(patterns),...parseTokens(condition,{parents:context.parents},constructors)]:null,body:[...(condition?[]:patternStack(patterns)),...parseTokens(part.slice(then+1),{parents:context.parents},constructors)],token:head});
       }
       return {...token,kind:'case',branches};
     }
@@ -351,7 +351,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           i++;
         }
         const parsed=parseTokens(tokens.slice(start,i),null,constructors);
-        const body=patterns.length?[{...name,kind:'case',branches:[{patterns,body:parsed,token:name}]}]:parsed;
+        const body=patterns.length?[{...name,kind:'case',branches:[{patterns,body:[...patternStack(patterns),...parsed],token:name}]}]:parsed;
         const previous=nodes.findLast(n=>n.kind!=='capture');
         if(previous?.kind==='local-function' && previous.name===name.value && previous.parameterized && patterns.length)
           previous.body[0].branches.push(...body[0].branches);
@@ -403,7 +403,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if([...mutableNames].some(n=>!names.includes(n)))throw new LanguageError('mut must precede a pattern variable',arrow);
         if(!patterns.length)throw new LanguageError('Assignment requires at least one pattern',arrow);
         if(names.some(n=>BUILTINS.has(n)))throw new LanguageError('Assignment cannot bind built-ins',arrow);
-        nodes.push({...arrow,kind:'bind',patterns,names,mutable:names.map(n=>mutableNames.has(n))});
+        nodes.push({...arrow,kind:'bind',patterns,names,mutable:names.map(n=>mutableNames.has(n))},...patternStack(patterns,true));
         if(!done() && ![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);
       } else nodes.push(...expression());
     }
@@ -500,6 +500,8 @@ function dataDeclarations(groups, definitions, globals) {
   }
 }
 
+let nextPatternStack=0;
+function patternStack(patterns,ephemeral=false){return patterns.flatMap(p=>p.stackMatch?[{...p,kind:'word',ephemeral}]:p.fields?patternStack(p.fields,ephemeral):[]);}
 function parsePatterns(tokens, constructors,mutableParameters=false) {
   let i=0;
   function atom() {
@@ -510,6 +512,7 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
       if(name?.kind!=='word'||!identifier.test(name.value)||['_','mut','data'].includes(name.value)||constructors.has(name.value)||BUILTINS.has(name.value)||/^[A-Z]/.test(name.value))throw new LanguageError('mut parameter requires a variable name',name||t);
       return {...name,mutable:true};
     }
+    if(t.kind==='word'&&t.value==='~')return {...t,value:`@match${nextPatternStack++}`,stackMatch:true};
     if(t.kind==='(') {
       const inside=sequence(')');
       if(tokens[i++]?.kind!==')' || inside.length!==1)throw new LanguageError('A pattern group must contain one pattern',t);
@@ -687,7 +690,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
     const clauses = definitions.get(name.value);
     if (clauses.length && clauses[0].patterns.length !== patterns.length) throw new LanguageError('All clauses must have the same arity', name);
     if(group[header].value==='=') {
-      clauses.push({patterns,body:parseTokens(group.slice(header+1),null,definitions.constructors),token:name});
+      clauses.push({patterns,body:[...patternStack(patterns),...parseTokens(group.slice(header+1),null,definitions.constructors)],token:name});
     } else {
       const bars=separators.filter(i=>group[i].value==='|' && (group[i].line===group[header].line || group[i].col===group[header].col));
       for(let j=0;j<bars.length;j++) {
@@ -697,7 +700,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
         const condition=group.slice(start+1,eq);
         const guard=condition.length===1 && condition[0].value==='otherwise'
           ? [{...condition[0],kind:'literal',value:true}] : parseTokens(condition,null,definitions.constructors);
-        clauses.push({patterns,guard,body:parseTokens(group.slice(eq+1,end),null,definitions.constructors),token:name});
+        clauses.push({patterns,guard:[...patternStack(patterns),...guard],body:parseTokens(group.slice(eq+1,end),null,definitions.constructors),token:name});
       }
     }
   }
@@ -1129,6 +1132,7 @@ export class VM {
           const value=env.get(t.value);
           if(value?.kind==='local-function')yield* this.run(value.body,stack,new Map(value.env),new Map(),dispatch&&info?.effect?dispatch.local(value,info.effect):undefined);
           else stack.push(value?.kind==='cell'?value.value:value);
+          if(t.ephemeral){env.delete(t.value);env.locals?.delete(t.value);}
         }
         else if(this.definitions.effects?.has(t.value)) {
           const op=this.definitions.effects.get(t.value);this.need(stack,op.inputCount,t);
