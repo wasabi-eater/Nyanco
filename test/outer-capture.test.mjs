@@ -26,7 +26,7 @@ test('outer captures bind once at the enclosing clause and survive repeated invo
  assert.throws(()=>run('main = 3; {_ + __}; call'),/underflow/i);
  assert.throws(()=>compile('main = 3; {__}, {$$}'),/Cannot mix/);
  assert.throws(()=>compile('main = 3; {__ + $$}'),/Cannot mix/);
- assert.match(compile('f = {__}').types.get('f'),/--.*\{/);
+ assert.match(compile('f = {__}').types.get('f'),/->.*\{/);
 });
 test('native closures capture the same outer values and do not need the source stack',()=>{
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-capture-'));

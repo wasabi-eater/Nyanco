@@ -98,11 +98,11 @@ test('standard operator constraints can be used without declaring an ADT instanc
 
 test('standard operator classes are inferred before any instance is declared',()=>{
   const vm=new VM(compile('f = +\nlocal =\n  inner = +\n  inner'));
-  const expected="'a add => ..s 'a 'a -- ..s 'a";
+  const expected="'a add => ..s 'a 'a -> ..s 'a";
   assert.equal(new VM().infer('+'),expected);
   assert.equal(vm.infer('f'),expected);
   assert.equal(vm.infer('local'),expected);
-  assert.equal(vm.infer('3 +'),'..s int -- ..s int');
+  assert.equal(vm.infer('3 +'),'..s int -> ..s int');
   assert.deepEqual(vm.evaluate('2 3 f'),[5]);
   assert.throws(()=>vm.evaluate('True False f'),/No instance/);
 });

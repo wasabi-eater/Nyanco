@@ -10,6 +10,8 @@ test('LSP checks without executing, provides inferred types and source definitio
   assert.deepEqual(doc.diagnostics,[]);
   const params={textDocument:{uri},position:{line:1,character:15}};
   assert.match(service.request('textDocument/hover',params).contents.value,/square.*mul/);
+  assert.match(service.request('textDocument/hover',params).contents.value,/ -> /);
+  assert.doesNotMatch(service.request('textDocument/hover',params).contents.value,/ -- /);
   assert.deepEqual(service.request('textDocument/definition',params).range.start,{line:0,character:0});
   assert.deepEqual(service.request('textDocument/documentSymbol',params).map(s=>s.name),['square','main']);
   assert.ok(service.request('textDocument/completion',params).some(c=>c.label==='print'));

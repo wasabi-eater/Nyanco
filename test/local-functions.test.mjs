@@ -8,7 +8,7 @@ const vmFor=source=>new VM(compile(source));
 test('equals defines a local stack function and calls it without call',()=>{
   const vm=vmFor('x =\n  y = +\n  y');
   assert.deepEqual(vm.evaluate('3 4 x'),[7]);
-  assert.equal(vm.infer('x'),"'a add => ..s 'a 'a -- ..s 'a");
+  assert.equal(vm.infer('x'),"'a add => ..s 'a 'a -> ..s 'a");
   assert.deepEqual(new VM().evaluate('f = dup; 2 f; True f'),[2,2,true,true]);
 });
 

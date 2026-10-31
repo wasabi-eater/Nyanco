@@ -51,8 +51,8 @@ test('unconstrained function literals generalize to num across calls and local f
  const {p,output}=run(source);assert.deepEqual(output,['3','3.3','3','3','3','3','4.5','3.3','3.3','1','(Count 3)','(Count 1)','6','6','3']);
  for(const name of ['sum','one','addOne','numbers','localSum'])assert.match(p.types.get(name),/num/);
  assert.doesNotMatch(p.types.get('floatSum'),/num|exn/);
- const vm=new VM(p);assert.match(vm.infer('sum'),/num/);assert.match(vm.infer('sum [1,2]'),/--.*int/);assert.doesNotMatch(vm.infer('sum [0.1,0.2,3]'),/num|exn/);
- assert.match(vm.infer('1'),/--.*int/);assert.match(vm.infer('one'),/num/);
+ const vm=new VM(p);assert.match(vm.infer('sum'),/num/);assert.match(vm.infer('sum [1,2]'),/->.*int/);assert.doesNotMatch(vm.infer('sum [0.1,0.2,3]'),/num|exn/);
+ assert.match(vm.infer('1'),/->.*int/);assert.match(vm.infer('one'),/num/);
 });
 
 test('value bindings stay monomorphic and literal ranges remain checked at specialization',()=>{

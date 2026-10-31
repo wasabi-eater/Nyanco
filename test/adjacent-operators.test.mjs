@@ -38,6 +38,6 @@ instance add amount where
 instance mul amount where
   (x Amount) (y Amount) * = (x * y) Amount
 f = + *`),vm=new VM(p);
-  assert.equal(vm.infer('f'),"'a add, 'a mul => ..s 'a 'a 'a -- ..s 'a");
+  assert.equal(vm.infer('f'),"'a add, 'a mul => ..s 'a 'a 'a -> ..s 'a");
   assert.equal(vm.evaluate('(3 Amount) (4 Amount) (5 Amount) f')[0].fields[0],23);
 });

@@ -34,7 +34,7 @@ test('empty record fields consume missing values after explicit captures',()=>{
 test('quotation clauses stay deferred and container references infer function inputs',()=>{
   assert.equal(run('3 {[_]} call'),'[[3]]');
   const vm=new VM(compile('pack = [_]\nrecord = {x: _}'));
-  assert.match(vm.infer('pack'),/-- .*\[/);
+  assert.match(vm.infer('pack'),/-> .*\[/);
   assert.equal(format(vm.evaluate('3 pack; True record')),'[[3], {x: True}]');
   assert.equal(run('[1 2; +]'),'[[3]]');
 });

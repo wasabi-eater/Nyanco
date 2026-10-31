@@ -23,7 +23,7 @@ test('each supports generic user containers and threads the ambient stack',()=>{
   const vm=new VM(compile(generic));
   assert.deepEqual(vm.evaluate('10 (2 Box) {+} walk; 0 (1..=4) {+} walk; 0 [2 3] {+} walk'),[12,10,5]);
   assert.deepEqual(vm.evaluate('"prefix" 10 (2 Box) {+} each'),['prefix',12]);
-  assert.match(vm.infer('walk'),/^'a.* each =>/);
+  assert.match(vm.infer('walk'),/^'b 'a each =>/);
   assert.throws(()=>vm.evaluate('0 (True Box) {+} walk'),/Cannot unify/);
   assert.throws(()=>vm.evaluate('3 {drop} each'),/No instance: streem int/);
   assert.throws(()=>vm.evaluate('(3 Box) {dup} each'),/Infinite type|shape|underflow/);
@@ -61,8 +61,8 @@ test('legacy uppercase type aliases print canonical lowercase names',()=>{
   const p=compile(`data Legacy = Legacy int
 f : Legacy -> int
 (x Legacy) f = x`);
-  assert.equal(p.types.get('f'),'..s legacy -- ..s int');
-  assert.equal(new VM().infer('1 True "s"'),'..s -- ..s int bool string');
+  assert.equal(p.types.get('f'),'..s legacy -> ..s int');
+  assert.equal(new VM().infer('1 True "s"'),'..s -> ..s int bool string');
 });
 
 test('recursive each instances visit trees using the same accumulator',()=>{

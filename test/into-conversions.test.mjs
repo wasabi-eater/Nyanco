@@ -91,7 +91,7 @@ asBox = from
 asInt : box -> int / {exn}
 asInt = from
 main = asInt (asBox 42)`).stack,[42]);
- const vm=new VM();assert.match(vm.infer('from'),/into 'a 'a1/);assert.match(vm.infer('fromFloat'),/fromFloat/);
+ const vm=new VM();assert.match(vm.infer('from'),/into 'a 'b/);assert.match(vm.infer('fromFloat'),/fromFloat/);
  assert.throws(()=>run('main = from 1'),/Ambiguous conversion/);
  assert.throws(()=>compile(`data token = Token
 instance into int token where`),/Missing instance method: from/);

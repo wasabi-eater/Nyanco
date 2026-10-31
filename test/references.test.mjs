@@ -9,7 +9,7 @@ test('all four squared definitions infer and execute the same effect',()=>{
     const p=compile(`squared = ${body}`);
     const vm=new VM(p);
     assert.deepEqual(vm.evaluate('7 squared'),[49],body);
-    assert.equal(vm.infer('squared'),"'a mul => ..s 'a -- ..s 'a");
+    assert.equal(vm.infer('squared'),"'a mul => ..s 'a -> ..s 'a");
   }
 });
 

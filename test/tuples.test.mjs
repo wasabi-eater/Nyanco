@@ -12,7 +12,7 @@ test('tuple literals have heterogeneous elements, empty and singleton forms',()=
 });
 test('tuple index functions infer prefix rows and compose with higher order calls',()=>{
   const vm=new VM(compile('first = .0\nthird = .2'));
-  assert.equal(vm.infer('first'),"..s #('a | 't) -- ..s 'a");
+  assert.equal(vm.infer('first'),"..s #('a | 't) -> ..s 'a");
   assert.deepEqual(vm.evaluate('#(1) first; #(True "x") first'),[1,true]);
   assert.deepEqual(vm.evaluate('[#(1 "a"); #(2 "b")] {.1} map'),[['a','b']]);
   assert.deepEqual(vm.evaluate('#(1 True "last" 4) third'),['last']);

@@ -23,7 +23,7 @@ test('abort handlers and nested forwarding support arbitrary result arity',()=>{
 test('result row types and arities remain consistent and effects are removed',()=>{
   for(const body of ['{ask; "x"} {ask: {drop; 1}} handle','{ask drop} {ask: {drop; 1}} handle','{ask; "x"} {ask: {drop; 1 True}} handle'])assert.throws(()=>run(body),/Type error/);
   const p=compile(header+'main : -> int string / {}\nmain = {ask; "x"} {ask: {-> k; 1 k resume}} handle');
-  assert.equal(p.types.get('main'),'..s -- ..s int string');
+  assert.equal(p.types.get('main'),'..s -> ..s int string');
 });
 
 test('generic wrappers can consume a returned result',()=>{

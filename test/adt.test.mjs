@@ -9,10 +9,10 @@ const vmFor=source=>new VM(compile(source));
 
 test('ADT constructors are polymorphic stack functions with readable values',()=>{
   const program=compile(maybe),vm=new VM(program);
-  assert.equal(program.types.get('Just'),"..s 'a -- ..s ('a maybe)");
-  assert.equal(program.types.get('Nothing'),"..s -- ..s ('a maybe)");
+  assert.equal(program.types.get('Just'),"..s 'a -> ..s ('a maybe)");
+  assert.equal(program.types.get('Nothing'),"..s -> ..s ('a maybe)");
   assert.equal(format(vm.evaluate('99; 3 Just; True Just; Nothing')),'[99, (Just 3), (Just True), Nothing]');
-  assert.equal(vm.infer('1 Just'),"..s -- ..s (int maybe)");
+  assert.equal(vm.infer('1 Just'),"..s -> ..s (int maybe)");
   assert.throws(()=>vm.evaluate('Just'),/underflow/);
 });
 
@@ -34,7 +34,7 @@ test('nested patterns and multiple field constructors use source order',()=>{
 
 test('recursive ADTs and recursive functions infer their stack effects',()=>{
   const program=compile('data Tree a = Leaf a | Node (Tree a) (Tree a)\n(x Leaf) sum = x\n(l r Node) sum = (l sum) + (r sum)');
-  assert.equal(program.types.get('sum'),"'a add => ..s ('a tree) -- ..s 'a");
+  assert.equal(program.types.get('sum'),"'a add => ..s ('a tree) -> ..s 'a");
   assert.deepEqual(new VM(program).evaluate('(1 Leaf) ((2 Leaf) (3 Leaf) Node) Node sum'),[6]);
   assert.throws(()=>new VM(program).evaluate('(True Leaf) (2 Leaf) Node'),StaticTypeError);
 });

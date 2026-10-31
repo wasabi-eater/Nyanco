@@ -526,9 +526,18 @@ export function formatType(type) {
   inspect(type);
   const values=new Map(), rows=new Map(), recordRows=new Map(),tupleRows=new Map(),effectRows=new Map();
   const name=(v,names,prefix)=>{ if(!names.has(v)) names.set(v, `${prefix}${names.size || ''}`); return names.get(v); };
+  // Keep row names stable and avoid reusing their identifiers for value types.
+  const reserved=new Set([...visitedTypes,...free(type)].flatMap(t=>
+    (t.tag==='var'||t.tag==='rigid') ? ({'effect-row':["'e"],'record-row':["'r"],'tuple-row':["'t"]}[t.sort]||[]) : []));
+  let nextValueName=0;
+  const alphabetic=i=>{let text='';do{text=String.fromCharCode(97+i%26)+text;i=Math.floor(i/26)-1;}while(i>=0);return "'"+text;};
+  function valueName(t){
+    if(!values.has(t)){let candidate;do{candidate=alphabetic(nextValueName++);}while(reserved.has(candidate));values.set(t,candidate);}
+    return values.get(t);
+  }
   function render(t) {
     t=prune(t);
-    if(t.tag==='var'||t.tag==='rigid') return t.sort==='effect-row' ? name(t,effectRows,"'e") : t.sort==='tuple-row' ? name(t,tupleRows,"'t") : t.sort==='record-row' ? name(t,recordRows,"'r") : t.sort==='row' ? name(t,rows,'..s') : name(t,values,"'a");
+    if(t.tag==='var'||t.tag==='rigid') return t.sort==='effect-row' ? name(t,effectRows,"'e") : t.sort==='tuple-row' ? name(t,tupleRows,"'t") : t.sort==='record-row' ? name(t,recordRows,"'r") : t.sort==='row' ? name(t,rows,'..s') : valueName(t);
     if(['record','record-row','record-empty'].includes(t.tag)) {
       const {fields,tail}=flattenRecord(t.tag==='record'?t.row:t);
       const parts=[...fields].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,v])=>`${k}: ${render(v)}`);
@@ -545,8 +554,8 @@ export function formatType(type) {
     if(t.tag==='adt') return t.args.length ? `(${t.name} ${t.args.map(render).join(' ')})` : t.name;
     if(t.tag==='stream')return `(stream ${render(t.item)} { ->${renderEffects(t)} })`;
   if(t.tag==='list') return `[${render(t.item)}]`;
-    if(t.tag==='continuation')return `continuation { ${renderStack(t.input)} -- ${renderStack(t.output)}${renderEffects(t)} }`;
-    if(t.tag==='quote') return `{ ${renderStack(t.input)} -- ${renderStack(t.output)}${renderEffects(t)} }`;
+    if(t.tag==='continuation')return `continuation { ${renderStack(t.input)} -> ${renderStack(t.output)}${renderEffects(t)} }`;
+    if(t.tag==='quote') return `{ ${renderStack(t.input)} -> ${renderStack(t.output)}${renderEffects(t)} }`;
     return renderStack(t);
   }
   function renderEffects(t) {
@@ -563,7 +572,7 @@ export function formatType(type) {
     return items.length ? items.join(' ') : '∅';
   }
   const t=prune(type);
-  const body=t.tag==='quote' ? `${renderStack(t.input)} -- ${renderStack(t.output)}${renderEffects(t)}` : render(t);
+  const body=t.tag==='quote' ? `${renderStack(t.input)} -> ${renderStack(t.output)}${renderEffects(t)}` : render(t);
   const constraints=[...new Set([...free(t)].flatMap(v=>[...(v.relations||[]).map(r=>r.name+' '+r.args.map(render).join(' ')),...[...v.associated||[]].map(([n,ts])=>`${n} ${render(v)} ${ts.map(render).join(' ')}`),...[...v.classes||[]].sort().map(c=>`${c} ${render(v)}`),...(v.eachItem?[`streem ${render(v)} ${render(v.eachItem)}`]:[]),...(v.handlerAnswer?[`handles ${render(v)} ${render(v.handlerAnswer)}`]:[])]))];
   return constraints.length?`${constraints.join(', ')} => ${body}`:body;
 }

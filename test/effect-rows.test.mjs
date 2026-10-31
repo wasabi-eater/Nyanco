@@ -5,10 +5,10 @@ const header="effect 'a yield: 'a ->\neffect 'a ask: -> 'a\n";
 const type=body=>compile(header+'f = '+body).types.get('f');
 
 test('blocks infer latent effect arguments with shared type variables',()=>{
-  assert.equal(type('{+ 10; yield}'),'..s -- ..s { ..s1 int -- ..s1 / {int yield} }');
-  assert.equal(type('{2 yield; 3}'),"'a num => ..s -- ..s { ..s1 -- ..s1 'a / {exn, int yield} }");
-  assert.equal(type('{ask yield}'),"..s -- ..s { ..s1 -- ..s1 / {'a ask, 'a yield} }");
-  assert.equal(type('{2 yield} drop'),'..s -- ..s');
+  assert.equal(type('{+ 10; yield}'),'..s -> ..s { ..s1 int -> ..s1 / {int yield} }');
+  assert.equal(type('{2 yield; 3}'),"'a num => ..s -> ..s { ..s1 -> ..s1 'a / {exn, int yield} }");
+  assert.equal(type('{ask yield}'),"..s -> ..s { ..s1 -> ..s1 / {'a ask, 'a yield} }");
+  assert.equal(type('{2 yield} drop'),'..s -> ..s');
 });
 
 test('function and block annotations accept closed effect rows and validate arguments',()=>{
@@ -30,9 +30,9 @@ d = yield`);
 test('execution combinators propagate callback effects while compose remains latent',()=>{
   for(const body of ['{1 yield} call','True {1 yield} {} if','True {1 yield} when','{1 yield} {2 yield} compose call'])
     assert.match(type(body),/ \/ \{int yield\}$/);
-  assert.equal(type('[1 2] {yield} each'),"'a num => ..s -- ..s / {exn, 'a yield}");
-  assert.equal(type('0 {dup; 0 >} {dup yield; - 1} while'),"'a num, 'a ord => ..s -- ..s 'a / {exn, 'a yield}");
-  assert.equal(type('{1 yield} {2 yield} compose drop'),'..s -- ..s');
+  assert.equal(type('[1 2] {yield} each'),"'a num => ..s -> ..s / {exn, 'a yield}");
+  assert.equal(type('0 {dup; 0 >} {dup yield; - 1} while'),"'a num, 'a ord => ..s -> ..s 'a / {exn, 'a yield}");
+  assert.equal(type('{1 yield} {2 yield} compose drop'),'..s -> ..s');
 });
 
 test('open effect row annotations propagate effects and pure callback contracts are enforced',()=>{
@@ -40,7 +40,7 @@ test('open effect row annotations propagate effects and pure callback contracts 
 run = call
 f = {1 yield; 2} run
 g = {3} run`;
-  const p=compile(source);assert.equal(p.types.get('f'),'..s -- ..s int / {int yield}');assert.equal(p.types.get('g'),'..s -- ..s int');
+  const p=compile(source);assert.equal(p.types.get('f'),'..s -> ..s int / {int yield}');assert.equal(p.types.get('g'),'..s -> ..s int');
   const pure=header+'pure : {-> int / {}} -> int / {}\npure = call\n';
   assert.throws(()=>compile(pure+'f = {1 yield; 2} pure'),/not allowed/);
   assert.deepEqual(new VM(compile(pure+'f = {2} pure')).evaluate('f'),[2]);
@@ -51,7 +51,7 @@ test('handlers subtract handled operations through direct and named applications
 f = {1 yield; 2} {yield: {-> x k; k resume}} handle
 g = {1 yield; 2} {yield: {-> x k; k resume}} withHandlers
 h = {ask; yield; 3} {yield: {-> x k; k resume}} handle`);
-  assert.equal(p.types.get('f'),"'a num => ..s -- ..s 'a / {exn}");assert.equal(p.types.get('g'),"'a num => ..s -- ..s 'a / {exn}");
+  assert.equal(p.types.get('f'),"'a num => ..s -> ..s 'a / {exn}");assert.equal(p.types.get('g'),"'a num => ..s -> ..s 'a / {exn}");
   assert.match(p.types.get('h'),/ask/);assert.doesNotMatch(p.types.get('h'),/yield/);
 });
 
@@ -60,7 +60,7 @@ test('handler bodies retain outward operations and nested handlers can remove th
 effect log: int ->
 f = {ping} {ping: {-> k; 1 log; 2 k resume}} handle
 g = {f} {log: {-> n k; k resume}} handle`);
-  assert.equal(p.types.get('f'),'..s -- ..s int / {log}');assert.equal(p.types.get('g'),'..s -- ..s int');
+  assert.equal(p.types.get('f'),'..s -> ..s int / {log}');assert.equal(p.types.get('g'),'..s -> ..s int');
   assert.deepEqual(new VM(p).evaluate('g'),[2]);
 });
 
@@ -75,9 +75,9 @@ n odd = (n - 1) even`);
 });
 
 test('polymorphic operations preserve heterogeneous instantiations and bottom effects',()=>{
-  assert.equal(type('1 yield; "x" yield'),'..s -- ..s / {int yield, string yield}');
+  assert.equal(type('1 yield; "x" yield'),'..s -> ..s / {int yield, string yield}');
   const p=compile('effect fail: string -> !\nf : -> ! / {fail}\nf = "bad" fail');
-  assert.equal(p.types.get('f'),'..s -- ! / {fail}');
+  assert.equal(p.types.get('f'),'..s -> ! / {fail}');
 });
 
 test('REPL inference retains effects through captured quotations and local functions',()=>{
@@ -100,7 +100,7 @@ f =
 test('polymorphic handler forwarding specializes every operation occurrence',()=>{
   const source=header+`effect 'a log: 'a ->
 f = {1 yield; "x" yield; 2} {yield: {-> x k; x log; k resume}} handle`;
-  assert.equal(compile(source).types.get('f'),"'a num => ..s -- ..s 'a / {exn, int log, string log}");
+  assert.equal(compile(source).types.get('f'),"'a num => ..s -> ..s 'a / {exn, int log, string log}");
   assert.throws(()=>compile(source+'\nf : -> int / {int log}'),/Cannot unify/);
   assert.match(compile(source+'\nf : -> int / {int log, string log}').types.get('f'),/int log, string log/);
 });
@@ -111,7 +111,7 @@ test('class method contracts retain declared effects and reject hidden effects',
 instance int emit where
   emit = yield
 f = 1 emit`;
-  assert.equal(compile(make(' / {int yield}')).types.get('f'),'..s -- ..s / {int yield}');
+  assert.equal(compile(make(' / {int yield}')).types.get('f'),'..s -> ..s / {int yield}');
   assert.throws(()=>compile(make('')),/not allowed/);
 });
 

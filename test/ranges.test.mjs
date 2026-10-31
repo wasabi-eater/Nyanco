@@ -20,7 +20,7 @@ test('range sections and references keep precedence and have range type',()=>{
   assert.deepEqual(run('(1..3) == (1..3); (1..3) == (1..=3)'),[true,false]);
   assert.throws(()=>run('(1..3) == [1 2]'),/Cannot unify/);
   for(const s of ['1 4 (..)','1 (..= 3)','3 (1 ..=)','1 3 {..=} call','1 3; _1 ..= _'])assert.deepEqual(collect(s),[1,2,3]);
-  assert.equal(new VM().infer('..'),'..s int int -- ..s range');
+  assert.equal(new VM().infer('..'),'..s int int -> ..s range');
   assert.deepEqual(new VM(compile('f = ..=')).evaluate('0 (2 4 f) {+} each'),[9]);
 });
 test('range endpoints validate safe integer limits without materializing lists',()=>{

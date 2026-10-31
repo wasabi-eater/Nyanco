@@ -7,13 +7,13 @@ import { VM, compile, StaticTypeError, builtinNames } from '../migration/v037-ad
 const run=(source,program={})=>new VM(program).evaluate(source);
 test('infers operator constraints without annotations',()=>{
   const p=compile('x square = x * x');
-  assert.equal(p.types.get('square'),"'a mul => ..s 'a -- ..s 'a");
+  assert.equal(p.types.get('square'),"'a mul => ..s 'a -> ..s 'a");
   assert.deepEqual(run('3 + 2 square',p),[7]);
 });
 test('principal stack effects support polymorphic definitions at independent types',()=>{
   const p=compile('x identity = x\ncopy = dup');
-  assert.equal(p.types.get('identity'),"..s 'a -- ..s 'a");
-  assert.equal(p.types.get('copy'),"..s 'a -- ..s 'a 'a");
+  assert.equal(p.types.get('identity'),"..s 'a -> ..s 'a");
+  assert.equal(p.types.get('copy'),"..s 'a -> ..s 'a 'a");
   assert.deepEqual(run('3 identity True identity "x" identity',p),[3,true,'x']);
 });
 test('polymorphic quotation bindings retain value polymorphism',()=>{
@@ -29,7 +29,7 @@ test('shared stack combinators infer accumulators',()=>{
 });
 test('inference handles recursive functions, forward references, and mutual recursion',()=>{
   const p=compile('n fact = n * ((n - 1) fact)\n0 unused = 0');
-  assert.equal(p.types.get('fact'),"'a num => ..s 'a -- ..s 'a / {exn}");
+  assert.equal(p.types.get('fact'),"'a num => ..s 'a -> ..s 'a / {exn}");
   const recursive=compile('0 fact = 1\nn fact = n * ((n - 1) fact)\n0 even = True\nn even = (n - 1) odd\n0 odd = False\nn odd = (n - 1) even');
   assert.deepEqual(run('6 fact 10 even 9 odd',recursive),[720,true,true]);
   assert.deepEqual(run('"prefix" 6 fact',recursive),['prefix',720]);
@@ -68,7 +68,7 @@ test('loop stack shapes are invariant, while accumulator loops remain supported'
     assert.throws(()=>run(source),StaticTypeError,source);
 });
 test('type annotations are checked, including polymorphism and stack signatures',()=>{
-  assert.equal(compile('f : int -> int\nf = dup (*)').types.get('f'),"..s int -- ..s int");
+  assert.equal(compile('f : int -> int\nf = dup (*)').types.get('f'),"..s int -> ..s int");
   assert.deepEqual(run('3 4 add',compile('add : (int int) -> int\nadd = (+)')),[7]);
   assert.deepEqual(run('3 same',compile('same : a -> a\nx same = x')),[3]);
   for(const source of ['f : bool -> bool\nf = (+ 1)','f : a -> a\nf = (+ 1)','f : Nope -> int\nf = 1'])
@@ -100,9 +100,9 @@ test('type inference is read-only and works with every builtin',()=>{
   for(const name of builtinNames()) {
     // Operators require section syntax to denote their full stack effect.
     const expr=/^[+*/%^<>=-]/.test(name)||['&&','||','.&.','.|.','.<<.','.>>.'].includes(name)?`(${name})`:name;
-    assert.match(vm.infer(expr),/ -- /,name);
+    assert.match(vm.infer(expr),/ -> /,name);
   }
-  assert.equal(vm.infer('dup'),"..s 'a -- ..s 'a 'a");
+  assert.equal(vm.infer('dup'),"..s 'a -> ..s 'a 'a");
   assert.equal(vm.globals.size,0);
 });
 test('source locations are included in static errors',()=>{
@@ -122,12 +122,12 @@ test('global rebinding cannot invalidate already-checked functions',()=>{
 });
 test('CLI exposes inference, static checking, and error exit codes',()=>{
   const cli=(args,input)=>spawnSync(process.execPath,[fileURLToPath(new URL('../migration/v037-cli.mjs',import.meta.url)),...args],{input,encoding:'utf8'});
-  const type=cli(['--type','dup']);assert.equal(type.status,0);assert.equal(type.stdout.trim(),"..s 'a -- ..s 'a 'a");
+  const type=cli(['--type','dup']);assert.equal(type.status,0);assert.equal(type.stdout.trim(),"..s 'a -> ..s 'a 'a");
   const silent=cli(['--type','"NOT_PRINTED" print']);assert.equal(silent.status,0);assert.doesNotMatch(silent.stdout,/NOT_PRINTED/);
   const bad=cli(['--eval','"NOT_PRINTED" print 1 + True']);assert.equal(bad.status,1);assert.equal(bad.stdout,'');assert.match(bad.stderr,/Type error/);
   const path=fileURLToPath(new URL('../examples/demo.nyan',import.meta.url));
   const checked=cli(['--check',path]);assert.equal(checked.status,0);assert.match(checked.stdout,/Types OK/);assert.doesNotMatch(checked.stdout,/Squares:/);
-  const types=cli(['--types',path]);assert.equal(types.status,0);assert.match(types.stdout,/factorial : \.\.s int -- \.\.s int/);
+  const types=cli(['--types',path]);assert.equal(types.status,0);assert.match(types.stdout,/factorial : \.\.s int -> \.\.s int/);
   const repl=cli([], 'x same = x\n:type same\n:type "NOT_PRINTED" print\n3 -> x;\nTrue -> x;\nx\n:q\n');
-  assert.equal(repl.status,0);assert.match(repl.stdout,/\.\.s 'a -- \.\.s 'a/);assert.doesNotMatch(repl.stdout,/NOT_PRINTED/);assert.match(repl.stdout,/Type error/);assert.match(repl.stdout,/\[3\]/);
+  assert.equal(repl.status,0);assert.match(repl.stdout,/\.\.s 'a -> \.\.s 'a/);assert.doesNotMatch(repl.stdout,/NOT_PRINTED/);assert.match(repl.stdout,/Type error/);assert.match(repl.stdout,/\[3\]/);
 });

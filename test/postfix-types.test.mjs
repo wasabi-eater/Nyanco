@@ -8,9 +8,9 @@ get : ('a ('a option)) -> 'a
 fallback None get = fallback
 _ (x Some) get = x`);
   const vm=new VM(program);
-  assert.equal(program.types.get('Some'),"..s 'a -- ..s ('a option)");
+  assert.equal(program.types.get('Some'),"..s 'a -> ..s ('a option)");
   assert.deepEqual(vm.evaluate('0 (42 Some) get; True None get'),[42,true]);
-  assert.equal(vm.infer('1 Some'),"..s -- ..s (int option)");
+  assert.equal(vm.infer('1 Some'),"..s -> ..s (int option)");
 });
 
 test('postfix types support multiple parameters, nested applications and recursive fields',()=>{

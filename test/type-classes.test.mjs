@@ -15,7 +15,7 @@ render = describe`;
 test('classes infer constraints and dispatch multiple instances',()=>{
   const p=compile(source),vm=new VM(p);
   assert.deepEqual(vm.evaluate('3 render; True render; False describe'),['3','yes','no']);
-  assert.equal(vm.infer('render'),"'a describe => ..s 'a -- ..s string");
+  assert.equal(vm.infer('render'),"'a describe => ..s 'a -> ..s string");
   assert.match(p.types.get('describe'),/describe/);
   assert.ok([...p.types.keys()].every(n=>!n.startsWith('__tc_')));
   assert.throws(()=>vm.evaluate('"unsupported" render'),/No instance: describe string/);
@@ -105,6 +105,6 @@ test('REPL infers add for f = + without prior class declarations',()=>{
     input:'f = +\n:type f\n2 3 f\n:q\n',encoding:'utf8',windowsHide:true});
   assert.equal(result.status,0,result.stderr);
   assert.doesNotMatch(result.stdout,/Error:/);
-  assert.match(result.stdout,/'a add => \.\.s 'a 'a -- \.\.s 'a/);
+  assert.match(result.stdout,/'a add => \.\.s 'a 'a -> \.\.s 'a/);
   assert.match(result.stdout,/\[5\]/);
 });

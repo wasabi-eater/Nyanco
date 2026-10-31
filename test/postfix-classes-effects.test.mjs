@@ -14,7 +14,7 @@ instance 'a add => ('a box) add where
 f : 'a describe => 'a -> string
 f = describe`);
   const vm=new VM(p);assert.deepEqual(vm.evaluate('3 Box f'),['3']);
-  assert.equal(p.types.get('f'),"'a describe => ..s 'a -- ..s string");
+  assert.equal(p.types.get('f'),"'a describe => ..s 'a -> ..s string");
   assert.deepEqual(vm.evaluate('(1 Box) + (2 Box)')[0].fields,[3]);
   assert.match(vm.infer('+'),/^'a add =>/);
 });

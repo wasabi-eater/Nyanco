@@ -517,7 +517,7 @@ getZero = zero
 main = print origin; print emptyText; print (getZero; + 1)
 ```
 
-`getZero`の推論型は`zero 'a => ..s -- ..s 'a`です。呼び出しごとに、型注釈や後続の処理から決まる型でinstanceを選びます。多相関数、quotation、遅延streamを経由しても制約を引き継ぎます。Go生成もこの方式に対応しています。
+`getZero`の推論型は`zero 'a => ..s -> ..s 'a`です。呼び出しごとに、型注釈や後続の処理から決まる型でinstanceを選びます。多相関数、quotation、遅延streamを経由しても制約を引き継ぎます。Go生成もこの方式に対応しています。
 
 `zero`だけを実行したり、`zero; drop`と書いたりすると、対象型が決まらないため`Ambiguous class method`になります。instanceが一つしかなくても自動選択はしません。`:type zero`は実行しないため制約付きの型を表示できます。`{zero}`を作るだけなら実行時のinstance選択は不要です。
 
@@ -639,7 +639,7 @@ vmap [1, 2, 3] {* 2}                  -- [2 4 6]
 `:type while`では、条件・本体の両blockに`cancel`を明示します。呼び出し全体のeffect行からはbreakを除きます。
 
 ```text
-..s1 { ..s1 -- ..s bool / {cancel | 'e1} } { ..s -- ..s1 / {cancel | 'e} } -- ..s / { | 'e, 'e1}
+..s1 { ..s1 -> ..s bool / {cancel | 'e1} } { ..s -> ..s1 / {cancel | 'e} } -> ..s / { | 'e, 'e1}
 ```
 
 このbreakは、そのコールバックで使用でき、whileが処理する操作を表します。純粋なblockがbreakを実際に発生させるという意味ではありません。`loop = while {True} _`などのラッパーにも型情報を保持します。ユーザー定義関数に渡すblockにも、次節の`@label {...}`形式でラベルを指定できます。

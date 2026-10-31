@@ -16,7 +16,7 @@ instance 'c 'a each => ('c 'a 'b lmap) each where
 
 test('user classes infer associated types and specialize each invocation independently',()=>{
   const p=compile(box),vm=new VM(p);
-  assert.match(p.types.get('unwrapValue'),/'a 'a1 unpack =>/);
+  assert.match(p.types.get('unwrapValue'),/'a 'b unpack =>/);
   assert.deepEqual(vm.evaluate('3 Box unwrapValue; True Box unwrapValue; [1 2] Box unwrapValue'),[3,true,[1,2]]);
   assert.throws(()=>vm.evaluate('3 unwrapValue'),/No instance/);
 });
@@ -46,7 +46,7 @@ test('associated result annotations enforce functional dependence and required a
   assert.throws(()=>compile(box+"\nf : ('a box) -> string\nf = unpack"),/Cannot unify/);
   const shared=compile(box+"\nf : 'c 'a unpack, 'c 'b unpack => 'c -> 'a 'b\nf = dup unpack; swap unpack");
   assert.deepEqual(new VM(shared).evaluate("3 Box f"),[3,3]);
-  assert.match(shared.types.get("f"),/-- \.\.s 'a1 'a1$/);
+  assert.match(shared.types.get("f"),/-> \.\.s 'b 'b$/);
 });
 
 test('associated types may be structured and contexts carry associated equalities',()=>{

@@ -15,7 +15,7 @@ absolute3 = case
     otherwise nop`);
   for(const name of ['absolute','absolute2','absolute3']) {
     assert.deepEqual(vm.evaluate(`99 -7 ${name} 0 ${name} 5 ${name}`),[99,7,0,5]);
-    assert.equal(vm.infer(name),"'a num, 'a ord => ..s 'a -- ..s 'a / {exn}");
+    assert.equal(vm.infer(name),"'a num, 'a ord => ..s 'a -> ..s 'a / {exn}");
   }
 });
 
@@ -54,7 +54,7 @@ test('nop is an independent stack identity and otherwise accepts any branch body
   const vm=vmFor('fallback = case otherwise 42 end\nreplace = case otherwise drop 0 end');
   assert.deepEqual(vm.evaluate('nop'),[]);
   assert.deepEqual(vm.evaluate('1 True "x" nop'),[1,true,'x']);
-  assert.equal(vm.infer('nop'),'..s -- ..s');
+  assert.equal(vm.infer('nop'),'..s -> ..s');
   assert.deepEqual(vm.evaluate('fallback 7 replace'),[42,0]);
 });
 

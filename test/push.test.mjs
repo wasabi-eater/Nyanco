@@ -7,7 +7,7 @@ test('Push appends immutable elements and :: is its left associative sugar',()=>
   assert.deepEqual(run('[] :: 3 :: 4 :: 5'),[[3,4,5]]);
   assert.deepEqual(run('[1] -> xs; xs 2 Push; xs'),[[1,2],[1]]);
   assert.deepEqual(run('[] [3 4 5] {Push} each'),[[3,4,5]]);
-  assert.equal(new VM().infer('Push'),"..s ['a] 'a -- ..s ['a]");
+  assert.equal(new VM().infer('Push'),"..s ['a] 'a -> ..s ['a]");
   assert.equal(new VM().infer('::'),new VM().infer('Push'));
   assert.throws(()=>run('[1] True Push'),/Type error/);
   assert.throws(()=>run('1 [] Push'),/Type error/);

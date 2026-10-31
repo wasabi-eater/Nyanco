@@ -4,11 +4,11 @@ import {compile,VM} from '../language.mjs';
 
 test('while displays handled cancel in both callback rows, but not its outward row',()=>{
  const type=new VM().infer('while');
- assert.equal(type,"..s1 { ..s1 -- ..s bool / {break (..s), cancel | 'e1} } { ..s -- ..s1 / {break (..s), cancel | 'e} } -- ..s / { | 'e, 'e1}");
+ assert.equal(type,"..s1 { ..s1 -> ..s bool / {break (..s), cancel | 'e1} } { ..s -> ..s1 / {break (..s), cancel | 'e} } -> ..s / { | 'e, 'e1}");
 });
 test('a wrapper preserves the callback handling information',()=>{
  const p=compile('loop = while {True} _');
- assert.equal(p.types.get('loop'),"..s { ..s -- ..s / {break (..s), cancel | 'e} } -- ..s / { | 'e}");
+ assert.equal(p.types.get('loop'),"..s { ..s -> ..s / {break (..s), cancel | 'e} } -> ..s / { | 'e}");
 });
 test('display does not claim to handle a callback also invoked outside the loop',()=>{
  const p=compile('f q = while {False} q; call q');
