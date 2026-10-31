@@ -1282,3 +1282,20 @@ None ?? None ?? 7      -- 7
 ```
 
 `??`は右結合で、`||`や算術演算より優先順位が低く、`,`・`;`より高くなります。右辺は独立したblockなので、`_`はそのblock内のスタックを参照し、`$$`などの外側captureも通常のblockと同じ規則で使えます。右辺のeffectはNone/Errの場合だけ実行します。
+
+
+## 0.69: streamの要素取得nth
+
+```nyanco
+nth (map [1,2,3] {* 2}) 1 -- Some 4
+nth (iterate {0} {+ 1}) 100 -- Some 100
+nth ["a","b"] 0          -- Some "a"
+nth [1] 5                -- None
+nth [1] -1               -- None
+```
+
+`nth source index`はstreem instanceの0始まりの位置を読み、`option`で返します。添字はintです。vector・range・ユーザー定義のstreem instanceにも使えます。範囲外や負数ではNoneとなり、負数では入力を走査しません。入力全体をvectorに変換せず、指定の要素を受け取った直後に走査を止めます。
+
+streamは既存の走査関数と同様に各呼び出しで先頭から読み始めます。そこまでに発生したeffectは伝播し、先の要素のeffectは実行しません。cancelで走査が終わって指定位置に届かなければNoneです。nthに処理させるbreakの結果は通常終了と同じoptionの行に揃えます。
+
+streamの取得にはnthを使います。既存の`.[]`・`.?[]`とat/setAtの仕様はそのままです。

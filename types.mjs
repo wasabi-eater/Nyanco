@@ -614,6 +614,7 @@ function builtinSchemes() {
     const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);
     out.set('toVector',generalize(quote(stack(s,c),stack(s,list(a)),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));
   }
+  {const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);const output=push(s,adt('option',[a]));out.set('nth',generalize(quote(stack(s,c,INT),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
   for(const name of combinationNames){
     const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);
     const args=[c],deps=[{row:latent}];let item=list(a);
@@ -961,7 +962,7 @@ class Inference {
         current=concatRows(current,answer);
       }
       else if(this.functions.has(node.value)) {
-        if(['maxi','mini','maxiBy','miniBy'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
+        if(['maxi','mini','maxiBy','miniBy','nth'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
         if(node.value==='toNum' && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('toNum requires data option a = None | Some a',node);
         if((['each','vmap','vfilter','fold','sortBy','maxiBy','miniBy','all','any','while','when'].includes(node.value)||transforms.has(node.value))) {
           const adapt=(type)=>{type=prune(type);if(type.tag!=='quote'||!isBottom(type.output))return type;

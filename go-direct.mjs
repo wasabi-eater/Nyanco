@@ -363,6 +363,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const name=n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
     const call=(q,t,values=v)=>invoke(ctx,q,values,T.prune(t),at);
     const returnedBreak=(result)=>{ctx.lines.push(`_=${result}`);if(v.length)ctx.lines.push(`if ${result}!=nil{${v}=${v.map((_,i)=>`${result}[${i}]`)}}`);};
+    if(name==='nth'){
+      const index=pop(),source=pop(),walk=walker(ctx,source,topTypes.at(-2),at),result=ctx.value('optionValue(nil,false)'),count=`remaining${next++}`,br=`breakResult${next++}`;
+      ctx.lines.push(`${count}:=${index}.(int64);var ${br} []any;if ${count}>=0{iterationBoundary(func(stop func()){${br}=m.loop(func(m *Machine){${walk}(m,func(item any){if ${count}==0{${result}=optionValue(item,true);stop()};${count}--})},${at},${label})})}`);v.push(result);returnedBreak(br);return;
+    }
     if(name==='zip'||name==='vzip'){
       const right=pop(),left=pop(),lw=walker(ctx,left,topTypes.at(-2),at),rw=walker(ctx,right,topTypes.at(-1),at);
       const body=`m.walkZip(${lw},${rw},visit,${at})`;
