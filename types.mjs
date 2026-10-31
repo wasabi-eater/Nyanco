@@ -852,9 +852,13 @@ class Inference {
         } else if(['&&','||'].includes(node.value)){
           const left=this.single(node.left,env,bindings,node),guaranteed=new Set(bindings.references.keys());
           if(isBottom(left)){current=BOTTOM;if(trace){trace.output=current;this.trace.set(node,trace);}continue;}
-          unify(left,BOOL,node);const right=this.single(node.right,env,bindings,node);if(!isBottom(right))unify(right,BOOL,node);
+          if(node.value==='&&')unify(left,BOOL,node);
+          else {const predicate=instantiate(this.functions.get('hasValue'));this.apply(predicate,stack(EMPTY,left),node);if(trace)trace.orElsePredicate=predicate;}
+          const right=this.single(node.right,env,bindings,node);
+          if(!isBottom(right))unify(right,left,node);
+          if(node.value==='||'){const effect=instantiate(this.functions.get('||'));this.apply(effect,stack(EMPTY,left,left),node);if(trace)trace.operatorEffects.push(effect);}
           for(const key of bindings.references.keys())if(!guaranteed.has(key))bindings.references.delete(key);
-          current=push(current,BOOL);
+          current=push(current,left);
         } else {
           const left=this.single(node.left,env,bindings,node),right=isBottom(left)?BOTTOM:this.single(node.right,env,bindings,node);
           if(isBottom(left)||isBottom(right)){current=BOTTOM;if(trace){trace.output=current;this.trace.set(node,trace);}continue;}

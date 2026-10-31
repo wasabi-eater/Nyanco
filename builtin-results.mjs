@@ -35,3 +35,22 @@ export function installUnwrap(definitions,add){
  }
  if(isStandardResult(definitions))add('catch',['block'],'handle {Ok (call block)} {exn: {-> message k; Err message}}');
 }
+
+export function installOrElse(definitions,add){
+ const token={file:'<standard>',line:1,col:1};
+ let c=definitions.classes.get('orElse');
+ if(!c){c={name:'orElse',param:"'a",params:["'a"],associated:[],supers:[],methods:new Map(),instances:new Map(),standard:true,token};for(const [name,signature] of [['||',"'a 'a -> 'a"],['hasValue',"'a -> bool"]]){const m={name,className:'orElse',param:"'a",signature,token};c.methods.set(name,m);definitions.methods.set(name,m);}}
+ else c={...c,instances:new Map(c.instances)};
+ definitions.classes.set('orElse',c);
+ for(const type of ['bool','option','result']){
+  if(c.instances.has(type)||type==='option'&&!isStandardOption(definitions)||type==='result'&&!isStandardResult(definitions))continue;
+  const head=type==='bool'?{tag:'atom',name:type}:{tag:'adt',name:type,args:[parameter("'a"),...(type==='result'?[parameter("'err")]:[])]};
+  const instance={target:type,head,heads:[head],context:[],implementations:new Map(),associated:new Map(),signatures:new Map(),token};
+  const has='__standard_'+type+'_hasValue',choose='__standard_'+type+'_orElse';
+  const success=type==='option'?'Some x':'Ok x',failure=type==='option'?'None':'Err error';
+  add(has,['value'],type==='bool'?'value':`value; case\n  -> ${success} then True\n  -> ${failure} then False`);
+  add(choose,['left','right'],type==='bool'?'if left {True} {right}':`left; case\n  -> ${success} then left\n  -> ${failure} then right`);
+  instance.implementations.set('||',choose);instance.implementations.set('hasValue',has);c.instances.set(type,instance);
+  if(type!=='bool'){const strict=definitions.classes.get('or'),copy={...strict,instances:new Map(strict.instances)};copy.instances.set(type,{...instance,implementations:new Map([['.|.',choose]])});definitions.classes.set('or',copy);}
+ }
+}

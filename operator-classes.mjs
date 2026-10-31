@@ -6,6 +6,7 @@ export const operatorSpecs=new Map([
   ...['==','/='].map(op=>[op,{result:'bool',accept:()=>true,universal:true}]),
   ...['.&.','.|.','xor'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom'&&['bool','int','byte'].includes(t.name)}]),
   ...['.<<.','.>>.'].map(op=>[op,{result:"'a",right:'int',exn:true,accept:t=>t.tag==='atom'&&['int','byte'].includes(t.name)}]),
+  ['||',{result:"'a",accept:t=>t.tag==='atom'&&t.name==='bool'}],
   ['++',{result:"'a",accept:t=>t.tag==='list'||t.tag==='atom'&&t.name==='string'}],
 ]);
 export const standardOperatorClasses=new Map([

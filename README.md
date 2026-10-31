@@ -1196,3 +1196,30 @@ unwrapOrElse (Err "bad") {5}      -- 5
 ```
 
 unwrapOrの既定値は通常の引数として先に評価されます。unwrapOrElseはNone/Errの場合だけblockを実行します。このblockにエラー値は渡さず、既定値を1つ返します。blockのeffectは呼び出し元へ伝わります。エラー値を調べて分岐する場合はcaseを使ってください。
+
+
+## 0.66: orElse・option/resultの選択演算
+
+```nyanco
+None || Some 2             -- Some 2
+Some 1 || exn "unused"    -- Some 1（右辺を評価しない）
+Err "failed" || Ok 3      -- Ok 3
+Ok 4 || Err "unused"      -- Ok 4
+Err "a" || Err "b"       -- Err "b"
+None .|. Some 2            -- Some 2（両辺を評価する）
+```
+
+`||`はorElseクラスの演算子です。boolでは従来の論理ORとして動き、optionではSome、resultではOkを成功として左辺を優先します。両辺の型は一致する必要があります。右辺を省略する場合も、右辺の式は型検査します。
+
+`.|.`はorクラスの厳密な演算子で、option/resultにも同じ選択規則のinstanceを追加しました。boolの論理OR、int/byteのビットORも引き続き使えます。
+
+orElseには短絡判定を行う純粋な`hasValue : 'a -> bool`と`(||) : 'a 'a -> 'a`があります。独自型には両方を実装します。`hasValue`がTrueなら左辺がそのまま結果となり、Falseなら右辺を評価して`||`の実装へ渡します。
+
+```nyanco
+data choice = Empty | Full int
+instance orElse choice where
+  hasValue Empty = False
+  hasValue (Full x) = True
+  (||) Empty right = right
+  (||) (Full x) right = Full x
+```

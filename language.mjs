@@ -1023,7 +1023,11 @@ export class VM {
             stack.push(result);continue;
           }
           const left = yield* this.operand(t.left, env, bound, t, 'Left');
-          if(isShortCircuit(t)){const flag=this.expect(left,'boolean',t);stack.push((t.value==='&&'?flag:!flag)?this.expect(yield* this.operand(t.right,env,bound,t,'Right'),'boolean',t):flag);continue;}
+          if(isShortCircuit(t)){
+            let flag;if(t.value==='&&')flag=this.expect(left,'boolean',t);else {const probe=[left];yield* this.run([{...t,kind:'word',value:'hasValue'}],probe,new Map(this.globals));flag=this.expect(probe[0],'boolean',t);}
+            if(t.value==='&&'?flag:!flag){const right=yield* this.operand(t.right,env,bound,t,'Right');if(t.value==='&&')stack.push(this.expect(right,'boolean',t));else{const pair=[left,right];yield* this.binary('||',pair,t);stack.push(pair[0]);}}
+            else stack.push(left);continue;
+          }
           const right = yield* this.operand(t.right, env, bound, t, 'Right');
           const operands = [left, right];
           yield* this.binary(t.value,operands,t);

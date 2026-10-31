@@ -275,8 +275,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
           values.push(result);continue;
         }
         if(['&&','||'].includes(n.value)){
-          const a=child(n.left,[],bindings)[0],result=ctx.value(`boolean(${a},${at})`);ctx.lines.push(`if ${n.value==='||'?'!':''}boolean(${result},${at}) {`);
-          try{const b=child(n.right,[],bindings)[0];ctx.lines.push(`${result}=boolean(${b},${at})`);}catch(error){if(!(error instanceof StoppedEmission))throw error;}
+          const a=child(n.left,[],bindings)[0],result=ctx.value(a);let condition=a;
+          if(n.value==='||'){const type=T.prune(info.orElsePredicate.dispatchType),target=definitions.classes.get('orElse').instances.get(instanceKey(type))?.implementations.get('hasValue');if(!target)throw new StaticTypeError('Ambiguous orElse instance',n);const spec=named(target,info.orElsePredicate);condition=ctx.call(`m.${spec.fn}`,[a],1)[0];}
+          ctx.lines.push(`if ${n.value==='||'?'!':''}boolean(${condition},${at}) {`);
+          try{const b=child(n.right,[],bindings)[0];const selected=n.value==='||'?binaryCall(n,a,b,info.operatorEffects[0],ctx):b;ctx.lines.push(`${result}=${selected}`);}catch(error){if(!(error instanceof StoppedEmission))throw error;}
           ctx.lines.push('}');values.push(result);continue;
         }
         const a=child(n.left,[],bindings)[0],b=child(n.right,[],bindings)[0];
