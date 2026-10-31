@@ -15,9 +15,9 @@ test('optional list access returns option, including invalid indices and empty l
 test('option supports annotations, constructors, pattern matching and REPL values',()=>{
  const p=compile(`get : [int] int -> (option int)
 get xs i = xs.?[i]
-unwrap (Some x) = x
-unwrap None = -1
-main = unwrap (get [10,20] 1); unwrap (get [] 1)`);
+unwrapValue (Some x) = x
+unwrapValue None = -1
+main = unwrapValue (get [10,20] 1); unwrapValue (get [] 1)`);
  assert.deepEqual(new VM(p).evaluate('main'),[20,-1]);
  const vm=new VM(),stack=vm.evaluate('[10].?[0]');
  assert.deepEqual(vm.evaluate('-> Some x; x',stack),[10]);

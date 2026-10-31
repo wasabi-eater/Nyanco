@@ -7,8 +7,8 @@ import {operatorSpecs,standardOperatorClasses,primitiveOperatorClass,operatorFal
 // Layout-based type class declarations are expanded into ordinary checked functions.
 import {LanguageError} from './language.mjs';
 export function expandClasses(groups,definitions,previous,builtins,globals) {
-  const classes=new Map([...previous.classes||[]].map(([n,c])=>[n,{...c,methods:new Map(c.methods),instances:new Map(c.instances)}]));
-  const methods=new Map(previous.methods||[]),ordinary=[],pending=[];
+  const classes=new Map([...definitions.classes||previous.classes||[]].map(([n,c])=>[n,{...c,methods:new Map(c.methods),instances:new Map(c.instances)}]));
+  const methods=new Map(definitions.methods||previous.methods||[]),ordinary=[],pending=[];
   const fail=(message,t)=>{throw new LanguageError(message,t);};
   function members(tokens) {
     if(!tokens.length)return [];

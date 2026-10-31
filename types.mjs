@@ -629,7 +629,6 @@ function builtinSchemes() {
     out.set(name,generalize(quote(stack(s,...args),push(s,list(a)),effects([],[{row:effects([],dependencies),exclude:['cancel','break'],loop:true}]))));
   }
   for(const name of ['max','min']){const s=row(),a=variable();requireClass('ord',a);out.set(name,generalize(quote(stack(s,a,a),push(s,a),effects())));}
-  {const s=row(),a=variable();out.set('fromSome',generalize(quote(push(s,adt('option',[a])),push(s,a),effects([{name:'exn',args:[]}]))));}
   for(const name of ['maxi','mini','maxiBy','miniBy','all','any']){
     const s=row(),c=variable(),a=variable(),predicate=name==='all'||name==='any',key=name.endsWith('By')?variable():a,latent=variable('effect-row');requireIterable(c,a,null,latent);
     const args=[c],dependencies=[{row:latent}];if(!['maxi','mini'].includes(name)){const q=quote(stack(EMPTY,a),stack(EMPTY,predicate?BOOL:key));args.push(q);dependencies.push({row:q.effects});}
@@ -957,7 +956,7 @@ class Inference {
         current=concatRows(current,answer);
       }
       else if(this.functions.has(node.value)) {
-        if(['maxi','mini','maxiBy','miniBy','fromSome'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
+        if(['maxi','mini','maxiBy','miniBy'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
         if(node.value==='toNum' && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('toNum requires data option a = None | Some a',node);
         if((['each','vmap','vfilter','fold','sortBy','maxiBy','miniBy','all','any','while','when'].includes(node.value)||transforms.has(node.value))) {
           const adapt=(type)=>{type=prune(type);if(type.tag!=='quote'||!isBottom(type.output))return type;

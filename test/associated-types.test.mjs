@@ -8,7 +8,7 @@ class 'c unpack where
 instance ('a box) unpack where
   item : 'a
   (x Box) unpack = x
-unwrap = unpack`;
+unwrapValue = unpack`;
 const lmap=`data 'c 'a 'b lmap = 'c {'a -> 'b} LMap
 instance 'c 'a each => ('c 'a 'b lmap) each where
   item : 'b
@@ -16,9 +16,9 @@ instance 'c 'a each => ('c 'a 'b lmap) each where
 
 test('user classes infer associated types and specialize each invocation independently',()=>{
   const p=compile(box),vm=new VM(p);
-  assert.match(p.types.get('unwrap'),/'a 'a1 unpack =>/);
-  assert.deepEqual(vm.evaluate('3 Box unwrap; True Box unwrap; [1 2] Box unwrap'),[3,true,[1,2]]);
-  assert.throws(()=>vm.evaluate('3 unwrap'),/No instance/);
+  assert.match(p.types.get('unwrapValue'),/'a 'a1 unpack =>/);
+  assert.deepEqual(vm.evaluate('3 Box unwrapValue; True Box unwrapValue; [1 2] Box unwrapValue'),[3,true,[1,2]]);
+  assert.throws(()=>vm.evaluate('3 unwrapValue'),/No instance/);
 });
 
 test('multiple associated types remain tied to the same instance across methods',()=>{

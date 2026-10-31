@@ -1,5 +1,7 @@
+import {withResult} from './builtin-results.mjs';
+export function withOption(definitions,{skipOption=false,skipResult=false}={}){const result=skipOption?definitions:optionDefinitions(definitions);return skipResult?result:withResult(result);}
 // Standard option ADT; existing explicit declarations retain their identity.
-export function withOption(definitions) {
+function optionDefinitions(definitions) {
   if(definitions.dataTypes?.has('option') || definitions.constructors?.has('Some') || definitions.constructors?.has('None'))return definitions;
   const result=Object.assign(new Map(definitions),definitions);
   result.dataTypes=new Map(definitions.dataTypes);

@@ -1084,7 +1084,7 @@ clearBit 15 2                    -- 11
 [実行例](examples/stream-logic-bits.nyan)
 
 
-## maxi/mini・二項max/min・fromSome（0.62）
+## maxi/mini・二項max/min・unwrap（0.62）
 
 stream用の最大・最小関数をmaxi・mini・maxiBy・miniByへ改称しました。all・anyの名前はそのままで、stream関数のbreak対応も維持します。
 
@@ -1096,14 +1096,14 @@ min 3 5                       -- 3
 maxi [3,1,2]                  -- Some 3
 mini []                       -- None
 maxiBy [{score: 1}, {score: 3}] {.score}  -- Some {score: 3}
-fromSome (Some 42)             -- 42
-fromSome (maxi [3,1,2])        -- 3
+unwrap (Some 42)             -- 42
+unwrap (maxi [3,1,2])        -- 3
 ```
 
-`fromSome : option 'a -> 'a / {exn}`はSomeの中身を返します。Noneではメッセージ`fromSome: None`のexnを発生させ、通常のhandleで処理できます。
+0.65ではfromSomeを廃止し、unwrapクラスの`unwrap`に統合しました。optionに適用した場合はSomeの中身を返します。Noneではメッセージ`unwrap: None`のexnを発生させ、通常のhandleで処理できます。
 
 ```haskell
-handle {fromSome None} {exn: {-> message k; 0}}  -- 0
+handle {unwrap None} {exn: {-> message k; 0}}  -- 0
 ```
 
 型クラスの診断も前置形式へ揃えました。たとえば`No instance: ord bool`、`No instance: into string int`、`Missing constraint: add 'a`と表示します。
@@ -1158,3 +1158,41 @@ vmap [1,2] {drop; [42]; break} -- [42]
 遅延streamの内部走査は値を返さないため、そこで処理するbreakの行は空です。要素の生成はyieldまたは通常のmapper結果で行い、内部走査だけを止める場合は`drop; break`やcancelを使います。fromYield自体はyieldを処理し、break/cancelは走査側へ伝えます。
 
 ラベル・maskも両方の操作に使用できます。`break@outer`は宛先のループの結果型で検査します。Goでは行の各値を関数の引数とeffectの引数として渡し、実行用スタックは導入しません。
+
+
+## 0.65: result・catch・unwrap
+
+標準ADTとして`data result 'a 'err = Ok 'a | Err 'err`を提供します。
+
+```nyanco
+catch {1 + 2}             -- Ok 3
+catch {exn "failed"}      -- Err "failed"
+catch {[1].[9]}           -- Err "Index out of bounds: 9"
+unwrap (catch {1 + 2})    -- 3
+unwrap (Some 42)          -- 42
+```
+
+catchは入力を必要とせず値を1つ返すblockを実行し、成功時はOk、exn発生時はErrで包みます。結果の型は`result 'a string`です。複数の値を返す場合はtupleなどにまとめてください。exn以外のeffect（io・break・cancel・ユーザー定義effectなど）は外へ伝播します。
+
+fromSomeは廃止しました。次の標準クラスにoptionとresultのinstanceを用意しています。独自の型にも通常のinstance宣言で実装できます。
+
+```nyanco
+class unwrap 'c where
+  type item
+  unwrap : 'c -> item / {exn}
+  unwrapOr : 'c item -> item
+  unwrapOrElse : 'c {-> item / { | 'e}} -> item / { | 'e}
+```
+
+unwrapはSome/Okの値を取り出し、Noneでは`exn "unwrap: None"`を発生させます。Errでは中身をshowで文字列にしてexnへ渡すため、resultのinstanceには`show 'err`制約があります。手動でOkだけを作り、unwrap時にエラー型が未確定な場合は`result int string`などの型注釈を付けてください。catchのエラー型はstringに確定しています。
+
+```nyanco
+unwrapOr None 10                 -- 10
+unwrapOr (Some 3) 10             -- 3
+unwrapOr (Err "bad") 20          -- 20
+unwrapOrElse None {1 + 2}         -- 3
+unwrapOrElse (Some 4) {exn "unused"} -- 4
+unwrapOrElse (Err "bad") {5}      -- 5
+```
+
+unwrapOrの既定値は通常の引数として先に評価されます。unwrapOrElseはNone/Errの場合だけblockを実行します。このblockにエラー値は渡さず、既定値を1つ返します。blockのeffectは呼び出し元へ伝わります。エラー値を調べて分岐する場合はcaseを使ってください。

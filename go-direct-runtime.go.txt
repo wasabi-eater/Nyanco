@@ -193,8 +193,3 @@ func(m *Machine) bitOperation(name string,a,b any,loc string) any {
  var r int64;switch name{case ".&.":r=x&y;case ".|.":r=x|y;case "xor":r=x^y;case ".<<.":r=x<<uint(y);case ".>>.":r=x>>uint(y);case "testBit":return x&(int64(1)<<uint(y))!=0;case "setBit":r=x|(int64(1)<<uint(y));case "clearBit":r=x&^(int64(1)<<uint(y))}
  if small{return uint8(r)};return r
 }
-
-func(m *Machine) fromSome(value any,loc string) any {
- if v,ok:=value.(*ADT);ok&&v.name=="option"&&v.constructor=="Some"&&len(v.fields)==1{return v.fields[0]}
- m.perform("exn",[]any{"fromSome: None"},loc,true);fail(loc,"Non-returning effect returned");return nil
-}

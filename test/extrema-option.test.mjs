@@ -18,20 +18,20 @@ main =
   print (max (toByte 3) (toByte 5)); print (max 'a' 'z');
   print (max (Ranked 2 "a") (Ranked 2 "b")); print (min (Ranked 2 "a") (Ranked 2 "b"));
   print (vmap [1,7,3] {min 5});
-  print (fromSome (Some "hi")); print (fromSome (maxi [1,3,2])); print (mini []);
+  print (unwrap (Some "hi")); print (unwrap (maxi [1,3,2])); print (mini []);
   print (maxiBy [1,2,3] {0 -}); print (miniBy [1,2,3] {0 -});
   print (maxiBy [1,2,3] {when ($ == 3) {cancel}; nop});
-  print (handle {fromSome None} {exn: {-> message k; message}});
-  print (call 7 (fromSome (Some {+ 1})))`;
+  print (handle {unwrap None} {exn: {-> message k; message}});
+  print (call 7 (unwrap (Some {+ 1})))`;
 
-test('binary extrema use ord and fromSome unwraps or raises exn',()=>{
- assert.deepEqual(run(source).output,['5','3','-3','1.5','5',"'z'",'(Ranked 2 "b")','(Ranked 2 "a")','[1, 5, 3]','hi','3','None','(Some 1)','(Some 3)','(Some 2)','fromSome: None','8']);
+test('binary extrema use ord and unwrap returns payloads or raises exn',()=>{
+ assert.deepEqual(run(source).output,['5','3','-3','1.5','5',"'z'",'(Ranked 2 "b")','(Ranked 2 "a")','[1, 5, 3]','hi','3','None','(Some 1)','(Some 3)','(Some 2)','unwrap: None','8']);
  assert.deepEqual(run('main = 100; max 3 5; min 2 4').stack,[100,5,2]);
- assert.throws(()=>run('main = fromSome None'),/fromSome: None/);
- assert.throws(()=>compile('main = fromSome 3'),/Cannot unify/);
+ assert.throws(()=>run('main = unwrap None'),/unwrap: None/);
+ assert.throws(()=>compile('main = unwrap 3'),/No instance: unwrap int/);
  assert.throws(()=>compile('main = max (toInt 1) (toFloat 2)'),/Cannot unify/);
- assert.throws(()=>compile("data option 'a = None | Some int\nmain = fromSome (Some 1)"),/requires data option/);
- const vm=new VM();assert.match(vm.infer('max'),/ord/);assert.match(vm.infer('maxi'),/streem/);assert.match(vm.infer('fromSome'),/exn/);
+ assert.throws(()=>compile("data option 'a = None | Some int\nmain = unwrap (Some 1)"),/No instance: unwrap/);
+ const vm=new VM();assert.match(vm.infer('max'),/ord/);assert.match(vm.infer('maxi'),/streem/);assert.match(vm.infer('unwrap'),/exn/);
 });
 
 test('missing instance diagnostics put class names before their type arguments',()=>{

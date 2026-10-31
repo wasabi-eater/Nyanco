@@ -673,14 +673,14 @@ class 'c unpack where
 instance ('a box) unpack where
   item : 'a
   (x Box) unpack = x
-unwrap = unpack
+unwrapValue = unpack
 data 'c 'a 'b lmap = 'c {'a -> 'b} LMap
 instance 'c 'a each => ('c 'a 'b lmap) each where
   item : 'b
   (c f LMap) g each = c {f call; g call} each
 main =
-  3 Box unwrap print;
-  True Box unwrap print;
+  3 Box unwrapValue print;
+  True Box unwrapValue print;
   {unpack} -> q;
   "s" Box q call print;
   0 ([1 2 3] {+ 10} LMap) {+} each print;

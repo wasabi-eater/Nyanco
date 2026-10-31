@@ -469,8 +469,8 @@ function dataDeclarations(groups, definitions, globals) {
     definitions.dataTypes.set(name.value,declaration);
     pending.push({declaration,tokens:group.slice(eq+1)});
   }
-  if(!pending.some(p=>p.tokens.some(t=>['Some','None'].includes(t.value))))Object.assign(definitions,withOption(definitions));
-  for(const [name,clauses] of withStandardFunctions(definitions))if(!definitions.has(name))definitions.set(name,clauses);
+  Object.assign(definitions,withOption(definitions,{skipOption:pending.some(p=>p.tokens.some(t=>['Some','None'].includes(t.value))),skipResult:pending.some(p=>p.tokens.some(t=>['Ok','Err'].includes(t.value)))}));
+  {const standard=withStandardFunctions(definitions);definitions.classes=standard.classes;definitions.methods=standard.methods;for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);}
   for(const {declaration,tokens} of pending) {
     const alternatives=[[]];let depth=0;
     for(const t of tokens) {
@@ -603,11 +603,12 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
     if ([']', '}', ')'].includes(token.kind)) depth--;
   }
   const definitions = new Map(previous), local = new Set(), signatures = new Map();
+  definitions.classes=previous.classes;definitions.methods=previous.methods;
   definitions.dataTypes=previous.dataTypes;
   definitions.constructors=previous.constructors;
   dataDeclarations(groups,definitions,globals);
   Object.assign(definitions,withOption(definitions));
-  for(const [name,clauses] of withStandardFunctions(definitions))if(!definitions.has(name))definitions.set(name,clauses);
+  {const standard=withStandardFunctions(definitions);definitions.classes=standard.classes;definitions.methods=standard.methods;for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);}
   definitions.effects=ioEffects(previous.effects);
   const families=effectFamilies(definitions.effects);
   for(let group of groups)if(group[0].value==='effect') {
@@ -1265,7 +1266,6 @@ for(const name of ['reverse','sort','sortBy'])define(name,name==='sortBy'?2:1,fu
   if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(rows.map(row=>row.value));
 });
 for(const name of ['max','min'])define(name,2,function*(vm,s,t){const b=s.pop(),a=s.pop(),pair=[b,a];yield* vm.binary('<',pair,t);const less=vm.expect(pair[0],'boolean',t);s.push(name==='max'?(less?a:b):(less?b:a));});
-define('fromSome',1,function*(vm,s,t){const value=s.pop();if(value?.kind==='adt'&&value.typeName==='option'&&value.constructor==='Some'){s.push(value.fields[0]);return;}yield {operation:ioEffects().get('exn'),args:['fromSome: None'],token:t};throw new LanguageError('Non-returning effect returned',t);});
 for(const name of ['maxi','mini','maxiBy','miniBy','all','any'])define(name,['maxi','mini'].includes(name)?1:2,function*(vm,s,t){t={...t};
  const predicate=name==='all'||name==='any',q=['maxi','mini'].includes(name)?null:vm.expect(s.pop(),'quotation',t),xs=s.pop(),stop={};let best,key,found=false,result=name==='all';
  try{yield* vm.loop(vm.walk(xs,function*(value){

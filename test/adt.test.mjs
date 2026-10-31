@@ -28,8 +28,8 @@ test('nested patterns and multiple field constructors use source order',()=>{
   const vm=vmFor(`${maybe}\ndata Pair a b = Pair a b\n((x Just) y Pair) extract = x y`);
   assert.deepEqual(vm.evaluate('(3 Just) True Pair extract'),[3,true]);
   assert.throws(()=>vm.evaluate('Nothing True Pair extract'),/No matching pattern/);
-  const program=compile(`${maybe}\n(x Just) unwrap = x`);
-  for(const checkTypes of [true,false])assert.throws(()=>new VM({...program,checkTypes}).evaluate('Nothing unwrap'),/No matching pattern/);
+  const program=compile(`${maybe}\n(x Just) unwrapValue = x`);
+  for(const checkTypes of [true,false])assert.throws(()=>new VM({...program,checkTypes}).evaluate('Nothing unwrapValue'),/No matching pattern/);
 });
 
 test('recursive ADTs and recursive functions infer their stack effects',()=>{
@@ -95,7 +95,7 @@ test('constructor names and invalid ADT declarations are rejected atomically',()
 });
 
 test('REPL definitions retain ADTs and inspect constructors',()=>{
-  const result=spawnSync(process.execPath,['migration/v037-cli.mjs'],{cwd:new URL('..',import.meta.url),input:`${maybe}\n(x Just) unwrap = x\n3 Just unwrap\n:type Just\n:words\n:q\n`,encoding:'utf8'});
+  const result=spawnSync(process.execPath,['migration/v037-cli.mjs'],{cwd:new URL('..',import.meta.url),input:`${maybe}\n(x Just) unwrapValue = x\n3 Just unwrapValue\n:type Just\n:words\n:q\n`,encoding:'utf8'});
   assert.equal(result.status,0);
   assert.doesNotMatch(result.stdout,/Error:/);
   assert.match(result.stdout,/\[3\]/);

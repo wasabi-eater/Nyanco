@@ -413,7 +413,6 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const b=pop(),a=pop(),less=binaryCall({...n,value:'<'},b,a,info.comparison,ctx),result=ctx.value(name==='max'?b:a);
       ctx.lines.push(`if boolean(${less},${at}){${result}=${name==='max'?a:b}}`);v.push(result);return;
     }
-    if(name==='fromSome'){v.push(ctx.value(`m.fromSome(${pop()},${at})`));return;}
     if(['maxi','mini','maxiBy','miniBy','all','any'].includes(name)){
       const predicate=name==='all'||name==='any',q=['maxi','mini'].includes(name)?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(q?-2:-1),at),result=ctx.value(predicate?String(name==='all'):'nil'),found=`found${next++}`,bestKey=`key${next++}`,br=`breakResult${next++}`;
       if(!predicate)ctx.lines.push(`${found}:=false;_=${found};var ${bestKey} any;_=${bestKey}`);

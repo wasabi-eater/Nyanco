@@ -249,4 +249,4 @@ and/orクラスのメソッド名は.&./.|.です。xor・shl・shr・bitsの標
 
 stream集約はmaxi/mini/maxiBy/miniByへ改称し、従来のstream型・エフェクト・break処理を維持します。二項max/minは同じ型の2値を受け取り、ord辞書による比較で片方をそのまま返します。比較のエフェクトを呼び出し元へ伝播し、独自のbreakハンドラーは設けません。
 
-fromSomeはoption a -> a / {exn}の型を持ちます。Someのpayloadを型を保って取り出し、Noneは非復帰のexnとして処理します。VM・Goとも標準optionの表現を使い、異なるoption宣言は静的に拒否します。No instanceとMissing constraintの単一引数クラスの表示は、クラス名・型引数の順に統一します。
+unwrapはassociated type itemを持つ標準クラスです。optionのSomeとresultのOkからitemを取り出し、失敗は非復帰のexnとして処理します。unwrapOr/unwrapOrElseも同じクラスのメソッドです。標準instanceとcatchは通常の関数・case・handleで実装し、VMとGoで共通の型検査とクラスdispatchを使用します。No instanceとMissing constraintの単一引数クラスの表示は、クラス名・型引数の順に統一します。

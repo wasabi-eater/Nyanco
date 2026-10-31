@@ -74,14 +74,14 @@ class unpack 'c where
 instance unpack (box 'a) where
   item : 'a
   unpack (Box x) = x
-unwrap : unpack 'c 'a => 'c -> 'a
-unwrap = unpack
+unwrapValue : unpack 'c 'a => 'c -> 'a
+unwrapValue = unpack
 instance add 'a => add (box 'a) where
   + (Box x) (Box y) = Box (x + y)`);
-  assert.deepEqual(v.evaluate('unwrap (Box 3); unwrap (Box True)'),[3,true]);
+  assert.deepEqual(v.evaluate('unwrapValue (Box 3); unwrapValue (Box True)'),[3,true]);
   assert.deepEqual(v.evaluate('(Box 2) + (Box 3)')[0].fields,[5]);
   assert.match(v.infer('Box 3'),/\(box int\)/);
-  assert.match(v.infer('unwrap'),/^unpack /);
+  assert.match(v.infer('unwrapValue'),/^unpack /);
 });
 
 test('prefix effects, effect-row annotations and multiple handler results',()=>{

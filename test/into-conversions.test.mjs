@@ -55,11 +55,11 @@ instance into 'a 'b => into (box 'a) (box 'b) where
 boxed : box int -> box float / {exn}
 boxed = from
 class pairing 'a 'b where
-  type result
-  combine : 'a 'b -> result
+  type combined
+  combine : 'a 'b -> combined
 class pairing 'a 'b => joined 'a 'b where
 instance joined byte float where
-  result : string
+  combined : string
   combine a b = "combined"
 combineJoined : joined 'a 'b 'c => 'a 'b -> 'c
 combineJoined = combine
