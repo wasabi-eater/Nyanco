@@ -14,6 +14,7 @@ export class StaticTypeError extends Error {
   constructor(message, token) {
     super(`${token ? `${token.file}:${token.line}:${token.col}: ` : ''}Type error: ${message}`);
     this.name = 'StaticTypeError';
+    this.token = token;
   }
 }
 let nextId = 0;

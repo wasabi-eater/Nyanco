@@ -16,6 +16,7 @@ export class LanguageError extends Error {
   constructor(message, token) {
     super(token ? `${token.file}:${token.line}:${token.col}: ${message}` : message);
     this.name = 'LanguageError';
+    this.token = token;
   }
 }
 

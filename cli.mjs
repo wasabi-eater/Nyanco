@@ -9,7 +9,7 @@ import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression, formatWarning } from './language.mjs';
 import { checkExpression } from './types.mjs';
 
-const help = `Nyanco 0.70.0 — statically typed stack language
+const help = `Nyanco 0.71.0 — statically typed stack language
 Usage:
   nyanco                       Interactive REPL
   nyanco program.nyan           Execute main
@@ -21,6 +21,7 @@ Usage:
   nyanco --type "dup"          Infer an expression without executing it
   nyanco program.nyan --emit-go main.go   Transpile to standalone Go
   nyanco program.nyan --build program.exe Build a native executable
+  nyanco --lsp                 Start Language Server (stdio)
   nyanco --help
 REPL: :help, :quit, :stack, :clear, :words, :type EXPR, :load PATH, :{ ... :}
 `;
@@ -45,7 +46,7 @@ async function repl() {
     vm.definitions = program.definitions;
     try { await vm.executeAsync([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('Nyanco 0.70.0 — static types; :type EXPR for inference\n');
+  stdout.write('Nyanco 0.71.0 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
     const input = line.trim();
@@ -85,6 +86,7 @@ async function repl() {
 async function main() {
   const args = process.argv.slice(2);
   if (!args.length) return repl();
+  if (args.length === 1 && args[0] === '--lsp') { const {startServer}=await import('./lsp.mjs'); startServer(); return; }
   let file, expression, typeExpression, emitGo, build, check = false, showStack = false, showTypes = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
