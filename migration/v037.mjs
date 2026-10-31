@@ -59,7 +59,7 @@ function nodeText(n){
   if(n.kind==='update')return `(${n.name} <- (${sequenceText(n.body)}))`;
   if(n.kind==='bind')return '-> '+n.patterns.map(p=>n.mutable[n.names.indexOf(p.value)]?'mut '+patternText(p):patternText(p)).join(' ');
   if(n.kind==='local-function')return `${n.name} = (${sequenceText(n.body)})`;
-  if(n.kind==='case')return 'case\n'+n.branches.map(b=>'  -> '+b.patterns.map(patternText).join(' ')+(b.guard?' | '+sequenceText(b.guard):'')+' then '+sequenceText(b.body).replaceAll('\n','\n  ')).join('\n')+'\nend';
+  if(n.kind==='case')return 'case\n'+n.branches.map(b=>'  -> '+b.patterns.map(patternText).join(' ')+(b.guard?' | '+sequenceText(b.guard):'')+' ? '+sequenceText(b.body).replaceAll('\n','\n  ')).join('\n')+'\nend';
   throw Error('Cannot migrate node '+n.kind);
 }
 export function programText(program){

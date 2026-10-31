@@ -66,7 +66,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -168,7 +168,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           if(t.value==='case' && block[j+1]){inner.push(block[j+1]);return;}
         }
         if(!depth && !inner.length && ['->','|','otherwise'].includes(t.value) && (j===0 || (t.col===indent || t.value==='|' && t.col>indent) && t.line>block[j-1].line || t.line===first.line && branchThen && t.value!=='->')){starts.push(j);branchThen=false;}
-        if(!depth && !inner.length && t.value==='then')branchThen=true;
+        if(!depth && !inner.length && t.kind==='word' && t.value==='?')branchThen=true;
         if(['(','[','{'].includes(t.kind))depth++;
         if([')',']','}'].includes(t.kind))depth--;
       });
@@ -182,12 +182,12 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         let depth=0,then=-1,bar=-1;
         for(let k=1;k<part.length;k++) {
           const t=part[k];
-          if(!depth && t.value==='then'){then=k;break;}
+          if(!depth && t.kind==='word' && t.value==='?'){then=k;break;}
           if(!depth && t.value==='|')bar=k;
           if(['(','[','{'].includes(t.kind))depth++;
           if([')',']','}'].includes(t.kind))depth--;
         }
-        if(then<0 || then===part.length-1)throw new LanguageError('case branch requires then and a body',head);
+        if(then<0 || then===part.length-1)throw new LanguageError('case branch requires ? and a body',head);
         const patterns=head.value==='->'?parsePatterns(part.slice(1,bar<0?then:bar),constructors):previous;
         if(head.value==='->')previous=patterns;
         const condition=head.value==='|'?part.slice(1,then):bar<0?null:part.slice(bar+1,then);
@@ -327,7 +327,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       const eq=definitionAt(i);
       if(eq>=0) {
         const first=tokens[i],name=tokens[i],operator=tokens[eq];
-        if(!name || name.kind!=='word' || !identifier.test(name.value) || ['_','mut','case','then','otherwise','end','mask','with'].includes(name.value) || BUILTINS.has(name.value) || constructors.has(name.value))throw new LanguageError('Expected a local function name before =',name||first);
+        if(!name || name.kind!=='word' || !identifier.test(name.value) || ['_','mut','case','?','otherwise','end','mask','with'].includes(name.value) || BUILTINS.has(name.value) || constructors.has(name.value))throw new LanguageError('Expected a local function name before =',name||first);
         const patterns=parsePatterns(tokens.slice(i+1,eq),constructors,true);i=eq+1;
         let scan=i,scanDepth=0,explicitEnd=false;
         while(scan<tokens.length){const t=tokens[scan++];if(!scanDepth && t.kind===';;'){explicitEnd=true;break;}if(!scanDepth&&[')',']','}'].includes(t.kind))break;if(['(','[','{'].includes(t.kind))scanDepth++;if([')',']','}'].includes(t.kind))scanDepth--;}

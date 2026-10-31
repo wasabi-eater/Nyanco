@@ -28,7 +28,7 @@ export function installUnwrap(definitions,add){
    const name='__standard_'+type+'_'+method,params=method==='unwrap'?['value']:['value','fallback'];
    const fail=method==='unwrap'?(isResult?'exn (show error)':'exn "unwrap: None"'):method==='unwrapOr'?'fallback':'call fallback';
    const signature=(isResult?"show 'err => ":'')+signatures[method].replaceAll("'c",container).replaceAll("'associated_item","'a");
-   add(name,params,`value; case\n  -> ${success} then x\n  -> ${failure} then ${fail}`,signature);
+   add(name,params,`value; case\n  -> ${success} ? x\n  -> ${failure} ? ${fail}`,signature);
    instance.implementations.set(method,name);instance.signatures.set(name,signature);
   }
   c.instances.set(type,instance);
@@ -48,8 +48,8 @@ export function installOrElse(definitions,add){
   const instance={target:type,head,heads:[head],context:[],implementations:new Map(),associated:new Map(),signatures:new Map(),token};
   const has='__standard_'+type+'_hasValue',choose='__standard_'+type+'_orElse';
   const success=type==='option'?'Some x':'Ok x',failure=type==='option'?'None':'Err error';
-  add(has,['value'],type==='bool'?'value':`value; case\n  -> ${success} then True\n  -> ${failure} then False`);
-  add(choose,['left','right'],type==='bool'?'if left {True} {right}':`left; case\n  -> ${success} then left\n  -> ${failure} then right`);
+  add(has,['value'],type==='bool'?'value':`value; case\n  -> ${success} ? True\n  -> ${failure} ? False`);
+  add(choose,['left','right'],type==='bool'?'if left {True} {right}':`left; case\n  -> ${success} ? left\n  -> ${failure} ? right`);
   instance.implementations.set('||',choose);instance.implementations.set('hasValue',has);c.instances.set(type,instance);
   if(type!=='bool'){const strict=definitions.classes.get('or'),copy={...strict,instances:new Map(strict.instances)};copy.instances.set(type,{...instance,implementations:new Map([['.|.',choose]])});definitions.classes.set('or',copy);}
  }

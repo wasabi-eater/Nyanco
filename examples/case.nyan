@@ -7,14 +7,14 @@ runFuga =
 
 absolute =
   case
-    -> n | ((n) < (0)) then ((0) - (n))
-    ->  then nop
+    -> n | ((n) < (0)) ? ((0) - (n))
+    ->  ? nop
   end
 
 absoluteStack =
   case
-    ->  | dup, ( < (0)) then ((0) - )
-    ->  then nop
+    ->  | dup, ( < (0)) ? ((0) - )
+    ->  ? nop
   end
 
 absoluteGuard | dup, ( < (0)) =
@@ -25,8 +25,8 @@ absoluteGuard | True =
 
 sum =
   case
-    -> [] then 0
-    -> (xs :: x) then ((x) + ((xs, sum)))
+    -> [] ? 0
+    -> (xs :: x) ? ((x) + ((xs, sum)))
   end
 
 main =

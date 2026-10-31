@@ -133,8 +133,8 @@ get (Some x) = x
 get None = 0
 
 last = case
-  -> Push xs x then x
-  -> [] then 0
+  -> Push xs x ? x
+  -> [] ? 0
 ```
 
 型適用も`option int`、`pair int string`の前置形式です。複数引数の型を他の型の引数にするときは必要に応じて括弧でまとめます。constructorパターンも`Some x`、`Pair x y`の順です。関数のguard、caseのguard、`otherwise nop`、`->`によるパターン束縛は引き続き使用できます。
@@ -1223,3 +1223,16 @@ instance orElse choice where
   (||) Empty right = right
   (||) (Full x) right = Full x
 ```
+
+
+## 0.67: caseの区切り記号
+
+caseのパターン・条件と本体の区切りは`?`です。旧then構文は移行ツールで変換できます。
+
+```nyanco
+abs = case
+  -> n | n < 0 ? 0 - n
+  -> n ? n
+```
+
+`otherwise`はこれまでどおり、その直後に本体を書きます。

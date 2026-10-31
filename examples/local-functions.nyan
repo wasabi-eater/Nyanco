@@ -8,6 +8,6 @@ makeAdder n =
 
 main =
   factorial = (case
-    -> 0 then 1
-    -> n then ((n) * (((((n) - (1))), factorial)))
+    -> 0 ? 1
+    -> n ? ((n) * (((((n) - (1))), factorial)))
   end), 0, -> mut count, readCount = (count), 3, 4, x, print, 6, factorial, print, 5, 7, makeAdder, call, print, count <- (9); readCount, print
