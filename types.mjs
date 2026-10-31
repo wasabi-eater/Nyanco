@@ -598,6 +598,7 @@ function builtinSchemes() {
   {const s=row();out.set('parseNum',generalize(quote(push(s,STRING),push(s,FLOAT),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),latent=variable('effect-row');requireIterable(c,STRING,null,latent);
     out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));}
+  for(const name of ['zip','vzip']){const s=row(),left=variable(),right=variable(),a=variable(),b=variable(),le=variable('effect-row'),re=variable('effect-row');requireIterable(left,a,null,le);requireIterable(right,b,null,re);const traversal=effects([],[{row:effects([],[{row:le},{row:re}]),exclude:['cancel','break'],loop:true,breakOutput:name==='zip'?EMPTY:push(s,list(tuple([a,b])))}]);const result=name==='zip'?{tag:'stream',item:tuple([a,b]),effects:traversal}:list(tuple([a,b]));out.set(name,generalize(quote(stack(s,left,right),push(s,result),name==='zip'?effects():traversal)));}
   add('show',()=>{const s=row(),a=variable();return quote(push(s,a),push(s,STRING));});
   add('swap',()=>{const s=row(),a=variable(),b=variable();return quote(stack(s,a,b),stack(s,b,a));});
   add('over',()=>{const s=row(),a=variable(),b=variable();return quote(stack(s,a,b),stack(s,a,b,a));});
@@ -1013,6 +1014,7 @@ class Inference {
     }
     if(value?.kind==='effect-label')return atom('effect-label');
     if(value?.kind==='stream') {
+      if(value.mode==='zip'){const a=variable(),b=variable(),le=variable('effect-row'),re=variable('effect-row');requireIterable(this.value(value.left,token),a,token,le);requireIterable(this.value(value.right,token),b,token,re);return {tag:'stream',item:tuple([a,b]),effects:effects([],[{row:effects([],[{row:le},{row:re}]),exclude:['break','cancel'],breakOutput:EMPTY,loop:true,label:value.label?.key}])};}
       if(value.mode==='combinatorial'){
         const a=variable(),latent=variable('effect-row'),deps=[{row:latent}];requireIterable(this.value(value.source,token),a,token,latent);let item=list(a);
         if(value.operation==='cartesianProduct'){const b=variable(),other=variable('effect-row');requireIterable(this.value(value.right,token),b,token,other);deps.push({row:other});item=tuple([a,b]);}

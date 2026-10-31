@@ -1,4 +1,4 @@
-import {installUnwrap,installOrElse} from './builtin-results.mjs';
+import {installUnwrap,installOrElse,installContainerFunctions} from './builtin-results.mjs';
 import {installOperatorClasses} from './operator-classes.mjs';
 import {parseExpression} from './language.mjs';
 // Ordinary functions retain stack/effect polymorphism and use the same lowering.
@@ -9,7 +9,7 @@ export function withStandardFunctions(definitions){
  };
  installUnwrap(result,add);
  if(!result.classes.has('or')){const classes=new Map(result.classes),methods=new Map(result.methods);installOperatorClasses(classes,methods);result.classes.set('or',classes.get('or'));result.methods.set('.|.',methods.get('.|.'));}
- installOrElse(result,add);
+ installOrElse(result,add);installContainerFunctions(result,add);
  add('loop',[],'while {True} _');
  // The outer loop also catches break during initialization. The inner loop
  // ends on break/cancel in cont; the final cancel prevents initialization restarting.

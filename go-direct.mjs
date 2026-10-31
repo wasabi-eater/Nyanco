@@ -363,6 +363,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const name=n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
     const call=(q,t,values=v)=>invoke(ctx,q,values,T.prune(t),at);
     const returnedBreak=(result)=>{ctx.lines.push(`_=${result}`);if(v.length)ctx.lines.push(`if ${result}!=nil{${v}=${v.map((_,i)=>`${result}[${i}]`)}}`);};
+    if(name==='zip'||name==='vzip'){
+      const right=pop(),left=pop(),lw=walker(ctx,left,topTypes.at(-2),at),rw=walker(ctx,right,topTypes.at(-1),at);
+      const body=`m.walkZip(${lw},${rw},visit,${at})`;
+      if(name==='zip')v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.loop(func(m *Machine){${body}},${at},${label})}}`));
+      else{const result=`zip${next++}`,br=`breakResult${next++}`;ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){m.walkZip(${lw},${rw},func(item any){${result}=append(${result},item)},${at})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);}return;
+    }
     if(transforms.has(name)) {
       const mode=transforms.get(name),arg=mode==='flatten'?null:pop(),source=pop(),sourceType=topTypes.at(mode==='flatten'?-1:-2),argType=mode==='flatten'?null:topTypes.at(-1);
       const stream=transformedStream(name,mode,source,sourceType,arg,argType,label,ctx,at);

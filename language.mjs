@@ -66,7 +66,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -80,7 +80,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
 }
 
 const OPERATORS = new Map([
-  ['||', 1], ['&&', 2], ['.|.', 3.2], ['.&.', 3.3], ['.<<.', 4.7], ['.>>.', 4.7], ['==', 3], ['/=', 3],
+  ['??', 0.5], ['||', 1], ['&&', 2], ['.|.', 3.2], ['.&.', 3.3], ['.<<.', 4.7], ['.>>.', 4.7], ['==', 3], ['/=', 3],
   ['<', 3], ['>', 3], ['<=', 3], ['>=', 3],
   ['..', 4], ['..=', 4], ['::', 4.5], ['+', 5], ['-', 5], ['++', 5], ['*', 6], ['/', 6], ['%', 6], ['^', 7],
 ]);
@@ -315,6 +315,12 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         const op = tokens[i++], precedence = OPERATORS.get(op.value);
         // A leading operator in the RHS supplies a missing operand. The
         // precedence threshold decides whether it belongs here or to the parent.
+        if(op.value==='??'){
+          if(boundary())throw new LanguageError('?? requires a fallback expression',op);
+          const parent=context,capture={...op,kind:'capture',slots:[]};context={capture,parents:[parent,...parent.parents||[]]};
+          let body;try{body=expression(precedence);}finally{context=parent;}
+          left=[{...op,kind:'application',body:[{...op,kind:'word',value:'unwrapOrElse'},{...op,kind:'scope',body:left},{...op,kind:'quote',body:[capture,...body]}]}];continue;
+        }
         const right = boundary() ? [missing(op)] : expression(precedence + (op.value==='^' ? 0 : 0.1));
         left = [{ ...op, kind: 'binary', left, right }];
       }
@@ -430,7 +436,7 @@ function resolveLabels(nodes,scope=new Map()) {
     }
     if(n.kind==='label') {
       const root=n.body.length===1?n.body[0]:null,head=root?.kind==='application'?root.body[0]:root;
-      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
+      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','zip','vzip','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
       n.key??=`@label${nextLabel++}`;head.handlerLabel=n.key;
       const nested=new Map(scope);nested.set(n.name,n.key);resolveLabels(n.body,nested);continue;
     }
@@ -866,6 +872,13 @@ export class VM {
     const vm=this,callback=consume,consumerTarget=t.loopTarget;
     consume=function*(value){const iterator=callback(value);try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&consumerTarget)request.bypassUntil=request.operation.name==='break'&&t.cancelOnly?t.breakTarget:consumerTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}};
     if(xs?.kind==='stream') {
+      if(xs.mode==='zip'){
+        const marker={},iteration={...t,label:xs.label,cancelOnly:!!xs.eager,breakTarget:t.loopTarget};
+        const source=function*(value){yield* vm.walk(value,function*(item){yield {operation:{name:"__zip_item"},marker,item};},iteration);};
+        const left=source(xs.left),right=source(xs.right);
+        const next=function*(iterator){let step=iterator.next();while(!step.done&&step.value.marker!==marker){const returned=yield step.value;step=iterator.next(returned);}return step;};
+        try{yield* vm.loop((function*(){while(true){const a=yield* next(left);if(a.done)return;const b=yield* next(right);if(b.done)return;yield* consume({kind:'tuple',items:[a.value.item,b.value.item]});}})(),iteration);}finally{left.return();right.return();}return;
+      }
       if(xs.mode==='combinatorial') {
         const items=[],right=[];yield* this.loop(this.walk(xs.source,function*(v){items.push(v);},t),{...t});
         if(xs.operation==='cartesianProduct'){
@@ -1228,6 +1241,7 @@ for(const name of ['vmap','vfilter'])define(name,2,function*(vm,s,t){t={...t};
   if(!t.breakValues)s.push(results);
 });
 define('each',2,function*(vm,s,t){t={...t};const q=vm.expect(s.pop(),'quotation',t),xs=s.pop();let checkpoint=[...s];const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(value);yield* vm.call(q,s,t);},t),t);if(!completed)s.splice(0,s.length,...(t.breakValues||checkpoint));});
+for(const name of ['zip','vzip'])define(name,2,function*(vm,s,t){t={...t};const right=s.pop(),left=s.pop(),value={kind:'stream',mode:'zip',left,right,label:t.label,eager:name==='vzip'};if(name==='zip')s.push(value);else{const result=[];yield* vm.loop(vm.walk(value,function*(item){result.push(item);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);}});
 define('toVector',1,function*(vm,s,t){t={...t};const xs=s.pop(),result=[];yield* vm.loop(vm.walk(xs,function*(value){result.push(value);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
 for(const [name,mode] of transforms)define(name,mode==='flatten'?1:2,function*(vm,s,t){
   const argument=mode==='flatten'?null:s.pop(),source=s.pop();

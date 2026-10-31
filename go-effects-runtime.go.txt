@@ -157,3 +157,24 @@ func(m *Machine) combinations(xs,other []any,count float64,mode string,visit fun
   if len(next)<=depth{next=append(next,start)}else{next[depth]=start}
  }
 }
+
+// A zip cursor suspends a source at each item and forwards its effects on demand.
+type zipCursor struct{scope *EffectScope;finished chan struct{};pending chan effectReply;done bool;start chan struct{};started bool}
+func newZipCursor(m *Machine,walk func(*Machine,func(any)),loc string) *zipCursor {
+ c:=&zipCursor{scope:&EffectScope{make(chan effectEvent),make(chan struct{})},finished:make(chan struct{}),start:make(chan struct{})};child:=*m;child.effects=c.scope
+ go func(){defer close(c.finished);select{case <-c.start:case <-c.scope.cancel:return};event:=effectEvent{done:true};defer func(){if err:=recover();err!=nil{event.failure=err};select{case c.scope.events<-event:case <-c.scope.cancel:}}();walk(&child,func(item any){child.perform("__zip_item",[]any{item},loc,false)})}()
+ return c
+}
+func(c *zipCursor) close(){close(c.scope.cancel);<-c.finished}
+func(c *zipCursor) next(m *Machine) (any,bool) {
+ if c.done{return nil,false};if !c.started{c.started=true;close(c.start)};if c.pending!=nil{c.pending<-effectReply{};c.pending=nil}
+ for{var event effectEvent;var cancelled <-chan struct{};if m.effects!=nil{cancelled=m.effects.cancel};select{case event=<-c.scope.events:case <-cancelled:panic(effectCancelled{})}
+ if event.done{c.done=true;if event.failure!=nil{panic(event.failure)};return nil,false}
+ if event.name=="__zip_item"{c.pending=event.reply;return event.args[0],true}
+ result:=m.performRoute(event.name,event.args,event.loc,event.never,event.target,event.skip);event.reply<-effectReply{result}
+ }
+}
+func(m *Machine) walkZip(left,right func(*Machine,func(any)),visit func(any),loc string){
+ a:=newZipCursor(m,left,loc);defer a.close();b:=newZipCursor(m,right,loc);defer b.close()
+ for{x,ok:=a.next(m);if !ok{return};y,ok:=b.next(m);if !ok{return};visit(&Tuple{[]any{x,y}})}
+}

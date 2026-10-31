@@ -1236,3 +1236,49 @@ abs = case
 ```
 
 `otherwise`はこれまでどおり、その直後に本体を書きます。
+
+
+## 0.68: zipとoption/resultの変換
+
+```nyanco
+toVector (zip [1,2,3] ["a","b"]) -- [#(1 "a"), #(2 "b")]
+vzip [1,2] [3,4]                 -- [#(1 3), #(2 4)]
+```
+
+zipはstreem instanceを持つ2つの入力から遅延streamを作り、vzipは同じペアをvectorへ集めます。出力要素はtupleで、短い側が尽きた時点で終了します。入力を全部集めないため、無限streamにもtakeと組み合わせて使えます。左、右の順で次の要素を読み出すので、右が先に尽きた場合は左を1要素余分に読むことがあります。構築時には入力を走査しません。
+
+両者とも入力のeffectを伝え、break/cancelとラベル付き中断に対応します。zip内部で処理するbreakの行は空、vzipで処理するbreakは通常終了と同じ結果の行です。下流のeachなどのcallbackからの中断は、その走査先へ伝えます。
+
+| option | result | 動作 |
+|---|---|---|
+| omap | rmap | Some/Okの中身をblockで変換する |
+| ofilter | — | 条件がFalseならNoneにする |
+| oflatten | rflatten | 二重のoption/resultを1段にする |
+| ozip | rzip | 両方が成功なら中身のtupleを包む |
+| oflatMap | rflatMap | 中身からoption/resultを返すblockを実行する |
+
+```nyanco
+omap (Some 2) {+ 1}          -- Some 3
+ofilter (Some 2) {> 3}       -- None
+oflatten (Some (Some 3))     -- Some 3
+ozip (Some 1) (Some "a")     -- Some #(1 "a")
+oflatMap (Some 2) {Some (_ + 1)} -- Some 3
+rmap (Ok 2) {+ 1}            -- Ok 3
+rflatten (Ok (Err "inner"))  -- Err "inner"
+rzip (Ok 1) (Ok "a")        -- Ok #(1 "a")
+rflatMap (Ok 2) {Ok (_ + 1)} -- Ok 3
+```
+
+None/Errでは変換・条件blockを実行しません。blockのeffectは呼び出し元へ伝えます。rflatten/rflatMap/rzipのエラー型は一致する必要があります。rzipは左がErrならそのエラーを優先し、左がOkで右がErrなら右のエラーを返します。ozip/rzipの引数は通常の関数呼び出しとして両方を先に評価します。rfilterは提供しません。
+
+
+`??`はunwrapOrElseのsyntax sugarです。`x ?? f`は`unwrapOrElse x {f}`に展開されます。
+
+```nyanco
+None ?? 1 + 2          -- 3
+Some 4 ?? exn "unused" -- 4
+Err "bad" ?? 5        -- 5
+None ?? None ?? 7      -- 7
+```
+
+`??`は右結合で、`||`や算術演算より優先順位が低く、`,`・`;`より高くなります。右辺は独立したblockなので、`_`はそのblock内のスタックを参照し、`$$`などの外側captureも通常のblockと同じ規則で使えます。右辺のeffectはNone/Errの場合だけ実行します。

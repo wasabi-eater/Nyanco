@@ -54,3 +54,19 @@ export function installOrElse(definitions,add){
   if(type!=='bool'){const strict=definitions.classes.get('or'),copy={...strict,instances:new Map(strict.instances)};copy.instances.set(type,{...instance,implementations:new Map([['.|.',choose]])});definitions.classes.set('or',copy);}
  }
 }
+
+export function installContainerFunctions(definitions,add){
+ if(isStandardOption(definitions)){
+  add('omap',['value','f'],'value; case\n  -> Some x ? Some (call x f)\n  -> None ? None');
+  add('ofilter',['value','f'],'value; case\n  -> Some x ? if (call x f) {value} {None}\n  -> None ? None');
+  add('oflatten',['value'],'value; case\n  -> Some x ? x\n  -> None ? None',"option (option 'a) -> option 'a");
+  add('oflatMap',['value','f'],'oflatten (omap value f)');
+  add('ozip',['left','right'],'left; case\n  -> Some x ? right; case\n    -> Some y ? Some #(x,y)\n    -> None ? None\n  end\n  -> None ? None');
+ }
+ if(isStandardResult(definitions)){
+  add('rmap',['value','f'],'value; case\n  -> Ok x ? Ok (call x f)\n  -> Err e ? Err e');
+  add('rflatten',['value'],'value; case\n  -> Ok x ? x\n  -> Err e ? Err e',"result (result 'a 'e) 'e -> result 'a 'e");
+  add('rflatMap',['value','f'],'rflatten (rmap value f)');
+  add('rzip',['left','right'],'left; case\n  -> Ok x ? right; case\n    -> Ok y ? Ok #(x,y)\n    -> Err e ? Err e\n  end\n  -> Err e ? Err e');
+ }
+}
