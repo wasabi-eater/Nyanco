@@ -51,7 +51,7 @@ LSPクライアントに次の値を設定してください。
 | 言語ID | `nyanco` |
 | 対象拡張子 | `.nyan` |
 
-VS Codeは任意のLSPサーバーを標準設定だけでは起動しないため、汎用LSPクライアント拡張またはLanguageClientを使う拡張側の設定が必要です。専用VS Code拡張はこの変更には含まれません。
+VS Code用の拡張を [`editors/vscode`](editors/vscode/README.md) に用意しています。LSPへの接続に加え、`.nyan`のシンタックスハイライト、括弧の対応付け、行コメント操作に対応しています。起動方法は拡張のREADMEを参照してください。
 
 ## 開発用テスト
 

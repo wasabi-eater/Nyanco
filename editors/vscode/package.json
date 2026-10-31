@@ -1,0 +1,63 @@
+{
+  "name": "nyanco-vscode",
+  "displayName": "Nyanco",
+  "description": "Nyanco language support",
+  "version": "0.2.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onLanguage:nyanco"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "nyanco",
+        "aliases": [
+          "Nyanco"
+        ],
+        "extensions": [
+          ".nyan"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nyanco",
+        "scopeName": "source.nyanco",
+        "path": "./syntaxes/nyanco.tmLanguage.json",
+        "tokenTypes": {
+          "meta.embedded.inline.nyanco": "other"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Nyanco",
+      "properties": {
+        "nyanco.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to lsp.mjs. Defaults to ../../lsp.mjs in the source checkout."
+        },
+        "nyanco.nodePath": {
+          "type": "string",
+          "default": "node",
+          "description": "Node.js executable"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "scripts": {
+    "test": "node scripts/check-grammar.cjs"
+  },
+  "devDependencies": {
+    "vscode-textmate": "^9.0.0",
+    "vscode-oniguruma": "^2.0.1"
+  }
+}

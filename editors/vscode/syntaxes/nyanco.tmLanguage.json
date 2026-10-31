@@ -1,0 +1,188 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Nyanco",
+  "scopeName": "source.nyanco",
+  "patterns": [
+    {
+      "include": "#code"
+    }
+  ],
+  "repository": {
+    "code": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#char"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "name": "keyword.control.nyanco",
+          "match": "\\b(?:case|otherwise|where|handle|mask|end)\\b(?!')"
+        },
+        {
+          "name": "keyword.declaration.nyanco",
+          "match": "\\b(?:data|class|instance|effect|type|mut|with)\\b(?!')"
+        },
+        {
+          "name": "constant.language.boolean.nyanco",
+          "match": "\\b(?:True|False)\\b(?!')"
+        },
+        {
+          "name": "storage.type.nyanco",
+          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result)\\b(?!')"
+        },
+        {
+          "name": "entity.name.type.parameter.nyanco",
+          "match": "'[a-z][a-zA-Z0-9_']*"
+        },
+        {
+          "name": "variable.language.stack.nyanco",
+          "match": "(?<![a-zA-Z0-9_'])_{1,}[0-9]*(?![a-zA-Z0-9_'])|\\$+[0-9]*|~"
+        },
+        {
+          "name": "entity.name.label.nyanco",
+          "match": "@[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+        {
+          "name": "variable.other.property.nyanco",
+          "match": "\\.(?:[a-zA-Z_][a-zA-Z0-9_']*|[0-9]+)"
+        },
+        {
+          "name": "constant.numeric.nyanco",
+          "match": "(?<![a-zA-Z0-9_\\x27])\\b[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "entity.name.function.nyanco",
+          "match": "^[ \\t]*[a-z][a-zA-Z0-9_']*(?=[ \\t]+[^=\\r\\n]*?(?:=(?!=)|:(?!:)))"
+        },
+        {
+          "name": "entity.name.type.nyanco",
+          "match": "\\b[A-Z][a-zA-Z0-9_']*"
+        },
+        {
+          "name": "keyword.operator.nyanco",
+          "match": "\\.<<\\.|\\.>>\\.|\\.&\\.|\\.\\|\\.|\\?\\?|&&|\\|\\||\\.\\??(?=\\[)|\\.\\.=|\\.\\.|=>|->|<-|::|==|/=|<=|>=|\\+\\+|[?:|!+*/%\\^<>=-]"
+        },
+        {
+          "include": "#braces"
+        },
+        {
+          "include": "#parens"
+        },
+        {
+          "include": "#brackets"
+        },
+        {
+          "name": "punctuation.separator.nyanco",
+          "match": ";;|[;,]"
+        },
+        {
+          "name": "variable.other.nyanco",
+          "match": "\\b[a-z_][a-zA-Z0-9_']*"
+        }
+      ]
+    },
+    "comment": {
+      "name": "comment.line.double-dash.nyanco",
+      "begin": "--",
+      "end": "$"
+    },
+    "char": {
+      "name": "string.quoted.single.nyanco",
+      "match": "'(?:[^'\\\\\\r\\n]|\\\\(?:[nrt0'\\\"\\\\]|u\\{[0-9a-fA-F]+\\}))'"
+    },
+    "string": {
+      "name": "string.quoted.double.nyanco",
+      "begin": "\"",
+      "end": "\"|(?=$)",
+      "patterns": [
+        {
+          "name": "constant.character.escape.nyanco",
+          "match": "\\\\(?:u[0-9a-fA-F]{4}|[^\\r\\n])"
+        },
+        {
+          "name": "meta.interpolation.nyanco",
+          "contentName": "meta.embedded.inline.nyanco",
+          "begin": "\\{",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.interpolation.begin.nyanco"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.interpolation.end.nyanco"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#code"
+            }
+          ]
+        }
+      ]
+    },
+    "braces": {
+      "begin": "\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.begin.nyanco"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.end.nyanco"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#code"
+        }
+      ]
+    },
+    "parens": {
+      "begin": "#?\\(",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.begin.nyanco"
+        }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.end.nyanco"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#code"
+        }
+      ]
+    },
+    "brackets": {
+      "begin": "\\[",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.begin.nyanco"
+        }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.end.nyanco"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#code"
+        }
+      ]
+    }
+  }
+}
