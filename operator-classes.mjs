@@ -45,7 +45,7 @@ export function installOperatorClasses(classes,methods) {
     const m={name,className:name,param:"'a",signature:direction==='to'?`'a -> ${type} / {exn}`:`${type} -> 'a / {exn}`,specialCast:true};
     classes.set(name,{name,param:"'a",methods:new Map([[name,m]]),instances:new Map(),standard:true,castClass:true,conversion:[source,target],supers:['into'],superConstraints:[{name:'into',args:[source,target]}]});if(!methods.has(name))methods.set(name,m);
   }
-  if(!classes.has('num'))classes.set('num',{name:'num',param:"'a",methods:new Map(),instances:new Map(),associated:[],standard:true,numClass:true,supers:['add','sub','mul','div','mod','pow','toInt','toFloat','toByte','toChar','fromInt','fromFloat','fromByte']});
+  if(!classes.has('num'))classes.set('num',{name:'num',param:"'a",methods:new Map(),instances:new Map(),associated:[],standard:true,numClass:true,supers:['ord','add','sub','mul','div','mod','pow','toInt','toFloat','toByte','toChar','fromInt','fromFloat','fromByte']});
   for(const [name,method] of [['indexGet','at'],['indexSet','setAt']])if(!classes.has(name)){
     const associated=[{name:'key',owner:name,param:"'indexKey"},{name:'item',owner:name,param:"'indexItem"}],param="'c";
     const m={name:method,className:name,param,signature:method==='at'?"'c 'indexKey -> 'indexItem / {exn}":"'c 'indexKey 'indexItem -> 'c / {exn}",inputCount:method==='at'?2:3,dispatchIndex:0,specialIndex:true};

@@ -31,7 +31,7 @@ test('execution combinators propagate callback effects while compose remains lat
   for(const body of ['{1 yield} call','True {1 yield} {} if','True {1 yield} when','{1 yield} {2 yield} compose call'])
     assert.match(type(body),/ \/ \{int yield\}$/);
   assert.equal(type('[1 2] {yield} each'),"'a num => ..s -> ..s / {exn, 'a yield}");
-  assert.equal(type('0 {dup; 0 >} {dup yield; - 1} while'),"'a num, 'a ord => ..s -> ..s 'a / {exn, 'a yield}");
+  assert.equal(type('0 {dup; 0 >} {dup yield; - 1} while'),"'a num => ..s -> ..s 'a / {exn, 'a yield}");
   assert.equal(type('{1 yield} {2 yield} compose drop'),'..s -> ..s');
 });
 

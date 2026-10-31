@@ -902,7 +902,7 @@ main = print (b + 5); print (f / 2)
 -- 1.5
 ```
 
-`//`は廃止しました。`7 / 2`は3、`-7 / 2`は-3となり、整数の除算は0方向へ切り捨てます。`7.0 / 2.0`は3.5です。0.58では`+ - * / % ^`はそれぞれadd・sub・mul・div・mod・powクラスのメソッドです。`f = +`の型には`add 'a`制約が付きます。numはこれらを継承します。数値型には既定のinstanceがあり、ADTにもnum instanceを実装できます。比較のordは別のクラスで、charの比較にも対応します。charは数値型ではありません。
+`//`は廃止しました。`7 / 2`は3、`-7 / 2`は-3となり、整数の除算は0方向へ切り捨てます。`7.0 / 2.0`は3.5です。0.58では`+ - * / % ^`はそれぞれadd・sub・mul・div・mod・powクラスのメソッドです。`f = +`の型には`add 'a`制約が付きます。numはこれらを継承します。数値型には既定のinstanceがあり、ADTにもnum instanceを実装できます。numは比較のordも継承し、ordはcharの比較にも対応します。charは数値型ではありません。
 
 `toInt`・`toFloat`・`toByte`は数値型間の明示的なキャストです。整数へは0方向へ小数部分を切り捨てます。変換先の範囲を超える値はexnです。byteの演算結果が0〜255を超えた場合は実行エラーになります。Goのint演算は64bitの整数演算です。
 
@@ -965,7 +965,7 @@ render = show
 
 instanceでは継承したメソッドもまとめて実装できます。親のinstanceを別に定義済みならその実装を再利用するので、同じメソッドを重ねて定義する必要はありません。再利用する親の文脈制約も満たす必要があります。親の実装と異なる上書き、循環継承、無関係な親同士で衝突する関連型は型エラーになります。関連型も継承され、子のinstanceで指定します。
 
-numはadd・sub・mul・div・mod・pow・toInt・toFloat・toByte・toCharを継承する標準クラスです。変換関数もそれぞれ同名のクラスメソッドになりました。int・float・byteには全ての標準instanceがあります。`num 'a`制約から四則演算や変換を呼べますが、`+`だけを使う関数の推論結果は最小限の`add 'a`制約です。
+numはord・add・sub・mul・div・mod・pow・toInt・toFloat・toByte・toCharを継承する標準クラスです。変換関数もそれぞれ同名のクラスメソッドになりました。int・float・byteには全ての標準instanceがあります。`num 'a`制約から四則演算や変換を呼べますが、`+`だけを使う関数の推論結果は最小限の`add 'a`制約です。
 
 ```haskell
 asFloat : num 'a => 'a -> float / {exn}
@@ -1005,7 +1005,7 @@ main = print (asInt (makeDistance 42))
 
 標準のtoInt・toFloat・toByte・toCharクラスは、それぞれ`into 'a int`などを継承します。fromInt・fromFloat・fromByte・fromCharクラスは、それぞれ`into int 'a`などを継承します。これらの関数は同じinto instanceを利用するので、intoを実装すれば両方の名前で呼び出せます。以前の`instance toInt 型 where`形式も使え、その実装をintoにも登録します。変換クラスのinstanceではメソッド名に自身の名前、またはfromを指定できます。
 
-numは演算クラス6種・to系4種に加え、fromInt・fromFloat・fromByteも継承します。ADTのnum instanceには、対応する入力変換の実装も必要です。これらをfromIntなどのメソッドとしてまとめて定義しても、intoのinstanceとして別々に定義しても構いません。
+numはord・演算クラス6種・to系4種に加え、fromInt・fromFloat・fromByteも継承します。ADTのnum instanceには、対応する入力変換の実装も必要です。これらをfromIntなどのメソッドとしてまとめて定義しても、intoのinstanceとして別々に定義しても構いません。
 
 標準スカラーint・float・byte・char間にはinto instanceがあります。charから数値への変換はUnicodeコードポイントを使います。範囲外などの失敗は引き続きexnになります。
 
