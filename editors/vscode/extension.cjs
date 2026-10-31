@@ -4,6 +4,7 @@ const { LanguageClient } = require('vscode-languageclient/node');
 let client;
 
 exports.activate = async function (context) {
+  require('./run.cjs').registerRun(vscode, context);
   const config = vscode.workspace.getConfiguration('nyanco');
   client = new LanguageClient('nyanco', 'Nyanco Language Server', {
     command: config.get('nodePath') || 'node',

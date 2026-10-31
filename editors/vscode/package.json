@@ -2,7 +2,7 @@
   "name": "nyanco-vscode",
   "displayName": "Nyanco",
   "description": "Nyanco language support",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "local",
   "engines": {
     "vscode": "^1.82.0"
@@ -46,9 +46,42 @@
           "type": "string",
           "default": "node",
           "description": "Node.js executable"
+        },
+        "nyanco.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to cli.mjs. Defaults to cli.mjs next to the language server."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "nyanco.runFile",
+        "title": "Nyanco: Run Current File",
+        "enablement": "editorLangId == nyanco"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "nyanco.runFile",
+        "key": "f5",
+        "when": "editorLangId == nyanco && !inDebugMode"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "nyanco",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Nyanco source file"
+          }
+        }
+      }
+    ]
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
