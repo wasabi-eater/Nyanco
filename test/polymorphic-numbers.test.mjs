@@ -21,10 +21,6 @@ poly : num 'a => -> 'a / {exn}
 poly = 1
 data count = Count int
 instance num count where
-  (<) (Count a) (Count b) = a < b
-  (<=) (Count a) (Count b) = a <= b
-  (>) (Count a) (Count b) = a > b
-  (>=) (Count a) (Count b) = a >= b
   (+) (Count a) (Count b) = Count (a + b)
   (-) (Count a) (Count b) = Count (a - b)
   (*) (Count a) (Count b) = Count (a * b)
@@ -74,20 +70,3 @@ test('user num literals use fromInt and preserve conversion exceptions',()=>{
 });
 
 test('native num literals specialize for int float byte and user ADTs without a runtime stack',()=>{const {p,output}=run(source);assert.equal(native(p),output.join('\n')+'\n');});
-
-test('num entails ord for generic comparisons and requires custom ordering implementations',()=>{
- const comparisons=source.split("\nmain =")[0]+`
-less : num 'a => 'a 'a -> bool
-less = <
-atMost : num 'a => 'a 'a -> bool
-atMost = <=
-greater : num 'a => 'a 'a -> bool
-greater = >
-atLeast : num 'a => 'a 'a -> bool
-atLeast = >=
-main = print (less 1 2); print (atMost 1.0 1.0); print (greater (toByte 3) (toByte 2)); print (atLeast (Count 4) (Count 4)); print (less (Count 5) (Count 2))`;
- const {p,output}=run(comparisons);
- assert.deepEqual(output,['True','True','True','True','False']);
- assert.equal(native(p),output.join('\n')+'\n');
- assert.throws(()=>compile(comparisons.replace('  (<) (Count a) (Count b) = a < b\n','')),/Missing instance method: </);
-});

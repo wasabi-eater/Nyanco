@@ -54,10 +54,6 @@ test('native integers preserve signed 64-bit values and truncate division',()=>{
 test('num instances and custom non-integer index keys use the same syntax',()=>{
  const source=`data amount = Amount int
 instance num amount where
-  (<) (Amount x) (Amount y) = x < y
-  (<=) (Amount x) (Amount y) = x <= y
-  (>) (Amount x) (Amount y) = x > y
-  (>=) (Amount x) (Amount y) = x >= y
   (+) (Amount x) (Amount y) = Amount (x + y)
   (-) (Amount x) (Amount y) = Amount (x - y)
   (*) (Amount x) (Amount y) = Amount (x * y)
