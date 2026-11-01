@@ -89,7 +89,7 @@ export class LanguageService {
       const declaration=doc.symbols.some(s=>s.name===token.value&&s.selectionRange.start.line===token.line-1&&s.selectionRange.start.character===token.col-1);
       const actual=doc.occurrences.get(`${token.line}:${token.col}`)||(declaration?type:null);
       const substitutions=doc.occurrences.substitutions?.get(`${token.line}:${token.col}`)||[];
-      const mapping=substitutions.length?'\n\n型変数の対応\n\n'+substitutions.map(s=>'`'+s.variable+'` = `'+s.type+'`').join('\n\n'):'';
+      const mapping=substitutions.length?'\n\n型変数の対応\n\n```nyanco\n'+substitutions.map(s=>s.variable+' = '+s.type).join('\n')+'\n```':'';
       const block=t=>'```nyanco\n'+token.value+' : '+t+'\n```';
       return type?{contents:{kind:'markdown',value:'定義時の型\n\n'+block(type)+(actual?'\n\nこの項の型\n\n'+block(actual):'')+mapping},range:range(token)}:null;
     }

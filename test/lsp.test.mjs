@@ -13,8 +13,8 @@ test('hover shows polymorphic definitions and separately instantiated occurrence
   for(const text of [integer,decimal]){assert.match(text,/定義時の型/);assert.match(text,/mul 'a/);assert.match(text,/この項の型/);}
   assert.match(integer.split('この項の型')[1],/int -> .*int/);
   assert.match(integer,/型変数の対応/);
-  assert.match(integer,/`'a` = `int`/);
-  assert.match(decimal,/`'a` = `float`/);
+  assert.match(integer,/'a = int/);
+  assert.match(decimal,/'a = float/);
   assert.doesNotMatch(integer.split('この項の型')[1],/mul|float/);
   assert.match(decimal.split('この項の型')[1],/float -> .*float/);
   assert.doesNotMatch(decimal.split('この項の型')[1],/mul|int/);
@@ -26,10 +26,10 @@ test('hover substitutions retain parameter identity and show structured types',(
   const service=new LanguageService();
   service.update(uri,"keep x y = x\nmain : -> int\nmain = keep 1 \"hi\"",1);
   let text=service.request('textDocument/hover',{textDocument:{uri},position:{line:2,character:8}}).contents.value;
-  assert.match(text,/`'a` = `string`/);assert.match(text,/`'b` = `int`/);
+  assert.match(text,/型変数の対応\n\n```nyanco\n'a = string\n'b = int\n```/);
   service.update(uri,"identity x = x\nmain : -> [int]\nmain = identity [1,2]",2);
   text=service.request('textDocument/hover',{textDocument:{uri},position:{line:2,character:8}}).contents.value;
-  assert.match(text,/`'a` = `\[int\]`/);
+  assert.match(text,/'a = \[int\]/);
 });
 test('LSP checks without executing, provides inferred types and source definitions',()=>{
   const service=new LanguageService();
