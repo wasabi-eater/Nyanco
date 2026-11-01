@@ -34,8 +34,7 @@ test('named effects and named mask select their handler and preserve inner handl
  const result=run(`effect ask: -> int
 main = @outer handle {
   @inner handle {ask@outer; mask ask@outer {ask}; ask;
-    mask ask@outer {handle {ask} {ask:{-> k; resume 3 k}}}}
-    {ask:{-> k; resume 2 k}}
+    mask ask@outer {handle {ask} {ask:{-> k; resume 3 k}}}} {ask:{-> k; resume 2 k}}
 } {ask:{-> k; resume 1 k}}`);
  assert.deepEqual(result.stack,[1,1,2,3]);
  assert.deepEqual(run('main = 3, mask put {_}').stack,[3]);

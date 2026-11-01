@@ -91,6 +91,16 @@ const isComparison = t => t?.kind === 'word' && ['<','<=','>','>=','==','/='].in
 
 let nextStackCapture=0;
 function parseTokens(tokens, inherited = null, constructors = new Map()) {
+  // Layout separators belong to expression bodies, not declaration headers.
+  // Keep the separator on the previous line so case/local-definition layout
+  // continues to use the original token positions.
+  tokens=tokens.flatMap((token,index)=>{
+    const previous=tokens[index-1];
+    if(!previous || token.line<=(previous.endLine??previous.line) ||
+      [';',';;','(','[','{'].includes(previous.kind) ||
+      previous.kind==='word'&&['=','?','case','otherwise','|',':'].includes(previous.value))return [token];
+    return [{...previous,kind:';',value:';',line:previous.endLine??previous.line,col:previous.endCol??previous.col,layout:true},token];
+  });
   const obsolete=tokens.find(t=>t.kind==='word'&&t.value===':=');
   if(obsolete)throw new LanguageError(':= has been removed; use <- for reassignment',obsolete);
   let i = 0;
@@ -235,10 +245,11 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           if(names.has(key.value))throw new LanguageError(`Duplicate record field: ${key.value}`,key);
           names.add(key.value);
           const start=i;let depth=0;
-          while(i<tokens.length){const x=tokens[i];if(!depth && (x.kind==='}' || x.kind===',' && (tokens[i+1]?.kind==='}' || tokens[i+2]?.value===':')))break;if(['(','[','{'].includes(x.kind))depth++;if([')',']','}'].includes(x.kind))depth--;i++;}
+          while(i<tokens.length){const x=tokens[i],next=i+1+(tokens[i+1]?.layout?1:0);if(!depth && (x.kind==='}' || x.kind===',' && (tokens[next]?.kind==='}' || tokens[next+1]?.value===':')))break;if(['(','[','{'].includes(x.kind))depth++;if([')',']','}'].includes(x.kind))depth--;i++;}
           fields.push({name:key.value,body:i===start?[missing(key)]:parseTokens(tokens.slice(start,i),context,constructors)});
           const end=tokens[i++];if(end?.kind==='}')break;
           if(end?.kind!==',')throw new LanguageError('Unterminated record',t);
+          if(tokens[i]?.kind===';'&&tokens[i].layout)i++;
           if(tokens[i]?.kind==='}'){i++;break;}
         }
         return [{...t,kind:'record',fields}];
