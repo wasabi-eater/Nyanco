@@ -4,7 +4,7 @@ import { resolve, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { transpileGo } from './go-backend.mjs';
-import { createInterface } from 'node:readline/promises';
+import {createReplInterface,highlight} from './repl-highlight.mjs';
 import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression, formatWarning } from './language.mjs';
 import { checkExpression } from './types.mjs';
@@ -36,7 +36,8 @@ async function repl() {
       return found;
     });
   };
-  const rl = createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) });
+  const rl = createReplInterface({input:stdin,output:stdout});
+  const color=Boolean(stdin.isTTY&&stdout.isTTY)&&!('NO_COLOR' in process.env)&&process.env.TERM!=='dumb';
   const lines = rl[Symbol.asyncIterator]();
   const vm = new VM({input:async()=>{const line=await lines.next();return line.done?'':line.value;}}); let stack = [], block = null;
   const install = async (source, file) => {
@@ -61,7 +62,7 @@ async function repl() {
       else if (input === ':{') block = [];
       else if (input === ':help') stdout.write(help + '\nDefinitions: square x = x * x\nBindings: 3, 4, 5 -> x y z; x + y * z\nSeparators: comma shares captures; semicolon starts a new clause\nSections: 3, 2; (+), 3; (+ 2), 3; (2 +), 3 + 2\nMulti-clause definitions: enter :{, declarations, then :}\n');
       else if (input === ':stack') stdout.write(format(stack) + '\n');
-      else if (input.startsWith(':type ')) stdout.write(vm.infer(input.slice(6),'<repl-type>') + '\n');
+      else if (input.startsWith(':type ')) {const type=vm.infer(input.slice(6),'<repl-type>');stdout.write((color?highlight(type):type)+'\n');}
       else if (input === ':clear') { stack = []; stdout.write('[]\n'); }
       else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys()])].join(' ') + '\n');
       else if (input.startsWith(':load ')) {
