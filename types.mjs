@@ -487,7 +487,7 @@ function envFree(env) {
   return result;
 }
 
-export function formatType(type) {
+export function formatType(type,{names=null,variableNames=new Map(),showConstraints=true}={}) {
   for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&v.tag==='var')unify(v,INT);
   // An open callback row may include break, while every use of that row is
   // beneath a loop's handler. Expose that accepted operation in the signature
@@ -525,7 +525,7 @@ export function formatType(type) {
   }
   inspect(type);
   const values=new Map(), rows=new Map(), recordRows=new Map(),tupleRows=new Map(),effectRows=new Map();
-  const name=(v,names,prefix)=>{ if(!names.has(v)) names.set(v, `${prefix}${names.size || ''}`); return names.get(v); };
+  const name=(v,names,prefix)=>{ if(!names.has(v)) names.set(v, `${prefix}${names.size || ''}`); return variableNames.get(v)||names.get(v); };
   // Keep row names stable and avoid reusing their identifiers for value types.
   const reserved=new Set([...visitedTypes,...free(type)].flatMap(t=>
     (t.tag==='var'||t.tag==='rigid') ? ({'effect-row':["'e"],'record-row':["'r"],'tuple-row':["'t"]}[t.sort]||[]) : []));
@@ -533,7 +533,7 @@ export function formatType(type) {
   const alphabetic=i=>{let text='';do{text=String.fromCharCode(97+i%26)+text;i=Math.floor(i/26)-1;}while(i>=0);return "'"+text;};
   function valueName(t){
     if(!values.has(t)){let candidate;do{candidate=alphabetic(nextValueName++);}while(reserved.has(candidate));values.set(t,candidate);}
-    return values.get(t);
+    return variableNames.get(t)||values.get(t);
   }
   function render(t) {
     t=prune(t);
@@ -574,7 +574,8 @@ export function formatType(type) {
   const t=prune(type);
   const body=t.tag==='quote' ? `${renderStack(t.input)} -> ${renderStack(t.output)}${renderEffects(t)}` : render(t);
   const constraints=[...new Set([...free(t)].flatMap(v=>[...(v.relations||[]).map(r=>r.name+' '+r.args.map(render).join(' ')),...[...v.associated||[]].map(([n,ts])=>`${n} ${render(v)} ${ts.map(render).join(' ')}`),...[...v.classes||[]].sort().map(c=>`${c} ${render(v)}`),...(v.eachItem?[`streem ${render(v)} ${render(v.eachItem)}`]:[]),...(v.handlerAnswer?[`handles ${render(v)} ${render(v.handlerAnswer)}`]:[])]))];
-  return constraints.length?`${constraints.join(', ')} => ${body}`:body;
+  if(names)for(const group of [values,rows,recordRows,tupleRows,effectRows])for(const [v,n] of group)names.set(v,variableNames.get(v)||n);
+  return showConstraints&&constraints.length?`${constraints.join(', ')} => ${body}`:body;
 }
 
 function builtinSchemes() {
@@ -1493,10 +1494,30 @@ export function loweringTypes(definitions) {
 // checked clause analysis so surrounding arguments and results constrain calls.
 export function occurrenceTypes(definitions,file) {
   const info=loweringTypes(definitions),result=new Map();
+  result.substitutions=new Map();
   const collect=trace=>{
     for(const [node,t] of trace){
       const save=(token,effect)=>{
-        if(effect&&token.file===file)result.set(`${token.line}:${token.col}`,formatType(instantiate(generalize(effect))));
+        if(effect&&token.file===file){
+          const key=`${token.line}:${token.col}`,actual=instantiate(generalize(effect));
+          const actualNames=new Map();result.set(key,formatType(actual,{names:actualNames}));
+          const scheme=info.functions.get(token.value);
+          if(scheme){
+            const originalNames=new Map(),bindings=new Map();
+            formatType(scheme.type,{names:originalNames});
+            const generic=instantiate(scheme,false,bindings);
+            try{
+              unify(generic,actual,token);
+              const substitutions=[];
+              for(const [variable,name] of originalNames){
+                const replacement=bindings.get(variable);if(!replacement)continue;
+                const type=formatType(prune(replacement),{variableNames:actualNames,showConstraints:false});
+                if(type!==name)substitutions.push({variable:name,type});
+              }
+              result.substitutions.set(key,substitutions);
+            }catch{} // Keep the occurrence type if no matching scheme is available.
+          }
+        }
       };
       save(node,t.effect);
       if(node.kind==='comparison-chain')node.operators.forEach((op,i)=>save(op,t.operatorEffects?.[i]));
