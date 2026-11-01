@@ -7,6 +7,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
     const raw = tokens[i++],name=typeName(raw);
     if(name==='..'){const parameter=tokens[i++];if(!/^'[a-z][a-zA-Z0-9_']*$/.test(parameter||'')||parameters&&!parameters.has(parameter))fail('Expected stack row parameter');return {tag:'stack-row',name:parameter};}
     if(name==='num')fail('num is a class; use float or int as the value type');
+    if(name==='dict')return {tag:'adt',name:'dict',args:[type(),type()]};
     if(name==='vector')return {tag:'list',item:type()};
     if(name==='stream'){const item=type(),block=type();if(block.tag!=='quote'||block.input.length||block.output.length||block.never)fail('stream requires item type and { -> / effects }');return {tag:'stream',item,block};}
     if(name==='#') {

@@ -33,7 +33,7 @@
         },
         {
           "name": "storage.type.nyanco",
-          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result)\\b(?!')"
+          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict)\\b(?!')"
         },
         {
           "name": "entity.name.type.parameter.nyanco",
@@ -65,7 +65,7 @@
         },
         {
           "name": "keyword.operator.nyanco",
-          "match": "\\.<<\\.|\\.>>\\.|\\.&\\.|\\.\\|\\.|\\?\\?|&&|\\|\\||\\.\\??(?=\\[)|\\.\\.=|\\.\\.|=>|->|<-|::|==|/=|<=|>=|\\+\\+|[?:|!+*/%\\^<>=-]"
+          "match": "\\.<<\\.|\\.>>\\.|\\.&\\.|\\.\\|\\.|\\?\\?=|\\?\\?|&&|\\|\\||\\.\\??(?=\\[)|\\.\\.=|\\.\\.|=>|->|<-|::|==|/=|<=|>=|\\+\\+|[?:|!+*/%\\^<>=-]"
         },
         {
           "include": "#braces"

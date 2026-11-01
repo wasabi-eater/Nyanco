@@ -67,7 +67,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?=|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -129,7 +129,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       j++;
       if(tokens[j]?.kind==='word' && tokens[j].value.startsWith('.')) {
         while(tokens[j]?.kind==='word' && tokens[j].value.startsWith('.')) {
-          const part=tokens[j++];if(part.value==='.') {if(tokens[j++]?.kind!=='[')return -1;let depth=1;while(j<tokens.length&&depth){if(tokens[j].kind==='[')depth++;if(tokens[j].kind===']')depth--;j++;}}
+          const part=tokens[j++];if(['.','.?'].includes(part.value)) {if(tokens[j++]?.kind!=='[')return -1;let depth=1;while(j<tokens.length&&depth){if(tokens[j].kind==='[')depth++;if(tokens[j].kind===']')depth--;j++;}}
         }
         return ['<-','!'].includes(tokens[j]?.value)?j:-1;
       }
@@ -256,6 +256,33 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       }
       if(t.kind===',')throw new LanguageError('Unexpected comma',t);
       if ([')', ']', '}'].includes(t.kind)) throw new LanguageError(`Unexpected ${t.kind}`, t);
+      if(t.kind==='['){
+        let depth=0,dict=false;
+        for(let j=i;j<tokens.length;j++){
+          const x=tokens[j];if(!depth&&x.kind===']')break;
+          if(!depth&&x.value===':'){dict=true;break;}
+          if(['(','[','{'].includes(x.kind))depth++;if([')',']','}'].includes(x.kind))depth--;
+        }
+        if(dict){
+          const fields=[];
+          if(tokens[i]?.value===':'&&tokens[i+1]?.kind===']'){i+=2;return [{...t,kind:'dict',fields}];}
+          while(i<tokens.length){
+            while(tokens[i]?.layout)i++;
+            const start=i;let depth=0;
+            while(i<tokens.length){const x=tokens[i];if(!depth&&x.value===':')break;if(['(','[','{'].includes(x.kind))depth++;if([')',']','}'].includes(x.kind))depth--;i++;}
+            if(i===start||tokens[i]?.value!==':')throw new LanguageError('Expected dictionary key: value',t);
+            fields.push({body:parseTokens(tokens.slice(start,i++),context,constructors)});
+            const valueStart=i;depth=0;
+            while(i<tokens.length){const x=tokens[i];if(!depth&&[',',']'].includes(x.kind))break;if(['(','[','{'].includes(x.kind))depth++;if([')',']','}'].includes(x.kind))depth--;i++;}
+            if(valueStart===i)throw new LanguageError('Expected dictionary value',t);
+            fields.push({body:parseTokens(tokens.slice(valueStart,i),context,constructors)});
+            if(tokens[i++]?.kind===']')return [{...t,kind:'dict',fields}];
+            while(tokens[i]?.layout)i++;
+            if(tokens[i]?.kind===']'){i++;return [{...t,kind:'dict',fields}];}
+          }
+          throw new LanguageError('Unterminated dictionary',t);
+        }
+      }
       if (['(', '[', '{'].includes(t.kind)) {
         const body = scope({ '(': ')', '[': ']', '{': '}' }[t.kind], t, t.kind!=='{'?context:{parents:[context,...context.parents||[]]});
         return [{ ...t, kind: { '(': 'scope', '[': 'list', '{': 'quote' }[t.kind], body }];
@@ -276,17 +303,18 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           if(part.kind!=='word')break;
           if(/^\.[a-zA-Z_]/.test(part.value)){i++;path.push({kind:'field',name:part.value.slice(1)});}
           else if(/^\.\d+$/.test(part.value)){i++;const index=Number(part.value.slice(1));if(!Number.isSafeInteger(index)||index>100000)throw new LanguageError('Invalid tuple index',part);path.push({kind:'tuple-index',index});}
-          else if(part.value==='.' && tokens[i+1]?.kind==='['){i+=2;path.push({kind:'list-index',argument:fields.length});fields.push({body:scope(']',part,context)});}
+          else if(['.','.?'].includes(part.value) && tokens[i+1]?.kind==='['){i+=2;path.push({kind:'list-index',optional:part.value==='.?',argument:fields.length});fields.push({body:scope(']',part,context)});}
           else if(!path.length && identifier.test(part.value) && ['=','!'].includes(tokens[i+1]?.value)){i++;path.push({kind:'field',name:part.value});}
           else break;
         }
         const operation=tokens[i++];
-        if(!path.length||!['=','!'].includes(operation?.value))throw new LanguageError('Expected update path = value or path ! commands',operation||token);
+        if(!path.length||!['=','!','??='].includes(operation?.value))throw new LanguageError('Expected update path = value or path ! commands',operation||token);
+        if(operation.value==='??='&&path.at(-1).kind!=='list-index')throw new LanguageError('??= requires an index path',operation);
         const start=i;let depth=0;
         while(i<tokens.length){const t=tokens[i];if(!depth&&['}',';'].includes(t.kind))break;if(!depth&&t.kind===','&&tokens[i+1]?.value?.startsWith('.')&&['=','!'].includes(tokens[i+2]?.value))throw new LanguageError('Separate with updates using ;',t);if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;i++;}
         if(start===i)throw new LanguageError('Update requires a replacement value',tokens[i]||token);
         fields.push({body:parseTokens(tokens.slice(start,i),operation.value==='!'?{parents:context.parents}:context,constructors)});
-        updates.push({...token,kind:'path-update',path,fields,updating:operation.value==='!'});
+        updates.push({...token,kind:'path-update',path,fields,updating:operation.value==='!',defaulting:operation.value==='??='});
         if(tokens[i]?.kind===';'){i++;continue;}
         if(tokens[i]?.kind===',')throw new LanguageError('Separate with updates using ;',tokens[i]);
         if(tokens[i]?.kind!=='}')throw new LanguageError('Unterminated with update',token);
@@ -429,7 +457,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
   function clean(nodes) {
     return nodes.filter(n=>n.kind!=='capture'||n.slots.length).map(n=>{
       if(n.body)n.body=clean(n.body);
-      if(['record','path-update','interpolation'].includes(n.kind))for(const f of n.fields)f.body=clean(f.body);
+      if(['record','dict','path-update','interpolation'].includes(n.kind))for(const f of n.fields)f.body=clean(f.body);
       if(n.left){n.left=clean(n.left);n.right=clean(n.right);}
       if(n.operands)n.operands=n.operands.map(clean);
       return n;
@@ -448,7 +476,7 @@ function resolveLabels(nodes,scope=new Map()) {
     }
     if(n.kind==='label') {
       const root=n.body.length===1?n.body[0]:null,head=root?.kind==='application'?root.body[0]:root;
-      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','nth','zip','vzip','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
+      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','nth','zip','vzip','windows','chunks','chunkBy','groupBy','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
       n.key??=`@label${nextLabel++}`;head.handlerLabel=n.key;
       const nested=new Map(scope);nested.set(n.name,n.key);resolveLabels(n.body,nested);continue;
     }
@@ -597,7 +625,7 @@ export function expressionWarnings(nodes,variables=new Set()) {
       if(n.kind==='local-function'){env.delete(n.name);walk(n.body,env);continue;}
       if(n.kind==='case')for(const b of n.branches){const local=new Set([...env,...patternNames(b.patterns)]);if(b.guard)walk(b.guard,local);walk(b.body,local);}
       if(n.body)walk(n.body,env);
-      if(['record','path-update','interpolation'].includes(n.kind))for(const f of n.fields)walk(f.body,env);
+      if(['record','dict','path-update','interpolation'].includes(n.kind))for(const f of n.fields)walk(f.body,env);
       if(n.left){walk(n.left,env);walk(n.right,env);}
       if(n.operands)for(const o of n.operands)walk(o,env);
     }
@@ -736,6 +764,7 @@ export function format(value) {
   if(value?.kind==='stream')return '<stream>';
   if(value?.kind==='range')return `(${value.start} ${value.inclusive?'..=':'..'} ${value.end})`;
   if(value?.kind==='tuple')return `#(${value.items.map(format).join(' ')})`;
+  if(value?.kind==='dict')return value.entries.length?'['+value.entries.map(([k,v])=>format(k)+': '+format(v)).join(', ')+']':'[:]';
   if(value?.kind==='record')return Object.keys(value.fields).length ? `{${Object.keys(value.fields).sort().map(k=>`${k}: ${format(value.fields[k])}`).join(', ')}}` : '{:}';
   if (Array.isArray(value)) return `[${value.map(format).join(', ')}]`;
   if (value?.kind === 'closure') return '{ ... }';
@@ -747,6 +776,7 @@ export function format(value) {
 function equal(a, b) {
   if(a?.kind==='scalar'||b?.kind==='scalar')return a?.kind==='scalar'&&b?.kind==='scalar'&&a.type===b.type&&a.value===b.value;
   if(a?.kind==='range' && b?.kind==='range')return a.start===b.start && a.end===b.end && a.inclusive===b.inclusive;
+  if(a?.kind==='dict'&&b?.kind==='dict')return a.entries.length===b.entries.length&&a.entries.every(([k,v])=>b.entries.some(([key,value])=>equal(k,key)&&equal(v,value)));
   if(a?.kind==='tuple' && b?.kind==='tuple')return equal(a.items,b.items);
   if(a?.kind==='record' && b?.kind==='record')return Object.keys(a.fields).length===Object.keys(b.fields).length && Object.keys(a.fields).every(k=>Object.hasOwn(b.fields,k) && equal(a.fields[k],b.fields[k]));
   if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => equal(v, b[i]));
@@ -886,7 +916,25 @@ export class VM {
   *walk(xs,consume,t) {
     const vm=this,callback=consume,consumerTarget=t.loopTarget;
     consume=function*(value){const iterator=callback(value);try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&consumerTarget)request.bypassUntil=request.operation.name==='break'&&t.cancelOnly?t.breakTarget:consumerTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}};
+    if(xs?.kind==='stream'&&xs.mode==='snapshot'){for(const item of xs.items)yield* consume(item);return;}
     if(xs?.kind==='stream') {
+      if(xs.mode==='partition'){
+        const iteration={...t,label:xs.label,cancelOnly:false,breakTarget:t.loopTarget};
+        let pending=[],lastKey,hasKey=false;
+        const emit=function*(items){yield* consume(xs.operation==='chunkBy'?{kind:'stream',mode:'snapshot',items}:items);};
+        const completed=yield* vm.loop(vm.walk(xs.source,function*(item){
+          if(xs.operation==='chunkBy'){
+            const local=[item];yield* vm.call(xs.block,local,t);vm.need(local,1,t);const key=local.pop();
+            if(hasKey&&!equal(lastKey,key)){const ready=pending;pending=[];yield* emit(ready);}
+            pending.push(item);lastKey=key;hasKey=true;
+          }else{
+            pending.push(item);
+            if(pending.length===xs.count){const ready=[...pending];pending=xs.operation==='windows'?pending.slice(1):[];yield* emit(ready);}
+          }
+        },iteration),iteration);
+        if(completed&&pending.length&&xs.operation!=='windows')yield* emit([...pending]);
+        return;
+      }
       if(xs.mode==='zip'){
         const marker={},iteration={...t,label:xs.label,cancelOnly:!!xs.eager,breakTarget:t.loopTarget};
         const source=function*(value){yield* vm.walk(value,function*(item){yield {operation:{name:"__zip_item"},marker,item};},iteration);};
@@ -1092,6 +1140,7 @@ export class VM {
           if(value?.kind!=='record' || !Object.hasOwn(value.fields,t.name))throw new LanguageError(`Missing record field: ${t.name}`,t);
           stack.push(value.fields[t.name]);
         }
+        else if(t.kind==='dict'){const entries=[];for(let j=0;j<t.fields.length;j+=2){const key=yield* this.operand(t.fields[j].body,env,missing,t,'Dictionary key'),value=yield* this.operand(t.fields[j+1].body,env,missing,t,'Dictionary value');const old=entries.findIndex(([k])=>equal(k,key));if(old<0)entries.push([key,value]);else entries[old]=[key,value];}stack.push({kind:'dict',entries});}
         else if(t.kind==='path-update') {
           this.need(stack,1,t);const original=stack.pop(),args=[];
           for(const field of t.fields.slice(0,-1))args.push(yield* this.operand(field.body,env,missing,t,'Update index'));
@@ -1112,8 +1161,13 @@ export class VM {
               if(value?.kind!=='tuple'||part.index>=value.items.length)throw new LanguageError('Tuple index out of bounds',t);
               const items=[...value.items];items[part.index]=yield* copy(items[part.index],depth+1);return {kind:'tuple',items};
             }
-            const index=args[part.argument],local=[value,index];
-            yield* BUILTINS.get('at')(vm,local,{...t,indexEffect:info?.indexPaths?.[depth]?.get});
+            const index=args[part.argument],local=[value,index],last=depth===t.path.length-1;
+            let found=true;
+            if(part.optional||t.defaulting&&last){
+              const iterator=BUILTINS.get('at')(vm,local,{...t,indexEffect:info?.indexPaths?.[depth]?.get});
+              try{let step=iterator.next();while(!step.done){if(step.value.operation.name==='exn'){found=false;break;}const returned=yield step.value;step=iterator.next(returned);}}finally{iterator.return();}
+              if(!found&&part.optional||found&&t.defaulting&&last)return value;
+            }else if(!last||t.updating)yield* BUILTINS.get('at')(vm,local,{...t,indexEffect:info?.indexPaths?.[depth]?.get});
             const replacement=yield* copy(local[0],depth+1),updated=[value,index,replacement];
             yield* BUILTINS.get('setAt')(vm,updated,{...t,indexEffect:info?.indexPaths?.[depth]?.set,reuseVector:depth===0&&vm.vectorReuse.has(t)});return updated[0];
           }
@@ -1257,6 +1311,18 @@ for(const name of ['vmap','vfilter'])define(name,2,function*(vm,s,t){t={...t};
   if(!t.breakValues)s.push(results);
 });
 define('each',2,function*(vm,s,t){t={...t};const q=vm.expect(s.pop(),'quotation',t),xs=s.pop();let checkpoint=[...s];const completed=yield* vm.loop(vm.walk(xs,function*(value){checkpoint=[...s];s.push(value);yield* vm.call(q,s,t);},t),t);if(!completed)s.splice(0,s.length,...(t.breakValues||checkpoint));});
+for(const name of ['windows','chunks','chunkBy','groupBy'])define(name,2,function*(vm,s,t){
+  t={...t};const argument=s.pop(),source=s.pop();
+  if(name==='windows'||name==='chunks'){
+    if(!Number.isSafeInteger(argument)||argument<=0){yield {operation:ioEffects().get('exn'),args:[name+': size must be a positive integer'],token:t};throw new LanguageError('Non-returning effect returned',t);}
+  }
+  if(name==='groupBy'){
+    const block=vm.expect(argument,'quotation',t),entries=[];
+    yield* vm.loop(vm.walk(source,function*(item){const local=[item];yield* vm.call(block,local,t);vm.need(local,1,t);const key=local.pop(),found=entries.findIndex(([k])=>equal(k,key));if(found<0)entries.push([key,[item]]);else entries[found][1].push(item);},t),t);
+    s.push(...(t.breakValues||[{kind:'dict',entries}]));return;
+  }
+  s.push({kind:'stream',mode:'partition',operation:name,source,label:t.label,...(name==='chunkBy'?{block:vm.expect(argument,'quotation',t)}:{count:argument})});
+});
 for(const name of ['zip','vzip'])define(name,2,function*(vm,s,t){t={...t};const right=s.pop(),left=s.pop(),value={kind:'stream',mode:'zip',left,right,label:t.label,eager:name==='vzip'};if(name==='zip')s.push(value);else{const result=[];yield* vm.loop(vm.walk(value,function*(item){result.push(item);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);}});
 define('nth',2,function*(vm,s,t){t={...t};let remaining=vm.expect(s.pop(),'number',t);const source=s.pop(),stop={};let result={kind:'adt',typeName:'option',constructor:'None',fields:[]};
  if(Number.isSafeInteger(remaining)&&remaining>=0){try{yield* vm.loop(vm.walk(source,function*(item){if(remaining--===0){result={kind:'adt',typeName:'option',constructor:'Some',fields:[item]};throw stop;}},t),t);}catch(error){if(error!==stop)throw error;}}
@@ -1385,6 +1451,7 @@ for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];
  const target=vm.definitions.classes?.get(name==='at'?'indexGet':'indexSet')?.instances.get(runtimeTypeKey(container))?.implementations.get(name);
  if(target){const call={...t,kind:'word',value:target},effect=t.indexEffect;yield* vm.run([call],values,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(values[0]);return;}
+ if(container?.kind==='dict'){const entries=container.entries,found=entries.findIndex(([key])=>equal(key,index));if(name==='at'){if(found<0){yield {operation:ioEffects().get('exn'),args:['Dictionary key not found: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}s.push(entries[found][1]);}else{const result=entries.map(pair=>[...pair]);if(found<0)result.push([index,values[2]]);else result[found]=[index,values[2]];s.push({kind:'dict',entries:result});}return;}
  const xs=typeof container==='string'?new TextEncoder().encode(container):vm.expect(container,'list',t);
  if(scalarType(index)!=='int'||!Number.isSafeInteger(index)||index<0||index>=xs.length){yield {operation:ioEffects().get('exn'),args:['Index out of bounds: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}
  if(name==='at'){s.push(typeof container==='string'?scalar('byte',xs[index]):xs[index]);return;}

@@ -74,6 +74,7 @@ func(m *Machine) handleWith(body func(*Machine) []any,handlers map[string]Effect
 }
 
 func(m *Machine) listIndex(value,index any,loc string) any {
+ if d,ok:=value.(*Dict);ok{i:=d.find(index);if i<0{m.perform("exn",[]any{"Dictionary key not found: "+text(index)},loc,true);fail(loc,"Non-returning effect returned")};return d.entries[i][1]}
  n:=number(index,loc);size:=0;var xs []any;var text string;isString:=false
  if s,ok:=value.(string);ok{text=s;size=len(s);isString=true}else{xs=list(value,loc);size=len(xs)}
  if math.IsNaN(n)||math.Trunc(n)!=n||n<0||n>=float64(size){m.perform("exn",[]any{"Index out of bounds: "+textValue(index)},loc,true);fail(loc,"Non-returning effect returned")}
@@ -84,6 +85,7 @@ func(m *Machine) listOptionIndex(value,index any,loc string) any {
  return m.handle(func(m *Machine) []any{return []any{&ADT{"option","Some",[]any{m.listIndex(value,index,loc)}}}},map[string]EffectHandler{"exn":func(_ []any,_ *Continuation) []any{return []any{&ADT{"option","None",nil}}}},loc)[0]
 }
 func(m *Machine) indexSetOwned(value,index,replacement any,loc string,reuse bool) any {
+ if d,ok:=value.(*Dict);ok{return d.set(index,replacement)}
  m.listIndex(value,index,loc);i:=int(number(index,loc));if s,ok:=value.(string);ok{bytes:=[]byte(s);bytes[i]=replacement.(uint8);if !utf8.Valid(bytes){m.perform("exn",[]any{"String update produces invalid UTF-8"},loc,true);fail(loc,"Non-returning effect returned")};return string(bytes)}
  result:=list(value,loc);if !reuse{result=append([]any{},result...)};result[i]=replacement;return result
 }
@@ -114,7 +116,7 @@ func(m *Machine) walkUnresolved(value any,visit func(any),loc string) {
  }
 }
 
-type UpdatePart struct {kind,name string;index any;cached any;hasCached bool;get func(*Machine,any,any) any;set func(*Machine,any,any,any) any}
+type UpdatePart struct {kind,name string;optional bool;index any;cached any;hasCached bool;get func(*Machine,any,any) any;set func(*Machine,any,any,any) any}
 func(m *Machine) copyUpdate(value any,path []UpdatePart,replacement any,loc string,reuse bool) any {
  if len(path)==0{return replacement};p:=path[0]
  if p.kind=="field" {
@@ -125,6 +127,7 @@ func(m *Machine) copyUpdate(value any,path []UpdatePart,replacement any,loc stri
   n:=int(number(p.index,loc));old:=tupleIndex(value,n,loc);items:=append([]any(nil),value.(*Tuple).items...)
   items[n]=m.copyUpdate(old,path[1:],replacement,loc,false);return &Tuple{items}
  }
+ if len(path)==1{return p.set(m,value,p.index,replacement)}
  old:=p.cached;if !p.hasCached{old=p.get(m,value,p.index)};updated:=m.copyUpdate(old,path[1:],replacement,loc,false);return p.set(m,value,p.index,updated)
 }
 
@@ -177,4 +180,33 @@ func(c *zipCursor) next(m *Machine) (any,bool) {
 func(m *Machine) walkZip(left,right func(*Machine,func(any)),visit func(any),loc string){
  a:=newZipCursor(m,left,loc);defer a.close();b:=newZipCursor(m,right,loc);defer b.close()
  for{x,ok:=a.next(m);if !ok{return};y,ok:=b.next(m);if !ok{return};visit(&Tuple{[]any{x,y}})}
+}
+
+// Conditional path updates evaluate replacement commands only at a selected leaf.
+func(m *Machine) modifyUpdate(value any,path []UpdatePart,replace func(any) any,defaulting bool,loc string) any {
+ if len(path)==0{return replace(value)};p:=path[0];last:=len(path)==1
+ if p.kind=="field"{r:=value.(*Record);old:=recordField(value,p.name,loc);if defaulting&&last{return value};updated:=m.modifyUpdate(old,path[1:],replace,defaulting,loc);fields:=map[string]any{};for k,v:=range r.fields{fields[k]=v};fields[p.name]=updated;return &Record{fields}}
+ if p.kind=="tuple"{n:=int(number(p.index,loc));old:=tupleIndex(value,n,loc);if defaulting&&last{return value};items:=append([]any{},value.(*Tuple).items...);items[n]=m.modifyUpdate(old,path[1:],replace,defaulting,loc);return &Tuple{items}}
+ var old any;found:=true
+ if p.optional||defaulting&&last{
+  result:=m.handle(func(child *Machine) []any{return []any{true,p.get(child,value,p.index)}},map[string]EffectHandler{"exn":func(_ []any,_ *Continuation) []any{return []any{false,nil}}},loc)
+  found=result[0].(bool);old=result[1]
+  if !found&&p.optional||found&&defaulting&&last{return value}
+ }else{old=p.get(m,value,p.index)}
+ updated:=m.modifyUpdate(old,path[1:],replace,defaulting,loc);return p.set(m,value,p.index,updated)
+}
+func(m *Machine) partitionCount(value any,name,loc string) int64 {
+ n,ok:=value.(int64);if !ok||n<=0{m.perform("exn",[]any{name+": size must be a positive integer"},loc,true);fail(loc,"Non-returning effect returned")};return n
+}
+func(m *Machine) partitionItems(walk func(*Machine,func(any)),key func(any)any,count int64,mode string,visit func(any),loc string){
+ pending:=[]any{};var last any;hasKey:=false
+ emit:=func(items []any){snapshot:=append([]any{},items...);if mode=="chunkBy"{visit(&Stream{func(m *Machine,v func(any)){for _,x:=range snapshot{v(x)}}})}else{visit(snapshot)}}
+ walk(m,func(item any){
+  if mode=="chunkBy"{k:=key(item);if hasKey&&!equal(last,k){emit(pending);pending=[]any{}};pending=append(pending,item);last=k;hasKey=true
+  }else{pending=append(pending,item);if int64(len(pending))==count{emit(pending);if mode=="windows"{pending=append([]any{},pending[1:]...)}else{pending=[]any{}}}}
+ })
+ if len(pending)>0&&mode!="windows"{emit(pending)}
+}
+func(m *Machine) groupItems(walk func(*Machine,func(any)),key func(any)any,result *Dict){
+ walk(m,func(item any){k:=key(item);i:=result.find(k);if i<0{result.entries=append(result.entries,[2]any{k,[]any{item}})}else{result.entries[i][1]=append(result.entries[i][1].([]any),item)}})
 }

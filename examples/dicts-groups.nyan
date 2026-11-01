@@ -1,0 +1,12 @@
+-- Nyanco 0.38 prefix
+main =
+    print (toVector (windows [0, 1, 2, 3] 3))
+    print (toVector (chunks [0, 1, 2, 3] 3))
+    print (toVector (map (chunkBy [1, 2, -1, -2, 3] {>= 0}) {toVector}))
+    print (groupBy [0, 1, 2, 3] {% 2})
+    [0: "a", 1: "b"] -> d
+    print d.[0]
+    print d.?[9]
+    print (d with {.[2] ??= "c"})
+    print (d with {.?[9] ! ++ "!"})
+    print ([10, 20] with {.?[1] ! + 2; .?[9] ! + 100})

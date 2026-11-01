@@ -2,7 +2,7 @@ import {createInterface} from 'node:readline';
 
 const colors={comment:90,string:32,escape:36,number:33,keyword:35,type:36,constructor:36,stack:95,operator:93,label:94};
 const keywords=new Set('data class instance effect type where case otherwise handle mask mut with end'.split(' '));
-const types=new Set('int float byte char string bool vector stream range option result'.split(' '));
+const types=new Set('int float byte char string bool vector stream range option result dict'.split(' '));
 const paint=(kind,text)=>`\x1b[${colors[kind]}m${text}\x1b[0m`;
 
 // Tolerant of unfinished input; always preserve the original text exactly.
@@ -18,7 +18,7 @@ export function highlight(source) {
       if(char){out+=paint('string',char[0]);i+=char[0].length;continue;}
       if(c==='"'){out+=string();continue;}
       if(c==='{'){out+=paint('operator',c);i++;out+=code(true);continue;}
-      const match=rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\$+\d*|_+\d*(?![a-zA-Z0-9_'])|'[a-z][a-zA-Z0-9_']*|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[a-zA-Z_][a-zA-Z0-9_']*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\.\.=|\.\.|=>|->|<-|::|==|\/=|<=|>=|\+\+|\?\?|&&|\|\||[~?:|!+*/%\^<>=-])/);
+      const match=rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\$+\d*|_+\d*(?![a-zA-Z0-9_'])|'[a-z][a-zA-Z0-9_']*|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[a-zA-Z_][a-zA-Z0-9_']*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\.\.=|\.\.|=>|->|<-|::|==|\/=|<=|>=|\+\+|\?\?=|\?\?|&&|\|\||[~?:|!+*/%\^<>=-])/);
       if(!match){out+=c;i++;continue;}
       const text=match[0];i+=text.length;
       const kind=keywords.has(text)?'keyword':types.has(text)||text.startsWith("'")?'type':/^[A-Z]/.test(text)?'constructor':/^\d/.test(text)?'number':/^[_$~]/.test(text)&&/^[_$~]+\d*$/.test(text)?'stack':text.startsWith('@')?'label':/^[a-zA-Z_]/.test(text)?null:'operator';

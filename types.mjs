@@ -84,6 +84,7 @@ function requireAssociated(c,container,items,token) {
     if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${c.name} ${formatType(container)}`,token);
     container.associated??=new Map();container.associated.set(c.name,items);return;
   }
+  if(c.indexClass&&container.tag==='adt'&&container.name==='dict'){unify(items[0],container.args[0],token);unify(items[1],container.args[1],token);return;}
   if(c.indexClass&&(container.tag==='list'||container.tag==='atom'&&container.name==='string')){
     unify(items[0],INT,token);unify(items[1],container.tag==='list'?container.item:BYTE,token);return;
   }
@@ -609,6 +610,14 @@ function builtinSchemes() {
   {const s=row();out.set('parseNum',generalize(quote(push(s,STRING),push(s,FLOAT),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),latent=variable('effect-row');requireIterable(c,STRING,null,latent);
     out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));}
+  for(const name of ['windows','chunks','chunkBy','groupBy']){
+    const s=row(),source=variable(),item=variable(),key=variable(),latent=variable('effect-row'),callback=variable('effect-row');requireIterable(source,item,null,latent);
+    const keyed=['chunkBy','groupBy'].includes(name),arg=keyed?quote(push(EMPTY,item),push(EMPTY,key),callback):INT;
+    const result=name==='groupBy'?adt('dict',[key,list(item)]):{tag:'stream',item:name==='chunkBy'?{tag:'stream',item,effects:effects()}:list(item),effects:effects([],[{row:latent},...(keyed?[{row:callback}]:[])])};
+    if(name!=='groupBy')result.effects=effects([],[{row:result.effects,exclude:['cancel','break'],loop:true,breakOutput:EMPTY}]);
+    const output=push(s,result),performed=name==='groupBy'?effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output},{row:callback,exclude:['cancel','break'],loop:true,breakOutput:output}]):keyed?effects():effects([{name:'exn',args:[]}]);
+    out.set(name,generalize(quote(stack(s,source,arg),output,performed)));
+  }
   for(const name of ['zip','vzip']){const s=row(),left=variable(),right=variable(),a=variable(),b=variable(),le=variable('effect-row'),re=variable('effect-row');requireIterable(left,a,null,le);requireIterable(right,b,null,re);const traversal=effects([],[{row:effects([],[{row:le},{row:re}]),exclude:['cancel','break'],loop:true,breakOutput:name==='zip'?EMPTY:push(s,list(tuple([a,b])))}]);const result=name==='zip'?{tag:'stream',item:tuple([a,b]),effects:traversal}:list(tuple([a,b]));out.set(name,generalize(quote(stack(s,left,right),push(s,result),name==='zip'?effects():traversal)));}
   add('show',()=>{const s=row(),a=variable();return quote(push(s,a),push(s,STRING));});
   add('swap',()=>{const s=row(),a=variable(),b=variable();return quote(stack(s,a,b),stack(s,b,a));});
@@ -893,6 +902,7 @@ class Inference {
         let result=prune(this.sequence(node.body,EMPTY,new Map(env),bound));const items=[];
         while(result.tag==='push'){items.unshift(result.item);result=prune(result.rest);}
         if(isBottom(result))current=BOTTOM;else {unify(result,EMPTY,node);current=push(current,tuple(items));}
+      } else if(node.kind==='dict'){const key=variable(),value=variable();for(let j=0;j<node.fields.length;j+=2){unify(key,this.single(node.fields[j].body,env,bound,node),node);unify(value,this.single(node.fields[j+1].body,env,bound,node),node);}current=push(current,adt('dict',[key,value]));
       } else if(node.kind==='path-update') {
         let original;[current,original]=this.pop(current,node);
         const args=node.fields.slice(0,-1).map(f=>this.single(f.body,env,bound,node));
@@ -917,7 +927,7 @@ class Inference {
             unify(get,quote(stack(EMPTY,type,args[part.argument]),push(EMPTY,item)),node);
             const result=replace(item,depth+1);if(isBottom(result))return BOTTOM;
             unify(set,quote(stack(EMPTY,type,args[part.argument],result),push(EMPTY,type)),node);
-            this.effectSink.dependencies.push({row:get.effects},{row:set.effects});
+            this.effectSink.dependencies.push({row:get.effects,...(part.optional||node.defaulting?{exclude:['exn']}:{})},{row:set.effects});
             if(trace){trace.indexPaths??=[];trace.indexPaths[depth]={get,set};}return type;
           };
           const result=replace(original,0);current=isBottom(result)?BOTTOM:push(current,result);
@@ -976,7 +986,7 @@ class Inference {
       else if(this.functions.has(node.value)) {
         if(['maxi','mini','maxiBy','miniBy','nth'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
         if(node.value==='toNum' && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('toNum requires data option a = None | Some a',node);
-        if((['each','vmap','vfilter','fold','sortBy','maxiBy','miniBy','all','any','while','when'].includes(node.value)||transforms.has(node.value))) {
+        if((['each','vmap','vfilter','fold','sortBy','maxiBy','miniBy','all','any','while','when','chunkBy','groupBy'].includes(node.value)||transforms.has(node.value))) {
           const adapt=(type)=>{type=prune(type);if(type.tag!=='quote'||!isBottom(type.output))return type;
             return {...type,output:row(),originalNever:true};
           };
@@ -1027,6 +1037,12 @@ class Inference {
     }
     if(value?.kind==='effect-label')return atom('effect-label');
     if(value?.kind==='stream') {
+      if(value.mode==='snapshot'){const item=variable();for(const v of value.items)unify(item,this.value(v,token),token);return {tag:'stream',item,effects:effects()};}
+      if(value.mode==='partition'){
+        const item=variable(),latent=variable('effect-row'),deps=[{row:latent}];requireIterable(this.value(value.source,token),item,token,latent);
+        if(value.operation==='chunkBy'){const key=variable(),block=this.value(value.block,token);unify(block,quote(push(EMPTY,item),push(EMPTY,key)),token);deps.push({row:block.effects});}
+        return {tag:'stream',item:value.operation==='chunkBy'?{tag:'stream',item,effects:effects()}:list(item),effects:effects([],[{row:effects([],deps),exclude:['cancel','break'],loop:true,breakOutput:EMPTY,label:value.label?.key}])};
+      }
       if(value.mode==='zip'){const a=variable(),b=variable(),le=variable('effect-row'),re=variable('effect-row');requireIterable(this.value(value.left,token),a,token,le);requireIterable(this.value(value.right,token),b,token,re);return {tag:'stream',item:tuple([a,b]),effects:effects([],[{row:effects([],[{row:le},{row:re}]),exclude:['break','cancel'],breakOutput:EMPTY,loop:true,label:value.label?.key}])};}
       if(value.mode==='combinatorial'){
         const a=variable(),latent=variable('effect-row'),deps=[{row:latent}];requireIterable(this.value(value.source,token),a,token,latent);let item=list(a);
@@ -1043,6 +1059,7 @@ class Inference {
     }
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
+    if(value?.kind==='dict'){const key=variable(),item=variable();for(const [k,v] of value.entries){unify(key,this.value(k,token),token);unify(item,this.value(v,token),token);}return adt('dict',[key,item]);}
     if(value?.kind==='record')return record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)]));
     if(value?.kind==='scalar')return atom(value.type);
     if(typeof value==='number') return INT;
@@ -1193,7 +1210,7 @@ function dependencies(clauses,definitions,globals) {
         if(captured.has(n.value))valueDependencies(captured.get(n.value));
         else if(definitions.has(n.value))result.add(n.value);
       }
-      else if(['record','path-update'].includes(n.kind))n.fields.forEach(f=>walk(f.body,new Set(locals),captured));
+      else if(['record','dict','path-update'].includes(n.kind))n.fields.forEach(f=>walk(f.body,new Set(locals),captured));
       else if(n.body)walk(n.body,new Set(locals),captured);
       else if(n.kind==='binary'){walk(n.left,new Set(locals),captured);walk(n.right,new Set(locals),captured);}
       else if(n.kind==='comparison-chain')n.operands.forEach(operand=>walk(operand,new Set(locals),captured));

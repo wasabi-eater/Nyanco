@@ -14,11 +14,11 @@ export const standardOperatorClasses=new Map([
   ['eq',['==','/=']],['ord',['<','<=','>','>=']],['and',['.&.']],['or',['.|.']],['xor',['xor']],['shl',['.<<.']],['shr',['.>>.']],['append',['++']],
 ]);
 export const operatorFallback=(c,t)=>c.operatorClass && [...c.methods.keys()].filter(op=>operatorSpecs.has(op)).every(op=>operatorSpecs.get(op).accept(t));
-export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='range'?'range':v?.kind==='scalar'?v.type:typeof v==='number'?'int':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
+export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='dict'?'dict':v?.kind==='range'?'range':v?.kind==='scalar'?v.type:typeof v==='number'?'int':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
 export function builtinInstance(c,t) {
   if(!c)return false;
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
-  return !!(c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
+  return !!(c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
 }
 export function primitiveOperatorClass(name,ops,token) {
   const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a ${operatorSpecs.get(op).right||"'a"} -> ${operatorSpecs.get(op).result}${operatorSpecs.get(op).exn?' / {exn}':''}`,token,inputCount:2,dispatchIndex:0,...(op==='xor'?{specialBits:true}:{})}]));

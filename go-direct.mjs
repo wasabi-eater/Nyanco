@@ -27,6 +27,10 @@ function effectParts(effect) {
   effect=T.prune(effect);
   // A row-valued effect observes the whole input prefix, even on a bottom path.
   if(T.effectSnapshot(effect.effects).entries.some(e=>e.args.some(a=>{a=T.prune(a);return a.sort==='row'||['push','empty','concat-row'].includes(a.tag);})))return {input:items(effect.input),output:items(effect.output)};
+  if(effect.originalNever&&effect.bottomBase){
+    const base=T.prune(effect.bottomBase),suffix=type=>{const result=[];type=T.prune(type);while(type!==base&&type.tag==='push'){result.unshift(type.item);type=T.prune(type.rest);}return type===base?result:null;};
+    const input=suffix(effect.input),output=suffix(effect.output);if(input&&output)return {input,output};
+  }
   if(T.isBottom(effect.output) && effect.bottomBase && !T.prune(effect.bottomBase).keepNativePrefix){const input=[];let t=T.prune(effect.input),base=T.prune(effect.bottomBase);while(t!==base && t.tag==='push'){input.unshift(t.item);t=T.prune(t.rest);}if(t===base)return {input,output:neverValues()};}
   if(T.isBottom(effect.input)||T.isBottom(effect.output))return {input:items(effect.input),output:items(effect.output)};
   const chain=row=>{const out=[];row=T.prune(row);while(true){out.push(row);if(row.tag!=='push')break;row=T.prune(row.rest);}return out;};
@@ -51,7 +55,7 @@ function freshTypes(input,output,latent) {
     let result=type;
     if(['quote','continuation'].includes(type.tag)) {
       const parts=effectParts(type),tail=T.row();
-      result={...T.quote(parts.input.never?T.BOTTOM:T.stack(tail,...parts.input.map(portable)),parts.output.never?T.BOTTOM:T.stack(tail,...parts.output.map(portable))),tag:type.tag,...(latent?{effects:T.effectSnapshot(type.effects)}:{}),...(type.originalNever?{originalNever:true}:{})};
+      result={...T.quote(parts.input.never?T.BOTTOM:T.stack(tail,...parts.input.map(portable)),parts.output.never?T.BOTTOM:T.stack(tail,...parts.output.map(portable))),tag:type.tag,...(latent?{effects:T.effectSnapshot(type.effects)}:{}),...(type.originalNever?{originalNever:true,bottomBase:tail}:{})};
     } else if(type.tag==='stream')result={...type,item:portable(type.item)};
     else if(type.tag==='list')result={...type,item:portable(type.item)};
     else if(['tuple','tuple-tail'].includes(type.tag))result={...type,items:type.items.map(portable),tail:portable(type.tail)};
@@ -202,11 +206,19 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const fields=n.fields.map(f=>`${str(f.name)}:${child(f.body,[],bindings)[0]}`);
         values.push(ctx.value(`&Record{map[string]any{${fields.join(',')}}}`));
       }
+      else if(n.kind==='dict'){const pairs=[];for(let j=0;j<n.fields.length;j+=2){const k=child(n.fields[j].body,[],holes)[0],v=child(n.fields[j+1].body,[],holes)[0];pairs.push(`[2]any{${k},${v}}`);}values.push(ctx.value(`makeDict([][2]any{${pairs.join(',')}})`));}
       else if(n.kind==='tuple')values.push(ctx.value(`&Tuple{[]any{${child(n.body,[],holes).join(',')}}}`));
       else if(n.kind==='path-update') {
         const original=values.pop(),args=n.fields.slice(0,-1).map(f=>child(f.body,[],holes)[0]);
-        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:(()=>{const methods=info.indexPaths[n.path.indexOf(p)],g=context(),set=context(),read=indexCall('at',['v','i'],methods.get,g,at),write=indexCall('setAt',['v','i','x'],methods.set,set,at,n.path.indexOf(p)===0&&vectorReuse.has(n));return `UpdatePart{kind:"list",index:${args[p.argument]},get:func(m *Machine,v,i any) any{${g.lines.join(';')};return ${read}},set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}}`;})());
+        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:(()=>{const methods=info.indexPaths[n.path.indexOf(p)],g=context(),set=context(),read=indexCall('at',['v','i'],methods.get,g,at),write=indexCall('setAt',['v','i','x'],methods.set,set,at,n.path.indexOf(p)===0&&vectorReuse.has(n));return `UpdatePart{kind:"list",optional:${!!p.optional},index:${args[p.argument]},get:func(m *Machine,v,i any) any{${g.lines.join(';')};return ${read}},set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}}`;})());
         const pathValue=`path${next++}`;ctx.lines.push(`${pathValue}:=[]UpdatePart{${path}}`);
+        if(n.defaulting||n.path.some(p=>p.optional)){
+          const inner=context(),e=`e${next++}`;inner.lines.push(`${e}:=${env}.clone();_=${e}`);
+          const replacement=emit(n.fields.at(-1).body,n.updating?['old']:[],e,n.updating?new Map():holes,trace,inner);
+          if(replacement.never)inner.lines.push('return nil');else inner.lines.push(`return ${replacement[0]}`);
+          values.push(ctx.value(`m.modifyUpdate(${original},${pathValue},func(old any) any{${inner.lines.join(';')}},${!!n.defaulting},${at})`));
+          continue;
+        }
         const old=n.updating?ctx.value(`m.readUpdatePath(${original},${pathValue},${at})`):null;
         const replacement=child(n.fields.at(-1).body,n.updating?[old]:[],n.updating?new Map():holes)[0];
         values.push(ctx.value(`m.copyUpdate(${original},${pathValue},${replacement},${at},${vectorReuse.has(n)})`));
@@ -350,7 +362,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   }
   function indexCall(name,args,effect,ctx,at,reuse=false){
     const inputs=items(T.prune(effect).input),type=T.prune(effect.dispatchType||inputs.at(name==='at'?-2:-3));
-    const target=definitions.classes.get(name==='at'?'indexGet':'indexSet').instances.get(instanceKey(type))?.implementations.get(name);
+    const target=definitions.classes.get(name==='at'?'indexGet':'indexSet')?.instances.get(instanceKey(type))?.implementations.get(name);
     if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,args,1)[0];}
     return ctx.value(name==='at'?`m.listIndex(${args},${at})`:`m.indexSetOwned(${args},${at},${reuse})`);
   }
@@ -364,6 +376,15 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const name=n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
     const call=(q,t,values=v)=>invoke(ctx,q,values,T.prune(t),at);
     const returnedBreak=(result)=>{ctx.lines.push(`_=${result}`);if(v.length)ctx.lines.push(`if ${result}!=nil{${v}=${v.map((_,i)=>`${result}[${i}]`)}}`);};
+    if(['windows','chunks','chunkBy','groupBy'].includes(name)){
+      const arg=pop(),source=pop(),walk=walker(ctx,source,topTypes.at(-2),at),keyed=['chunkBy','groupBy'].includes(name),inner=context();
+      let key='nil',count='int64(0)';
+      if(keyed){const vs=['item'];invoke(inner,arg,vs,T.prune(topTypes.at(-1)),at);inner.lines.push(T.prune(topTypes.at(-1)).originalNever?'panic("Non-returning callback returned")':`return ${vs[0]}`);key=`func(item any)any{${inner.lines.join(';')}}`;}
+      else count=ctx.value(`m.partitionCount(${arg},${str(name)},${at})`)+'.(int64)';
+      if(name==='groupBy'){const result=ctx.value('&Dict{}'),br=`breakResult${next++}`;ctx.lines.push(`${br}:=m.loop(func(m *Machine){m.groupItems(${walk},${key},${result}.(*Dict))},${at},${label})`);v.push(result);returnedBreak(br);}
+      else v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.loop(func(m *Machine){m.partitionItems(${walk},${key},${count},${str(name)},visit,${at})},${at},${label})}}`));
+      return;
+    }
     if(name==='nth'){
       const index=pop(),source=pop(),walk=walker(ctx,source,topTypes.at(-2),at),result=ctx.value('optionValue(nil,false)'),count=`remaining${next++}`,br=`breakResult${next++}`;
       ctx.lines.push(`${count}:=${index}.(int64);var ${br} []any;if ${count}>=0{iterationBoundary(func(stop func()){${br}=m.loop(func(m *Machine){${walk}(m,func(item any){if ${count}==0{${result}=optionValue(item,true);stop()};${count}--})},${at},${label})})}`);v.push(result);returnedBreak(br);return;
