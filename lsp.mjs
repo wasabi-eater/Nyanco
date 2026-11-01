@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {pathToFileURL} from 'node:url';
 import {compile, lex, builtinNames, parseExpression} from './language.mjs';
-import {inferExpression} from './types.mjs';
+import {inferExpression,occurrenceTypes} from './types.mjs';
 import {patternNames} from './type-syntax.mjs';
 
 const keywords=['case','otherwise','data','class','instance','where','effect','mut','with','handle','mask'];
@@ -32,6 +32,10 @@ export class LanguageService {
       const token=error.token||{line:1,col:1,value:''};
       doc.diagnostics=[{range:range(token),severity:1,source:'nyanco',message:error.message}];
       try{doc.program=compile(text,uri,new Map(),{checkTypes:false});}catch{}
+    }
+    doc.occurrences=new Map();
+    if(doc.program&&!doc.diagnostics.some(d=>d.severity===1)){
+      try{doc.occurrences=occurrenceTypes(doc.program.definitions,uri);}catch{}
     }
     const definitions=doc.program?.definitions;
     if(definitions)for(const [name,clauses] of definitions){
@@ -82,7 +86,10 @@ export class LanguageService {
     }
     if(method==='textDocument/hover'){
       const type=this.type(doc,token.value);
-      return type?{contents:{kind:'markdown',value:'```nyanco\n'+token.value+' : '+type+'\n```'},range:range(token)}:null;
+      const declaration=doc.symbols.some(s=>s.name===token.value&&s.selectionRange.start.line===token.line-1&&s.selectionRange.start.character===token.col-1);
+      const actual=doc.occurrences.get(`${token.line}:${token.col}`)||(declaration?type:null);
+      const block=t=>'```nyanco\n'+token.value+' : '+t+'\n```';
+      return type?{contents:{kind:'markdown',value:'定義時の型\n\n'+block(type)+(actual?'\n\nこの項の型\n\n'+block(actual):'')},range:range(token)}:null;
     }
     return null;
   }

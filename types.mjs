@@ -1486,6 +1486,29 @@ export function loweringTypes(definitions) {
     return {output,effects:type?type.effects:inference.effectSink,trace:inference.trace,env};
   }
   const execution=executionTypes(base,definitions);
-  return {validate:execution.validate,globals:base.globals,functions:base.functions,analyze,pattern:(p,t,e)=>base.pattern(p,t,e)};
+  return {clause:execution.clause,trace:execution.trace,validate:execution.validate,globals:base.globals,functions:base.functions,analyze,pattern:(p,t,e)=>base.pattern(p,t,e)};
+}
+
+// Source-positioned instantiated function types for editor hovers. Reuse the
+// checked clause analysis so surrounding arguments and results constrain calls.
+export function occurrenceTypes(definitions,file) {
+  const info=loweringTypes(definitions),result=new Map();
+  const collect=trace=>{
+    for(const [node,t] of trace){
+      const save=(token,effect)=>{
+        if(effect&&token.file===file)result.set(`${token.line}:${token.col}`,formatType(instantiate(generalize(effect))));
+      };
+      save(node,t.effect);
+      if(node.kind==='comparison-chain')node.operators.forEach((op,i)=>save(op,t.operatorEffects?.[i]));
+      else if(t.operatorEffects?.length)save(node,t.operatorEffects[0]);
+    }
+  };
+  collect(info.trace||new Map());
+  for(const [name,clauses] of definitions){
+    if(!clauses.some(c=>c.token?.file===file))continue;
+    const scheme=info.functions.get(name);if(!scheme)continue;
+    for(const c of clauses)if(c.token?.file===file)collect(info.clause(c,instantiate(scheme)));
+  }
+  return result;
 }
 export const typeIR={integerLiteralInfo,castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};

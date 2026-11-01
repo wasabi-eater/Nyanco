@@ -4,6 +4,21 @@ import {spawn} from 'node:child_process';
 import {LanguageService,applyChanges} from '../lsp.mjs';
 
 const uri='file:///example.nyan';
+test('hover shows polymorphic definitions and separately instantiated occurrences',()=>{
+  const service=new LanguageService();
+  const source="square x = x * x\ninteger : -> int\ninteger = square 4\ndecimal : -> float\ndecimal = square 1.5";
+  const doc=service.update(uri,source,1);assert.deepEqual(doc.diagnostics,[]);
+  const hover=line=>service.request('textDocument/hover',{textDocument:{uri},position:{line,character:12}}).contents.value;
+  const integer=hover(2),decimal=hover(4);
+  for(const text of [integer,decimal]){assert.match(text,/定義時の型/);assert.match(text,/mul 'a/);assert.match(text,/この項の型/);}
+  assert.match(integer.split('この項の型')[1],/int -> .*int/);
+  assert.doesNotMatch(integer.split('この項の型')[1],/mul|float/);
+  assert.match(decimal.split('この項の型')[1],/float -> .*float/);
+  assert.doesNotMatch(decimal.split('この項の型')[1],/mul|int/);
+  assert.match(service.request('textDocument/hover',{textDocument:{uri},position:{line:0,character:1}}).contents.value,/mul 'a/);
+  service.update(uri,source.replace('integer : -> int','integer : -> float'),2);
+  assert.match(hover(2).split('この項の型')[1],/float/);
+});
 test('LSP checks without executing, provides inferred types and source definitions',()=>{
   const service=new LanguageService();
   const doc=service.update(uri,'square x = x * x\nmain = print (square 4)',1);
