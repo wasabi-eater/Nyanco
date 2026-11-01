@@ -472,12 +472,12 @@ function generalizeNumbers(scheme,token){
  }
  return scheme;
 }
-function instantiate(scheme, rigid = false, bindings = null) {
+function instantiate(scheme, rigid = false, bindings = null, preserveWeak = true) {
   const top=prune(scheme.type),fixedRows=new Set(top.tag==='quote'?[stackTail(top.input),stackTail(top.output)]:[]);
   const vars=new Set([...scheme.vars].map(prune).filter(v=>v.tag==='var'));
   const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.polymorphicNumber?{polymorphicNumber:true}:{}),...(v.numericPattern?{numericPattern:true}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
-  replacements.preserveWeak=true;
+  replacements.preserveWeak=preserveWeak;
   if(bindings)for(const [v,fresh] of replacements)bindings.set(v,fresh);
   return clone(scheme.type,replacements);
 }
@@ -487,8 +487,8 @@ function envFree(env) {
   return result;
 }
 
-export function formatType(type,{names=null,variableNames=new Map(),showConstraints=true}={}) {
-  for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&v.tag==='var')unify(v,INT);
+export function formatType(type,{names=null,variableNames=new Map(),showConstraints=true,defaultNumbers=true}={}) {
+  if(defaultNumbers)for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&v.tag==='var')unify(v,INT);
   // An open callback row may include break, while every use of that row is
   // beneath a loop's handler. Expose that accepted operation in the signature
   // without injecting a performed effect into the callback's inference graph.
@@ -1422,6 +1422,7 @@ function executionTypes(base,definitions) {
     env.locals=new Set(patternNames(c.patterns));c.patterns.forEach((p,i)=>inf.pattern(p,args[i],env));
     if(c.guard){input=inf.sequence(c.guard,input,new Map(env));let flag;[input,flag]=inf.pop(input,c.token);unify(flag,BOOL,c.token);}
     const output=inf.sequence(c.body,input,env);unify(output,effect.output,c.token);specializeEffects(inf.effectSink,effect.effects,c.token);
+    inf.trace.enclosingType=effect;
     if(!clauses.has(c))clauses.set(c,new Map());clauses.get(c).set(key,inf.trace);
     return inf.trace;
   }
@@ -1496,11 +1497,16 @@ export function occurrenceTypes(definitions,file) {
   const info=loweringTypes(definitions),result=new Map();
   result.substitutions=new Map();
   const collect=trace=>{
+    const escaping=trace.enclosingType?free(trace.enclosingType,new Set(),new Set(),true):new Set();
+    // Default only literals local to the body; inputs/outputs of the enclosing
+    // polymorphic function must stay polymorphic in occurrence displays.
+    for(const t of trace.values())for(const effect of [t.effect,...t.operatorEffects||[]])if(effect)
+      for(const v of free(effect))if(v.numericLiterals&&!v.polymorphicNumber&&!escaping.has(v))unify(v,INT);
     for(const [node,t] of trace){
       const save=(token,effect)=>{
         if(effect&&token.file===file){
-          const key=`${token.line}:${token.col}`,actual=instantiate(generalize(effect));
-          const actualNames=new Map();result.set(key,formatType(actual,{names:actualNames}));
+          const key=`${token.line}:${token.col}`,actual=instantiate(generalize(effect),false,null,false);
+          const actualNames=new Map();result.set(key,formatType(actual,{names:actualNames,defaultNumbers:false}));
           const scheme=info.functions.get(token.value);
           if(scheme){
             const originalNames=new Map(),bindings=new Map();
@@ -1511,7 +1517,7 @@ export function occurrenceTypes(definitions,file) {
               const substitutions=[];
               for(const [variable,name] of originalNames){
                 const replacement=bindings.get(variable);if(!replacement)continue;
-                const type=formatType(prune(replacement),{variableNames:actualNames,showConstraints:false});
+                const type=formatType(prune(replacement),{variableNames:actualNames,showConstraints:false,defaultNumbers:false});
                 if(type!==name)substitutions.push({variable:name,type});
               }
               result.substitutions.set(key,substitutions);

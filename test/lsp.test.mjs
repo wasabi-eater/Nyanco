@@ -4,6 +4,18 @@ import {spawn} from 'node:child_process';
 import {LanguageService,applyChanges} from '../lsp.mjs';
 
 const uri='file:///example.nyan';
+test('hover preserves annotated numeric parameters inside a function while specializing calls',()=>{
+  const service=new LanguageService();
+  const source="abs : num 'a, ord 'a => 'a -> 'a\nabs = when ($ < 0) {0 -}\nmain =\n    print -5.3 abs";
+  const doc=service.update(uri,source,1);assert.deepEqual(doc.diagnostics,[]);
+  const hover=(line,character)=>service.request('textDocument/hover',{textDocument:{uri},position:{line,character}}).contents.value;
+  const body=hover(1,7).split('この項の型')[1];
+  assert.match(body,/num 'a, ord 'a/);assert.match(body,/\.\.s 'a bool/);assert.doesNotMatch(body,/\bint\b/);
+  assert.match(hover(3,16).split('この項の型')[1],/float -> .*float/);
+  assert.doesNotMatch(hover(0,1),/\bint\b/);
+  service.update(uri,'main = print 1',2);
+  assert.match(hover(0,8).split('この項の型')[1],/int ->/);
+});
 test('hover shows polymorphic definitions and separately instantiated occurrences',()=>{
   const service=new LanguageService();
   const source="square x = x * x\ninteger : -> int\ninteger = square 4\ndecimal : -> float\ndecimal = square 1.5";
