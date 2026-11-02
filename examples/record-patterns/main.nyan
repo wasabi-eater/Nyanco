@@ -1,0 +1,8 @@
+speak {name: ~} = print
+introduce {:name, :age} = print name; print age
+main =
+    "Nyanco" -> name
+    3 -> age
+    {:name, :age} -> person
+    speak person
+    introduce (person with age ! + 1)

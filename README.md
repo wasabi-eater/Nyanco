@@ -1,4 +1,4 @@
-# Nyanco 0.76 — ディレクトリ単位のmodule
+# Nyanco 0.77 — recordパターンとフィールド省略形
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1573,3 +1573,38 @@ node cli.mjs examples/modules --build native/modules.exe
 ```
 
 従来の`examples`直下は独立したサンプルを同じディレクトリに置いているため、個別実行には`--single-file`を指定してください。通常のプロジェクトはディレクトリごとにmoduleを分けてください。プログラムからは`modules.mjs`の`compileModule(path)`で読み込めます。既存の`compile(source)`はインメモリの単一ソース用です。
+
+
+## recordのパターンとフィールド省略形（0.77）
+
+recordのパターンは指定したフィールドだけを要求します。余分なフィールドがあってもマッチするrow polymorphismです。関数・ローカル関数・guard・case・`->`による束縛で使えます。
+
+```nyanco
+speak {name: ~} = print
+-- speak = .name; print と同じ型・挙動
+speak {name: "Nyanco", age: 3}
+
+getName {name: value} = value
+nested {user: Some({name: ~})} = print
+
+{name: "Nyanco", age: 3} -> {name: n, age: years}
+```
+
+`~`で取り出した値は、フィールドを記述した順にスタックへ積みます。`_`は値を捨てます。必要なフィールドがない値やrecord以外の値は型エラーです。`{:}`パターンは任意のrecordにマッチします。
+
+`{:name, :age}`は`{name: name, age: age}`の省略形で、式とパターンの両方で使えます。
+
+```nyanco
+"Nyanco" -> name
+3 -> age
+{:name, :age} -- {name: "Nyanco", age: 3}
+
+introduce {:name, :age} = print name; print age
+-- introduce {name: name, age: age} = ... と同じ
+
+{:name, years: age} -- 省略形と通常のフィールド指定を混在可能
+```
+
+フィールドはコンマで区切ります。入れ子・末尾コンマ・複数行にも対応し、同じフィールド名の重複は拒否します。module内の非公開名やローカル変数を省略形で使っても、recordのフィールド名は変わりません。
+
+実行例: `node cli.mjs examples/record-patterns`。

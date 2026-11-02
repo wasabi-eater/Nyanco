@@ -96,6 +96,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     return ctx;
   }
   function pattern(p) {
+    if(p.kind==='record-pattern')return `recordPattern([]string{${p.keys.map(str).join(',')}}${p.fields.length?','+p.fields.map(pattern).join(','):''})`;
     if(p.kind==='tuple-pattern')return `tuplePattern(${p.fields.map(pattern).join(',')})`;
     if(p.kind==='literal')return `literalPattern(${lit(p.value,p.numericKind==='float'?'float':'int',p.numberSource)})`;
     if(p.kind==='word')return `${p.mutable?"mutablePattern":"variablePattern"}(${str(p.value)})`;

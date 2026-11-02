@@ -2,7 +2,7 @@ import {readFileSync,readdirSync,realpathSync,statSync,existsSync} from 'node:fs
 import {resolve,dirname,basename,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-import {compile,lex,declarationGroups,LanguageError} from './language.mjs';
+import {compile,lex,recordShorthands,declarationGroups,LanguageError} from './language.mjs';
 
 const space=kind=>['data','type','class'].includes(kind)?'type':kind==='effect'?'both':'value';
 const identifier=/^[a-zA-Z_][a-zA-Z0-9_']*$/;
@@ -47,7 +47,7 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
     for(const file of overlays.keys()){const p=pathOf(file);if(key(dirname(p))===id&&p.endsWith('.nyan'))files.add(p);}
     if(!files.size)fail('Module has no .nyan source files: '+dir,from);
     for(const file of [...files].sort()){
-      const text=read(file),tokens=lex(text,fileName(file));sources.set(fileName(file),text);
+      const text=read(file),tokens=recordShorthands(lex(text,fileName(file)));sources.set(fileName(file),text);
       for(const t of tokens)if(t.kind==='word'&&reserved.test(t.value))fail('Reserved module identifier',t);
       const unit={file,groups:[],imports:new Map()};mod.files.push(unit);
       for(let group of declarationGroups(tokens)){
@@ -102,10 +102,11 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
     }
     if(visibility!=='private')fail('Visibility requires a function, type, class, or effect declaration',first);
     let depth=0,binding=false;
-    for(const t of group){if(!depth&&t.value==='->'){binding=true;continue;}if(!depth&&[';',','].includes(t.kind))binding=false;if(binding&&t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value))declare(mod,t,'variable');if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
+    for(const [i,t] of group.entries()){if(!depth&&t.value==='->'){binding=true;continue;}if(!depth&&[';',','].includes(t.kind))binding=false;if(binding&&group[i+1]?.value!==':'&&t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value))declare(mod,t,'variable');if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
   }
   const root=load(rootDir),tokens=[];
   function rewrite(group,mod,unit){
+    group=recordShorthands(group);
     const fields=new Set();
     // Record labels and the first component of an update path are not names.
     for(let i=0;i<group.length;i++)if(group[i+1]?.value===':'){const t=group[i],symbol=mod.symbols.get(t.value);if(i!==0&&!symbol?.declarations.some(d=>d.file===t.file&&d.line===t.line&&d.col===t.col))fields.add(t);}
@@ -139,7 +140,7 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
   }
   for(const mod of ordered)for(const unit of mod.files)for(const group of unit.groups)tokens.push(...rewrite(group,mod,unit));
   const rootUnit=root.files.find(u=>key(u.file)===key(entry))||root.files.find(u=>basename(u.file)==='main.nyan')||root.files[0];
-  const moduleTokens=(source,file='<eval>')=>rewrite(lex(source,file),root,rootUnit);
+  const moduleTokens=(source,file='<eval>')=>rewrite(recordShorthands(lex(source,file)),root,rootUnit);
   for(const mod of ordered)if(mod!==root)for(const symbol of mod.symbols.values())names.set(symbol.internal,basename(mod.dir)+'.'+symbol.name);
   for(const unit of root.files)for(const [alias,imp] of unit.imports)for(const symbol of imp.module.symbols.values())names.set(symbol.internal,symbol===moduleTypeSymbol(imp)?alias:alias+'.'+symbol.name);
   const display=text=>String(text).replace(/\b(?:nyancoModule|NyancoModule)[0-9a-f]+_[A-Za-z0-9_']+/g,n=>names.get(n)||n);

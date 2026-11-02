@@ -1120,7 +1120,11 @@ class Inference {
     throw new StaticTypeError('Unsupported host value',token);
   }
   pattern(pattern,type,env) {
-    if(pattern.kind==='tuple-pattern') {
+    if(pattern.kind==='record-pattern') {
+      const fields=pattern.fields.map(()=>variable());unify(type,record(pattern.keys.map((name,i)=>[name,fields[i]]),variable('record-row')),pattern);
+      pattern.fields.forEach((p,i)=>this.pattern(p,fields[i],env));
+    }
+    else if(pattern.kind==='tuple-pattern') {
       const items=pattern.fields.map(()=>variable());unify(type,tuple(items),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,items[i],env));
     }

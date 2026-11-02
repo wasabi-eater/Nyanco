@@ -142,7 +142,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
   function dispatch(message){
     const {id,method,params={}}=message,request=id!==undefined;
     if(method==='exit'){exit(shutdown?0:1);return;}
-    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.76.0'}});return;}
+    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.77.0'}});return;}
     if(!initialized){if(request)fail(id,-32002,'Server not initialized');return;}
     if(shutdown){if(request)fail(id,-32600,'Server has shut down');return;}
     if(method==='shutdown'){shutdown=true;reply(id,null);return;}

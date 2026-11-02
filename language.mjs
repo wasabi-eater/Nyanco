@@ -83,6 +83,22 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
   return tokens;
 }
 
+// Expand record puns before name resolution: keys stay labels, while the
+// duplicated value/pattern token follows the ordinary lexical binding rules.
+export function recordShorthands(tokens){
+ const out=[],stack=[];
+ for(let i=0;i<tokens.length;i++){
+  const t=tokens[i];
+  if(t.kind==='{')stack.push({kind:t.kind,record:tokens[i+1]?.value===':'||tokens[i+2]?.value===':'||tokens[i+3]?.value===':'&&tokens[i+2]?.kind==='word'&&tokens[i+2].value.startsWith('.')});
+  else if(['(','['].includes(t.kind))stack.push({kind:t.kind});
+  if(t.value===':'&&stack.at(-1)?.record&&['{',','].includes(tokens[i-1]?.kind)&&tokens[i+1]?.kind==='word'&&/^[a-zA-Z_][a-zA-Z0-9_']*$/.test(tokens[i+1].value)){
+   const name=tokens[++i];out.push({...name},t,{...name});continue;
+  }
+  out.push(t);if(['}',')',']'].includes(t.kind))stack.pop();
+ }
+ return out;
+}
+
 const OPERATORS = new Map([
   ['??', 0.5], ['||', 1], ['&&', 2], ['.|.', 3.2], ['.&.', 3.3], ['.<<.', 4.7], ['.>>.', 4.7], ['==', 3], ['/=', 3],
   ['<', 3], ['>', 3], ['<=', 3], ['>=', 3],
@@ -94,6 +110,7 @@ const isComparison = t => t?.kind === 'word' && ['<','<=','>','>=','==','/='].in
 
 let nextStackCapture=0;
 function parseTokens(tokens, inherited = null, constructors = new Map()) {
+  tokens=recordShorthands(tokens);
   // Layout separators belong to expression bodies, not declaration headers.
   // Keep the separator on the previous line so case/local-definition layout
   // continues to use the original token positions.
@@ -117,7 +134,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
     const done = () => i >= tokens.length || tokens[i].kind === end;
     const definitionAt=start=>{
       let depth=0;
-      for(let k=start;k<tokens.length && tokens[k].line===tokens[start]?.line;k++) {
+      for(let k=start;k<tokens.length && (depth||tokens[k].line===tokens[start]?.line||tokens[k].line===tokens[k-1]?.line);k++) {
         const t=tokens[k];
         if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->','<-','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
         if(!depth&&t.kind==='word'&&t.value==='with')return -1;
@@ -456,13 +473,13 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         const arrow=tokens[i++],parts=[],mutableNames=new Set();let depth=0;
         while(i<tokens.length && (depth || !done() && ![';',';;',','].includes(tokens[i].kind) && tokens[i].line===arrow.line)) {
           const t=tokens[i++];
-          if(t.value==='mut') {
+          if(t.value==='mut'&&tokens[i]?.value!==':') {
             const name=tokens[i];
             if(!name || name.line!==t.line || !identifier.test(name.value) || name.value==='_' || BUILTINS.has(name.value))throw new LanguageError('Expected a variable after mut',t);
             mutableNames.add(name.value);continue;
           }
-          if(['(','['].includes(t.kind))depth++;
-          if([')',']'].includes(t.kind))depth--;
+          if(['(','[','{'].includes(t.kind))depth++;
+          if([')',']','}'].includes(t.kind))depth--;
           parts.push(t);
         }
         const patterns=parsePatterns(parts,constructors),names=patternNames(patterns);
@@ -579,6 +596,7 @@ function dataDeclarations(groups, definitions, globals) {
 let nextPatternStack=0;
 function patternStack(patterns,ephemeral=false){return patterns.flatMap(p=>p.stackMatch?[{...p,kind:'word',ephemeral}]:p.fields?patternStack(p.fields,ephemeral):[]);}
 function parsePatterns(tokens, constructors,mutableParameters=false) {
+  tokens=tokens.filter(t=>!t.layout);
   let i=0;
   function atom() {
     const t=tokens[i++];
@@ -600,6 +618,19 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
       if(tokens[i++]?.kind!==')')throw new LanguageError('Missing ) in tuple pattern',t);
       return {...t,kind:'tuple-pattern',fields};
     }
+    if(t.kind==='{') {
+      const fields=[],keys=[],seen=new Set();
+      if(tokens[i]?.value===':'&&tokens[i+1]?.kind==='}')i++;
+      while(tokens[i]?.kind!=='}'){
+        const key=tokens[i++];if(key?.kind!=='word'||!/^[a-zA-Z_][a-zA-Z0-9_']*$/.test(key.value)||tokens[i++]?.value!==':')throw new LanguageError('Expected record pattern field name:',key||t);
+        if(seen.has(key.value))throw new LanguageError('Duplicate record pattern field: '+key.value,key);seen.add(key.value);
+        keys.push(key.value);fields.push(cons(atom()));
+        if(tokens[i]?.kind==='}')break;
+        if(tokens[i++]?.kind!==',')throw new LanguageError('Expected , or } in record pattern',tokens[i-1]||t);
+      }
+      if(tokens[i++]?.kind!=='}')throw new LanguageError('Missing } in record pattern',t);
+      return {...t,kind:'record-pattern',keys,fields};
+    }
     if(t.kind==='[') {
       const fields=sequence(']');
       if(tokens[i++]?.kind!==']')throw new LanguageError('Missing ] in list pattern',t);
@@ -615,7 +646,7 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
       if(/^[A-Z]/.test(t.value))throw new LanguageError(`Unknown constructor or missing constructor fields: ${t.value}`,t);
       return t;
     }
-    throw new LanguageError('Expected a literal, variable, wildcard, list or constructor pattern',t);
+    throw new LanguageError('Expected a literal, variable, wildcard, record, tuple, vector or constructor pattern',t);
   }
   function cons(left) {
     while(tokens[i]?.kind==='word' && tokens[i].value==='::') {
@@ -637,6 +668,7 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
 }
 
 function matchPattern(pattern,value,bindings,valueType) {
+  if(pattern.kind==='record-pattern')return value?.kind==='record'&&pattern.fields.every((p,i)=>Object.hasOwn(value.fields,pattern.keys[i])&&matchPattern(p,value.fields[pattern.keys[i]],bindings,valueType));
   if(pattern.kind==='tuple-pattern')return value?.kind==='tuple' && pattern.fields.length===value.items.length && pattern.fields.every((p,i)=>matchPattern(p,value.items[i],bindings,valueType));
   if(pattern.kind==='literal')return typeof pattern.value==='number'&&['int','float','byte'].includes(scalarType(value))?pattern.value===scalarValue(value):equal(pattern.value,value);
   if(pattern.kind==='list-pattern')return Array.isArray(value) && value.length===pattern.fields.length && pattern.fields.every((p,i)=>matchPattern(p,value[i],bindings,valueType));
@@ -690,7 +722,7 @@ export function declarationGroups(tokens){
   return groups;
 }
 export function compile(source, file = '<input>', previous = new Map(), { checkTypes = true, globals = new Map(), tokens: sourceTokens = null, moduleEffects = previous.moduleEffects } = {}) {
-  const tokens = sourceTokens || previous.moduleTokens?.(source,file) || lex(source, file), groups = [];
+  const tokens = recordShorthands(sourceTokens || previous.moduleTokens?.(source,file) || lex(source, file)), groups = [];
   groups.push(...declarationGroups(tokens));
   for(const group of groups)if(['pub','open'].includes(group[0]?.value)){const modifier=group.shift();if(!group.length)throw new LanguageError('Visibility requires a declaration',modifier);group[0]={...group[0],declarationCol:modifier.col,visibility:modifier.value};}
   const definitions = new Map(previous), local = new Set(), signatures = new Map();

@@ -124,6 +124,7 @@ type Pattern func(any,*Env) bool
 func mutablePattern(name string) Pattern { return func(v any,e *Env) bool { e.declare(name,v,true,"pattern");return true } }
 func variablePattern(name string) Pattern { return func(v any,e *Env) bool { if name!="_" { e.declare(name,v,false,"pattern") };return true } }
 func literalPattern(value any) Pattern { return func(v any,e *Env) bool { if x,ok:=value.(int64);ok{switch y:=v.(type){case float64:return float64(x)==y;case uint8:return x==int64(y)}};return equal(value,v) } }
+func recordPattern(keys []string,ps ...Pattern) Pattern {return func(v any,e *Env) bool {r,ok:=v.(*Record);if !ok{return false};for i,p:=range ps{x,found:=r.fields[keys[i]];if !found||!p(x,e){return false}};return true}}
 func tuplePattern(ps ...Pattern) Pattern {return func(v any,e *Env) bool {t,ok:=v.(*Tuple);return ok && listPattern(ps...)(t.items,e)}}
 func listPattern(ps ...Pattern) Pattern { return func(v any,e *Env) bool { xs,ok:=v.([]any);if !ok || len(xs)!=len(ps) { return false };for i,p:=range ps { if !p(xs[i],e) { return false } };return true } }
 func pushPattern(prefix,last Pattern) Pattern { return func(v any,e *Env) bool { xs,ok:=v.([]any);return ok && len(xs)>0 && prefix(append([]any{},xs[:len(xs)-1]...),e) && last(xs[len(xs)-1],e) } }

@@ -91,7 +91,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
 
 export function patternNames(patterns, names = []) {
   for (const p of patterns) {
-    if (['constructor','list-pattern','push-pattern','tuple-pattern'].includes(p.kind)) patternNames(p.fields,names);
+    if (['constructor','list-pattern','push-pattern','tuple-pattern','record-pattern'].includes(p.kind)) patternNames(p.fields,names);
     else if (p.kind === 'word' && p.value !== '_') names.push(p.value);
   }
   return names;
