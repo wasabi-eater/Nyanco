@@ -8,7 +8,8 @@ import {spawnSync} from 'node:child_process';
 import {compileModule} from '../modules.mjs';
 import {compile,VM} from '../language.mjs';
 import {transpileGo} from '../go-backend.mjs';
-import {LanguageService} from '../lsp.mjs';
+import {LanguageService,startServer} from '../lsp.mjs';
+import {PassThrough} from 'node:stream';
 
 function fixture(files,fn){const dir=mkdtempSync(join(tmpdir(),'nyanco-modules-'));try{const put=(file,text)=>{const path=join(dir,file);mkdirSync(dirname(path),{recursive:true});writeFileSync(path,text);return path;};for(const [file,text] of Object.entries(files))put(file,text);return fn(dir,put);}finally{rmSync(dir,{recursive:true,force:true});}}
 const library=`pub data secret = Secret int
@@ -200,4 +201,44 @@ test('short type names are available in LSP and native lowering',()=>fixture(sho
  const labels=req('completion',3,12).map(c=>c.label);for(const name of ['box','s','p','box.box'])assert.ok(labels.includes(name),name);
  const {p,output}=run(entry),go=put('main.go',transpileGo(p));
  const native=spawnSync('go',['run',go],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(native.status,0,native.stderr);assert.equal(native.stdout,output.join('\n')+'\n');
+}));
+
+test('LSP keeps real diagnostic locations when file URI spellings differ',()=>fixture({
+ 'main.nyan':'main = nop',
+ 'lib/api.nyan':'pub value = 3',
+},(dir)=>{
+ const canonical=pathToFileURL(join(dir,'main.nyan')).href;
+ let uri=canonical.replace('main.nyan','%6dain.nyan');
+ if(process.platform==='win32')uri=uri.replace(/^file:\/\/\/([A-Z]):/,(_,drive)=>'file:///'+drive.toLowerCase()+':');
+ const service=new LanguageService(),source='helper = nop\n\nmain =\n    print "😀"; missingWord';
+ const doc=service.update(uri,source,1),start=source.split('\n')[3].indexOf('missingWord');
+ assert.deepEqual(doc.diagnostics[0].range,{start:{line:3,character:start},end:{line:3,character:start+11}});
+ assert.equal(doc.externalDiagnostics.size,0);
+ const syntax=service.update(uri,'helper = nop\nmain =\n    "unfinished',2);
+ assert.deepEqual(syntax.diagnostics[0].range,{start:{line:2,character:4},end:{line:2,character:5}});
+ const text='import "./lib"\nmain = lib.value',valid=service.update(uri,text,3);
+ assert.deepEqual(valid.diagnostics,[]);assert.ok(valid.symbols.some(s=>s.name==='main'));
+ const request=method=>service.request('textDocument/'+method,{textDocument:{uri},position:{line:1,character:14}});
+ assert.match(request('hover').contents.value,/この項の型/);
+ const destination=request('definition').uri,expected=pathToFileURL(join(dir,'lib/api.nyan')).href;
+ assert.equal(process.platform==='win32'?destination.toLowerCase():destination,process.platform==='win32'?expected.toLowerCase():expected);
+ assert.ok(service.request('textDocument/completion',{textDocument:{uri},position:{line:1,character:14}}).some(c=>c.label==='lib.value'));
+}));
+
+test('server publishes errors in sibling files at their source and clears them after repair',()=>fixture({
+ 'main.nyan':'main = helper',
+ 'helper.nyan':'helper =\n  missingInside',
+},(dir,put)=>{
+ const input=new PassThrough(),output=new PassThrough(),messages=[];let buffer=Buffer.alloc(0);
+ output.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);for(;;){const end=buffer.indexOf('\r\n\r\n');if(end<0)return;const count=Number(/Content-Length: (\d+)/i.exec(buffer.subarray(0,end).toString())[1]);if(buffer.length<end+4+count)return;messages.push(JSON.parse(buffer.subarray(end+4,end+4+count)));buffer=buffer.subarray(end+4+count);}});
+ const service=startServer(input,output,{exit:()=>{}}),uri=pathToFileURL(join(dir,'main.nyan')).href,helperURI=pathToFileURL(join(dir,'helper.nyan')).href;
+ const send=(method,params={},id)=>{const body=Buffer.from(JSON.stringify({jsonrpc:'2.0',method,params,...(id===undefined?{}:{id})}));input.write(Buffer.concat([Buffer.from('Content-Length: '+body.length+'\r\n\r\n'),body]));};
+ send('initialize',{},1);send('textDocument/didOpen',{textDocument:{uri,text:'main = helper',version:1}});
+ assert.deepEqual(service.documents.get(uri).diagnostics,[]);
+ const diagnostics=messages.filter(m=>m.method==='textDocument/publishDiagnostics');
+ assert.deepEqual(diagnostics.find(m=>m.params.uri===uri).params.diagnostics,[]);
+ const error=diagnostics.find(m=>m.params.uri===helperURI).params.diagnostics[0];assert.deepEqual(error.range.start,{line:1,character:2});assert.match(error.message,/missingInside/);
+ put('helper.nyan','helper = nop');send('workspace/didChangeWatchedFiles',{changes:[{uri:helperURI,type:2}]});
+ assert.deepEqual(messages.filter(m=>m.params?.uri===helperURI).at(-1).params.diagnostics,[]);
+ input.destroy();output.destroy();
 }));
