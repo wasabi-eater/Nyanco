@@ -1532,6 +1532,20 @@ twice x = x * x
 | `pub class tagged 'a where ...` | クラスとそのメソッド |
 | `pub effect alert : string ->` | effect操作alert |
 
+moduleのディレクトリ名と同名の公開型がある場合、型の位置では型名を省略できます。`box.box int`は`box int`と書け、`data`と`type`の両方に対応します。明示的な`box.box`も引き続き使えます。
+
+```nyanco
+-- box/api.nyan
+open data box 'a = Box 'a
+
+-- main.nyan
+import "./box"
+identity : box int -> box int
+identity x = x
+```
+
+`import "./box" as b`なら、`b int`が`b.box int`の略になります。同名かどうかはimport先のディレクトリ名で判定します。非公開の型には使えず、値の位置での`box`は関数やコンストラクタの略にはなりません。型表示・LSPの補完・定義ジャンプも省略形に対応します。
+
 `pub`と`open`を省いた型・クラス・effectも非公開です。型と値は別の名前空間で公開範囲を管理し、クラスと同名のメソッドも定義できます。instanceは読み込まれたクラスと型に対して共有します。importの修飾名はローカル変数で上書きできません。
 
 `pub type`はmodule内部ではaliasとして使えます。外部では同名の抽象型として渡せますが、元の型から直接値を作ったり、元のrecordとしてフィールドを読んだりはできません。抽象型を生成・操作する公開関数を用意してください。aliasには型引数を付けられ、再帰aliasは拒否します。

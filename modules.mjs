@@ -11,6 +11,21 @@ const fail=(message,t)=>{throw new LanguageError(message,t);};
 const key=file=>process.platform==='win32'?resolve(file).toLowerCase():resolve(file);
 const pathOf=file=>file.startsWith('file:')?fileURLToPath(file):resolve(file);
 
+// A renamed import still refers to the type named after the directory itself.
+export function moduleTypeSymbol(imp){
+ const symbol=imp.module.exports.get(basename(imp.module.dir));
+ return symbol?.access.has('type')&&(symbol.kinds.has('data')||symbol.kinds.has('type'))?symbol:null;
+}
+function typePosition(group,index){
+ const first=group[0]?.value,where=group.findIndex(t=>t.value==='where');
+ if(group[1]?.value===':'||['data','type','class','effect'].includes(first))return true;
+ if(first!=='instance')return false;
+ if(index<where)return true;
+ const indent=group[where+1]?.col;let member=where+1,depth=0;
+ for(let i=where+1;i<=index;i++){const t=group[i];if(!depth&&t.col===indent)member=i;if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
+ return group[member+1]?.value===':';
+}
+
 // Modules are linked as one checked program. Each dependency's declarations get
 // unique identifiers before parsing, so private helpers retain lexical access
 // without becoming names that an importing source can resolve.
@@ -107,13 +122,16 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
       if(imp&&member?.kind==='word'&&/^\.[A-Za-z_]/.test(member.value)){
         if(i===0&&(group[2]?.value===':'||group.some(t=>t.value==='=')&&!group.some(t=>t.value==='with')))fail('Cannot declare an imported name',t);
         const name=member.value.slice(1),symbol=imp.module.exports.get(name);
-        const first=group[0]?.value,where=group.findIndex(t=>t.value==='where');
-        const typeContext=group[1]?.value===':'||['data','type','class','effect'].includes(first)||first==='instance'&&i<where;
+        const typeContext=typePosition(group,i);
         const ns=/^[A-Z]/.test(name)?'value':typeContext?'type':'value';
         if(!symbol||!symbol.access.has(ns))fail('Module '+t.value+' does not export '+name+' in the '+ns+' namespace',member);
         const ref={...t,value:symbol.internal,endLine:member.endLine,endCol:member.endCol,sourceName:t.value+'.'+name};references.push(ref);out.push(ref);i++;continue;
       }
-      if(imp)fail('Module alias requires a qualified member: '+t.value,t);
+      if(imp){
+        const symbol=typePosition(group,i)&&moduleTypeSymbol(imp);
+        if(!symbol)fail('Module alias requires a qualified member or an exported same-named type: '+t.value,t);
+        const ref={...t,value:symbol.internal,sourceName:t.value};references.push(ref);out.push(ref);continue;
+      }
       if(t.kind==='word'&&!fields.has(original)&&mod.symbols.has(t.value)){t.sourceName=t.value;t.value=mod.symbols.get(t.value).internal;}
       references.push(t);out.push(t);
     }
@@ -123,11 +141,11 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
   const rootUnit=root.files.find(u=>key(u.file)===key(entry))||root.files.find(u=>basename(u.file)==='main.nyan')||root.files[0];
   const moduleTokens=(source,file='<eval>')=>rewrite(lex(source,file),root,rootUnit);
   for(const mod of ordered)if(mod!==root)for(const symbol of mod.symbols.values())names.set(symbol.internal,basename(mod.dir)+'.'+symbol.name);
-  for(const unit of root.files)for(const [alias,imp] of unit.imports)for(const symbol of imp.module.symbols.values())names.set(symbol.internal,alias+'.'+symbol.name);
+  for(const unit of root.files)for(const [alias,imp] of unit.imports)for(const symbol of imp.module.symbols.values())names.set(symbol.internal,symbol===moduleTypeSymbol(imp)?alias:alias+'.'+symbol.name);
   const display=text=>String(text).replace(/\b(?:nyancoModule|NyancoModule)[0-9a-f]+_[A-Za-z0-9_']+/g,n=>names.get(n)||n);
   const moduleEffects=new Map(ordered.map(mod=>[mod.id,new Map([...mod.symbols.values()].filter(s=>s.kinds.has('effect')||s.kinds.has('operation')).map(s=>[s.name,s.internal]))]));
   let program;try{program=compile('',fileName(entry),previous,{tokens,globals,checkTypes,moduleEffects});}catch(error){error.message=display(error.message);throw error;}
-  program.definitions.moduleTokens=moduleTokens;program.definitions.moduleDisplay=display;program.definitions.modulePublicNames=[...rootUnit.imports].flatMap(([alias,imp])=>[...imp.module.exports.keys()].map(name=>alias+'.'+name));
+  program.definitions.moduleTokens=moduleTokens;program.definitions.moduleDisplay=display;program.definitions.modulePublicNames=[...rootUnit.imports].flatMap(([alias,imp])=>[...(moduleTypeSymbol(imp)?[alias]:[]),...[...imp.module.exports.keys()].map(name=>alias+'.'+name)]);
   program.modules={root,ordered,references,sources,names,display};program.types=new Map([...program.types].map(([name,type])=>[name,display(type)]));
   return program;
 }

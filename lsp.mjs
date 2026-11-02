@@ -2,7 +2,7 @@
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {existsSync} from 'node:fs';
 import {dirname} from 'node:path';
-import {compileModule} from './modules.mjs';
+import {compileModule,moduleTypeSymbol} from './modules.mjs';
 import {syntaxSource} from './class-relations.mjs';
 import {compile, lex, builtinNames, parseExpression} from './language.mjs';
 import {inferExpression,occurrenceTypes} from './types.mjs';
@@ -86,7 +86,7 @@ export class LanguageService {
     if(method==='textDocument/documentSymbol')return doc.symbols;
     if(method==='textDocument/completion'){
       const defs=doc.program?.definitions||this.standard.definitions;
-      const imported=[];for(const unit of doc.program?.modules?.root.files||[])if(pathToFileURL(unit.file).href===doc.uri)for(const [alias,imp] of unit.imports)for(const name of imp.module.exports.keys())imported.push(alias+'.'+name);
+      const imported=[];for(const unit of doc.program?.modules?.root.files||[])if(pathToFileURL(unit.file).href===doc.uri)for(const [alias,imp] of unit.imports){if(moduleTypeSymbol(imp))imported.push(alias);for(const name of imp.module.exports.keys())imported.push(alias+'.'+name);}
       const names=new Set([...imported,...builtinNames(),...defs.keys(),...defs.constructors.keys(),...defs.methods.keys(),...defs.effects.keys(),...keywords]);
       return [...names].filter(n=>!n.startsWith('__tc_')&&!n.startsWith('@')&&!/^nyancoModule/i.test(n)).sort().map(label=>({label,kind:keywords.includes(label)?14:3,...(doc.program?.types.has(label)?{detail:doc.program.types.get(label)}:{})}));
     }

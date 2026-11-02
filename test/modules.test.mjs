@@ -145,3 +145,59 @@ main = (f + 1); lib.both`,
  assert.deepEqual(run(join(dir,'main.nyan')).vm.evaluate('main'),[1,2]);
  put('main.nyan','import "./lib"\nmain = lib.hidden');assert.throws(()=>compileModule(join(dir,'main.nyan')),/does not export hidden in the value/);
 }));
+
+const shortTypes={
+ 'box/api.nyan':"open data box 'a = Box 'a deriving show, eq",
+ 'secret/api.nyan':`pub type secret = int
+pub make : int -> secret
+make n = n
+pub read : secret -> int
+read n = n`,
+ 'pair/api.nyan':"open type pair 'a = #('a string)",
+ 'main.nyan':`import "./box"
+import "./secret" as s
+import "./pair" as p
+identity : box int -> box int
+identity x = x
+qualified : box.box int -> box int
+qualified = identity
+keepSecret : s -> s
+keepSecret x = x
+first : p int -> int
+first = .0
+data wrapped = Wrapped (box int)
+type boxes = [box int]
+effect echo : box int -> box int
+class make 'a where
+  make : -> 'a
+instance make (box int) where
+  make = box.Box 8
+class unpack 'a where
+  type item
+  unpack : 'a -> item
+instance unpack wrapped where
+  item : box int
+  unpack (Wrapped x) = x
+main = print (qualified (box.Box 3)); print (s.read (keepSecret (s.make 4))); print (first #(5, "x")); print (make == box.Box 8); print (unpack (Wrapped (box.Box 6)))`,
+};
+
+test('same-named exported data and aliases allow module-only type references',()=>fixture(shortTypes,(dir,put)=>{
+ const {p,vm,output}=run(join(dir,'main.nyan'));
+ assert.deepEqual(output,['(Box 3)','4','5','True','(Box 6)']);
+ assert.match(p.types.get('identity'),/box int/);assert.doesNotMatch(p.types.get('identity'),/box\.box/);
+ assert.match(vm.infer('keepSecret'),/\bs -> .*\bs/);
+ put('main.nyan','import "./secret" as s\nf : s -> int\nf = + 1');assert.throws(()=>compileModule(join(dir,'main.nyan')),/instance|unify/i);
+ put('main.nyan','import "./box"\nmain = box');assert.throws(()=>compileModule(join(dir,'main.nyan')),/qualified member/);
+ put('box/api.nyan',"data box 'a = Box 'a");put('main.nyan',"import \"./box\"\nf : box int -> box int\nf x = x");assert.throws(()=>compileModule(join(dir,'main.nyan')),/exported same-named type/);
+}));
+
+test('short type names are available in LSP and native lowering',()=>fixture(shortTypes,(dir,put)=>{
+ const entry=join(dir,'main.nyan'),uri=pathToFileURL(entry).href,service=new LanguageService();
+ const doc=service.update(uri,shortTypes['main.nyan'],1);assert.deepEqual(doc.diagnostics,[]);
+ const req=(method,line,character)=>service.request('textDocument/'+method,{textDocument:{uri},position:{line,character}});
+ assert.equal(req('definition',3,12).uri,pathToFileURL(join(dir,'box/api.nyan')).href);
+ assert.match(req('hover',3,12).contents.value,/data box/);
+ const labels=req('completion',3,12).map(c=>c.label);for(const name of ['box','s','p','box.box'])assert.ok(labels.includes(name),name);
+ const {p,output}=run(entry),go=put('main.go',transpileGo(p));
+ const native=spawnSync('go',['run',go],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(native.status,0,native.stderr);assert.equal(native.stdout,output.join('\n')+'\n');
+}));
