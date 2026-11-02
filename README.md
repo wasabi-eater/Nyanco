@@ -1449,3 +1449,15 @@ zip [0, 1] ["a", "b"]; toDict
 ```
 
 変換はsourceを最後まで走査する即時処理です。sourceのeffectを伝播し、cancelでは途中までの辞書を返します。breakでは戻り値の辞書を指定できます。
+
+## counts
+
+`counts source`は要素ごとの出現回数を`dict key int`にまとめます。sourceはstreem、要素はhashである必要があります。個数は常にintです。
+
+```nyanco
+counts [1, 2, 1, 3, 1] -- [1: 3, 2: 1, 3: 1]
+counts (split "a b a" " ") -- ["a": 2, "b": 1]
+counts [] -- [:]
+```
+
+存在確認付きの内部検索と加算で実装しているため、counts自身はexnを要求しません。pureなsourceを渡すとpureになり、IOやexnなどのsourceのeffectはそのまま伝播します。cancelでは途中までの辞書を返し、breakでは辞書の戻り値を指定できます。辞書の走査順は保証しません。
