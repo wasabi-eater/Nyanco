@@ -117,6 +117,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       for(let k=start;k<tokens.length && tokens[k].line===tokens[start]?.line;k++) {
         const t=tokens[k];
         if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->','<-','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
+        if(!depth&&t.kind==='word'&&t.value==='with')return -1;
         if(!depth && t.kind==='word' && t.value==='=')return k;
         if(['(','[','{'].includes(t.kind))depth++;
         if([')',']','}'].includes(t.kind))depth--;
@@ -294,29 +295,50 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       return [t];
     }
     function withBody(token) {
-      if(tokens[i++]?.kind!=='{')throw new LanguageError('with requires { path = value }',token);
+      const braced=tokens[i]?.kind==='{';if(braced)i++;
       const updates=[];
-      while(tokens[i]?.kind!=='}') {
+      const nextUpdate=start=>{
+        let j=start;
+        while(j<tokens.length){
+          const t=tokens[j];
+          if(t.kind==='['||['?','.','.?'].includes(t.value)&&tokens[j+1]?.kind==='['){
+            if(t.kind!=='[')j++;j++;let depth=1;
+            while(j<tokens.length&&depth){if(tokens[j].kind==='[')depth++;if(tokens[j].kind===']')depth--;j++;}
+          }else if(j===start&&(t.kind==='literal'&&t.numericKind==='integer'||t.kind==='word'&&identifier.test(t.value))||t.kind==='word'&&/^\.(?:[a-zA-Z_]|\d)/.test(t.value))j++;
+          else break;
+        }
+        return j>start&&['=','!','??='].includes(tokens[j]?.value);
+      };
+      while(!braced||tokens[i]?.kind!=='}') {
         const path=[],fields=[];
         while(i<tokens.length) {
           const part=tokens[i];
-          if(part.kind!=='word')break;
-          if(/^\.[a-zA-Z_]/.test(part.value)){i++;path.push({kind:'field',name:part.value.slice(1)});}
+          if(part.kind==='['||part.value==='?'&&tokens[i+1]?.kind==='['){
+            const optional=part.value==='?';i+=optional?2:1;
+            path.push({kind:'list-index',optional,argument:fields.length});fields.push({body:scope(']',part,context)});
+          }else if(part.kind==='literal'&&!path.length&&part.numericKind==='integer'){
+            i++;const index=part.value;if(!Number.isSafeInteger(index)||index<0||index>100000)throw new LanguageError('Invalid tuple index',part);path.push({kind:'tuple-index',index});
+          }else if(part.kind!=='word')break;
+          else if(/^\.[a-zA-Z_]/.test(part.value)){i++;path.push({kind:'field',name:part.value.slice(1)});}
           else if(/^\.\d+$/.test(part.value)){i++;const index=Number(part.value.slice(1));if(!Number.isSafeInteger(index)||index>100000)throw new LanguageError('Invalid tuple index',part);path.push({kind:'tuple-index',index});}
           else if(['.','.?'].includes(part.value) && tokens[i+1]?.kind==='['){i+=2;path.push({kind:'list-index',optional:part.value==='.?',argument:fields.length});fields.push({body:scope(']',part,context)});}
-          else if(!path.length && identifier.test(part.value) && ['=','!'].includes(tokens[i+1]?.value)){i++;path.push({kind:'field',name:part.value});}
+          else if(!path.length&&identifier.test(part.value)){i++;path.push({kind:'field',name:part.value});}
           else break;
         }
         const operation=tokens[i++];
-        if(!path.length||!['=','!','??='].includes(operation?.value))throw new LanguageError('Expected update path = value or path ! commands',operation||token);
+        if(!path.length||!['=','!','??='].includes(operation?.value))throw new LanguageError('Expected update path = value, path ! commands, or index ??= value',operation||token);
         if(operation.value==='??='&&path.at(-1).kind!=='list-index')throw new LanguageError('??= requires an index path',operation);
         const start=i;let depth=0;
-        while(i<tokens.length){const t=tokens[i];if(!depth&&['}',';'].includes(t.kind))break;if(!depth&&t.kind===','&&tokens[i+1]?.value?.startsWith('.')&&['=','!'].includes(tokens[i+2]?.value))throw new LanguageError('Separate with updates using ;',t);if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;i++;}
+        while(i<tokens.length){
+          const t=tokens[i];
+          if(!depth&&(['}',')',']',';',';;'].includes(t.kind)||!braced&&t.value==='->'||t.kind===','&&nextUpdate(i+1)))break;
+          if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;i++;
+        }
         if(start===i)throw new LanguageError('Update requires a replacement value',tokens[i]||token);
         fields.push({body:parseTokens(tokens.slice(start,i),operation.value==='!'?{parents:context.parents}:context,constructors)});
         updates.push({...token,kind:'path-update',path,fields,updating:operation.value==='!',defaulting:operation.value==='??='});
-        if(tokens[i]?.kind===';'){i++;continue;}
-        if(tokens[i]?.kind===',')throw new LanguageError('Separate with updates using ;',tokens[i]);
+        if(!braced)return updates;
+        if([';',','].includes(tokens[i]?.kind)){i++;while(tokens[i]?.layout)i++;continue;}
         if(tokens[i]?.kind!=='}')throw new LanguageError('Unterminated with update',token);
       }
       i++;return updates;
@@ -707,7 +729,8 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
       if([')',']','}'].includes(t.kind))level--;
       return top;
     });
-    if (outer.some(t => t.kind === 'word' && t.value === '->') && !outer.some(t => t.kind === 'word' && (t.value === '=' || t.value === ':'))) {
+    const withAt=outer.findIndex(t=>t.value==='with'),headerTokens=withAt<0?outer:outer.slice(0,withAt);
+    if (outer.some(t => t.kind === 'word' && t.value === '->') && !headerTokens.some(t => t.kind === 'word' && (t.value === '=' || t.value === ':'))) {
       definitions.initializers.push(...parseTokens(group,null,definitions.constructors)); continue;
     }
     if (second?.kind === 'word' && second.value === ':') { signatures.set(first.value, group.slice(2).map(t => t.value).join(' ')); continue; }

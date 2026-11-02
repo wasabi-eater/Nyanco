@@ -34,7 +34,7 @@ test('mutable access assignment and modification rebind roots without mutating a
 });
 test('update paths and replacement arities are statically checked',()=>{
  for(const s of ['{x: 1} with {.missing = 3}','#(1,2) with {.2 = 3}','[1] with {.["s"] = 3}','[1] with {.[0] = "s"}','{x: 1} with {.x = (1,2)}','{x: 1} with {.x ! drop}'])assert.throws(()=>run('main = '+s),/Type error/);
- assert.throws(()=>run('main = {x: 1,y: 2} with {.x = 3, .y = 4}'),/using ;/);
+ assert.equal(run('main = {x: 1,y: 2} with {x = 3, y = 4}').stack[0].fields.y,4);
  assert.throws(()=>run('main = {x: 1} with {.x}'),/Expected update path/);
 });
 test('list bounds use exn, indices run once, and failed mutation retains the root',()=>{

@@ -1,6 +1,6 @@
 {
   "name": "nyanco",
-  "version": "0.72.1",
+  "version": "0.73.0",
   "private": true,
   "type": "module",
   "description": "A statically typed concatenative programming language with algebraic effects",

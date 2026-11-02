@@ -9,7 +9,7 @@ import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression, formatWarning } from './language.mjs';
 import { checkExpression } from './types.mjs';
 
-const help = `Nyanco 0.72.1 — statically typed stack language
+const help = `Nyanco 0.73.0 — statically typed stack language
 Usage:
   nyanco                       Interactive REPL
   nyanco program.nyan           Execute main
@@ -28,9 +28,10 @@ REPL: :help, :quit, :stack, :clear, :words, :type EXPR, :load PATH, :{ ... :}
 
 async function repl() {
   const isDefinition=source=>{
-    let depth=0;
+    let depth=0,withUpdate=false;
     return lex(source).some(t=>{
-      const found=!depth && t.kind==='word' && ['=',':','class','instance','effect'].includes(t.value);
+      if(!depth&&t.value==='with')withUpdate=true;
+      const found=!depth && !withUpdate && t.kind==='word' && ['=',':','class','instance','effect'].includes(t.value);
       if(['(','[','{'].includes(t.kind))depth++;
       if([')',']','}'].includes(t.kind))depth--;
       return found;
@@ -47,7 +48,7 @@ async function repl() {
     vm.definitions = program.definitions;
     try { await vm.executeAsync([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('Nyanco 0.72.1 — static types; :type EXPR for inference\n');
+  stdout.write('Nyanco 0.73.0 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
     const input = line.trim();
