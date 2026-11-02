@@ -75,7 +75,7 @@ test('native declarations and stack assignments match interpreter output',()=>{
 test('module globals and REPL bindings support the new arrows',()=>{
  const dir=mkdtempSync(join(tmpdir(),'nyanco-declaration-modules-'));
  try{
-  mkdirSync(join(dir,'lib'));writeFileSync(join(dir,'lib/api.nyan'),'mut count <- 0\npub next = count <<- count + 1; count\n{:name} <- {name: "module"}\npub read = name');
+  mkdirSync(join(dir,'lib'));writeFileSync(join(dir,'lib/api.nyan'),'mut count <- 0\npub next : -> int\nnext = count <<- count + 1; count\n{:name} <- {name: "module"}\npub read : -> string\nread = name');
   const entry=join(dir,'main.nyan');writeFileSync(entry,'import "./lib"\nmain = print lib.next; print lib.next; print lib.read');
   const p=compileModule(entry),output=[];new VM({...p,output:s=>output.push(s),warning:()=>{}}).evaluate('main');assert.deepEqual(output,['1','2','module']);native(p,output,dir);
   const repl=spawnSync(process.execPath,['cli.mjs'],{input:'x <- 0\nx\nmut y <- 1\ny <<- 2\n3 ->> y\ny\n:q\n',encoding:'utf8',windowsHide:true,timeout:5000});assert.equal(repl.status,0,repl.stderr);assert.doesNotMatch(repl.stdout,/Error:/);assert.match(repl.stdout,/\[0\]/);assert.match(repl.stdout,/\[0, 3\]/);

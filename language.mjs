@@ -583,7 +583,7 @@ function dataDeclarations(groups, definitions, globals) {
     const name=originalName && {...originalName,value:typeName(originalName.value)};
     if (!name || name.kind!=='word' || !/^[a-z][a-zA-Z0-9_']*$/.test(name.value) || ['data','mut'].includes(name.value) || eq<2)
       throw new LanguageError('Expected data Type parameters = Constructors',group[0]);
-    if (['num','float','byte','char','bool','string','int','range','stream','vector'].includes(name.value) || definitions.dataTypes.has(name.value))
+    if (['num','float','byte','char','bool','string','int','range','stream','vector','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
       throw new LanguageError(`Type already declared: ${name.value}`,name);
     const parameters=group.slice(postfix ? 1 : 2,postfix ? eq-1 : eq).map(t=>{
       if(t.kind!=='word' || !(postfix ? /^'[a-z][a-zA-Z0-9_']*$/ : /^'?[a-z][a-zA-Z0-9_']*$/).test(t.value) || ['mut','data'].includes(t.value))
@@ -764,6 +764,8 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   for(const group of groups)if(['pub','open'].includes(group[0]?.value)){const modifier=group.shift();if(!group.length)throw new LanguageError('Visibility requires a declaration',modifier);group[0]={...group[0],declarationCol:modifier.col,visibility:modifier.value};}
   const definitions = new Map(previous), local = new Set(), signatures = new Map();
   definitions.moduleTokens=previous.moduleTokens;definitions.moduleEffects=moduleEffects;definitions.moduleDisplay=previous.moduleDisplay;definitions.modulePublicNames=previous.modulePublicNames;
+  definitions.publicFunctions=new Map(previous.publicFunctions);
+  for(const group of groups)if(['pub','open'].includes(group[0]?.visibility)&&!['data','type','class','instance','effect'].includes(group[0]?.value))definitions.publicFunctions.set(group[0].value,group[0]);
   definitions.classes=previous.classes;definitions.methods=previous.methods;
   definitions.dataTypes=previous.dataTypes;
   definitions.constructors=previous.constructors;
@@ -865,6 +867,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   for (const [name,signature] of signatures) {
     const clauses = [...definitions.get(name)]; clauses.signature = signature; definitions.set(name,clauses);
   }
+  for(const name of local)if(definitions.publicFunctions.has(name))definitions.publicFunctions.set(name,definitions.get(name)[0].token);
   for(const clauses of definitions.values())for(const clause of clauses){resolveLabels(clause.body);if(clause.guard)resolveLabels(clause.guard);}
   resolveLabels(definitions.initializers);
   const types = checkTypes ? checkDefinitions(definitions,globals) : new Map();

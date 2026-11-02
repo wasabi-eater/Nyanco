@@ -1,0 +1,2 @@
+pub double : add 'a => ..s 'a -> ..s 'a
+double = dup; +

@@ -32,15 +32,22 @@ pub class tagged 'a where
 instance tagged secret where
   tag _ = "secret"
 pub effect alert : string ->
-pub notify = alert "notice"
-pub record = {privateHelper: 1} with privateHelper = 9
+pub notify : -> / {alert}
+notify = alert "notice"
+pub record : -> {privateHelper: int}
+record = {privateHelper: 1} with privateHelper = 9
+interpolate : int -> string
 pub interpolate x = "value={privateHelper x}"
 effect hiddenAsk : -> int
-pub handled = handle {hiddenAsk} {hiddenAsk: {-> k; resume 11 k}}
-pub hiddenBody = {hiddenAsk}
-pub handlers = {hiddenAsk: {-> k; resume 12 k}}
+pub handled : -> int
+handled = handle {hiddenAsk} {hiddenAsk: {-> k; resume 11 k}}
+pub hiddenBody : -> {-> int / {hiddenAsk}}
+hiddenBody = {hiddenAsk}
+pub handlers : -> {hiddenAsk: {(continuation {int -> int}) -> int}}
+handlers = {hiddenAsk: {-> k; resume 12 k}}
 privateIndex = 0
-pub indexed = ([1] with [privateIndex] ! + 2).[0]
+pub indexed : -> int / {exn}
+indexed = ([1] with [privateIndex] ! + 2).[0]
 `;
 const main=`import "./lib" as lib
 main =
@@ -91,16 +98,16 @@ main = unbox (lib.Box 4); pair #(2, "x"); lib.read (id (lib.make 0))`);
 
 test('private names from independent modules do not collide and diamond imports initialize once',()=>fixture({
  'main.nyan':'import "./a"\nimport "./b"\nmain = a.run; b.run',
- 'a/a.nyan':'import "../common"\nprivate n = n + 1\npub run = private common.value',
- 'b/b.nyan':'import "../common"\nprivate n = n * 2\npub run = private common.value',
- 'common/value.nyan':'print "initialize"; 0 -> marker\npub value = 3',
+ 'a/a.nyan':'import "../common"\nprivate n = n + 1\npub run : -> int\nrun = private common.value',
+ 'b/b.nyan':'import "../common"\nprivate n = n * 2\npub run : -> int\nrun = private common.value',
+ 'common/value.nyan':'print "initialize"; 0 -> marker\npub value : -> int\nvalue = 3',
 },(dir)=>{
  const {vm,output,p}=run(join(dir,'main.nyan'));assert.deepEqual(vm.evaluate('main'),[4,6]);assert.deepEqual(output,['initialize']);assert.equal(p.modules.ordered.length,4);
 }));
 
-test('cycles invalid imports duplicates and cyclic aliases fail without executing',()=>fixture({'main.nyan':'import "./lib"\nmain = nop','lib/a.nyan':'import ".." as app\npub f = nop'},(dir,put)=>{
+test('cycles invalid imports duplicates and cyclic aliases fail without executing',()=>fixture({'main.nyan':'import "./lib"\nmain = nop','lib/a.nyan':'import ".." as app\npub f : ->\nf = nop'},(dir,put)=>{
  assert.throws(()=>compileModule(join(dir,'main.nyan')),/Cyclic module import/);
- put('lib/a.nyan','pub f = nop');put('main.nyan','import "./lib" as x\nimport "./lib" as x\nmain = nop');assert.throws(()=>compileModule(join(dir,'main.nyan')),/duplicate module alias/);
+ put('lib/a.nyan','pub f : ->\nf = nop');put('main.nyan','import "./lib" as x\nimport "./lib" as x\nmain = nop');assert.throws(()=>compileModule(join(dir,'main.nyan')),/duplicate module alias/);
  put('main.nyan','import "./missing"\nmain = nop');assert.throws(()=>compileModule(join(dir,'main.nyan')),/does not exist/);
  assert.throws(()=>compile('type a = b\ntype b = a'),/Cyclic type alias/);
 }));
@@ -134,7 +141,8 @@ instance zero int where
   zero = 0
 pub type hidden = int
 hidden = 10
-pub value = 1
+pub value : -> int
+value = 1
 pub type both = int
 pub both : -> both
 both = 2`,
@@ -205,7 +213,7 @@ test('short type names are available in LSP and native lowering',()=>fixture(sho
 
 test('LSP keeps real diagnostic locations when file URI spellings differ',()=>fixture({
  'main.nyan':'main = nop',
- 'lib/api.nyan':'pub value = 3',
+ 'lib/api.nyan':'pub value : -> int\nvalue = 3',
 },(dir)=>{
  const canonical=pathToFileURL(join(dir,'main.nyan')).href;
  let uri=canonical.replace('main.nyan','%6dain.nyan');

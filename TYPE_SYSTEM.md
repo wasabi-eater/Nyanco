@@ -255,3 +255,6 @@ unwrapはassociated type itemを持つ標準クラスです。optionのSomeとre
 
 
 0.78では`<-`を宣言として、通常の右辺を現在のスタックで評価した後に従来のbindノードへ展開します。`<<-`は従来のupdateノードを使い、`->>`は同じupdateノードのfromStackフラグで対象数だけ現在のスタックから値を取り出します。可変性・型の維持・並列更新の検査は共通です。
+
+
+0.79: 公開する通常の関数をdefinitions.publicFunctionsで追跡し、型検査・実行計画作成時に明示的なsignatureの存在を要求します。クラスなどの宣言から生成された関数は既存のメソッドsignatureを使います。typeSyntaxは..sと..'sを同じrow変数として扱い、入出力先頭の同名row（各1個）を検査します。bottom出力は例外です。継続値はcontinuation {入力 -> 出力}で注釈できます。

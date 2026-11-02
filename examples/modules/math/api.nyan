@@ -1,5 +1,8 @@
-pub square x = multiply x x
+pub square : mul 'a => 'a -> 'a
+square x = multiply x x
 pub data secret = Secret int
-pub make n = Secret n
-pub value (Secret n) = n
+pub make : int -> secret
+make n = Secret n
+pub value : secret -> int
+value (Secret n) = n
 open data box 'a = Box 'a deriving show, eq

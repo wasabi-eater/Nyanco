@@ -1,0 +1,4 @@
+import "./math"
+main =
+    "prefix"; 4; math.double; print; print
+    print (math.double 1.5)

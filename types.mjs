@@ -1171,7 +1171,7 @@ function syntaxType(syntax,parameters) {
   if(syntax.tag==='list')return list(syntaxValue(syntax.item,parameters));
   if(syntax.tag==='adt')return adt(syntax.name,syntax.args.map(t=>syntaxValue(t,parameters)));
   const s=row();
-  const result=quote(syntaxStack(syntax.input,parameters,s),syntax.never?BOTTOM:syntaxStack(syntax.output,parameters,s));
+  const result={...quote(syntaxStack(syntax.input,parameters,s),syntax.never?BOTTOM:syntaxStack(syntax.output,parameters,s)),...(syntax.tag==='continuation'?{tag:'continuation'}:{})};
   if(syntax.effects) {
     result.effects=effects(syntax.effects.map(e=>{
       const op=activeFamilies.get(e.name);if(!op)throw new StaticTypeError(`Unknown effect: ${e.name}`);
@@ -1279,6 +1279,8 @@ function components(definitions,globals) {
 
 function prepare(definitions,globalValues,initialized=false) {
   definitions=withStandardFunctions(withOption(definitions));
+  for(const [name,token] of definitions.publicFunctions||[])if(definitions.has(name)&&typeof definitions.get(name).signature!=='string')throw new StaticTypeError('Exported function '+(token.sourceName||name)+' requires an explicit type annotation (:)',token);
+
   const operators=installOperatorClasses(new Map(definitions.classes||[]),new Map(definitions.methods||[]));resolveInheritance(operators.classes,(message,t)=>{throw new StaticTypeError(message,t);});
   activeClasses=operators.classes;activeDataTypes=definitions.dataTypes||new Map();activeModuleEffects=definitions.moduleEffects||new Map();
   const inference=new Inference();

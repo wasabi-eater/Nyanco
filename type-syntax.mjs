@@ -5,7 +5,8 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
   const expect = value => { if (tokens[i++] !== value) fail(`Expected ${value} in type`); };
   function type() {
     const raw = tokens[i++],name=typeName(raw);
-    if(name==='..'){const parameter=tokens[i++];if(!/^'[a-z][a-zA-Z0-9_']*$/.test(parameter||'')||parameters&&!parameters.has(parameter))fail('Expected stack row parameter');return {tag:'stack-row',name:parameter};}
+    if(name==='..'){const rawParameter=tokens[i++];if(!/^'?[a-z][a-zA-Z0-9_']*$/.test(rawParameter||''))fail('Expected stack row parameter');const parameter=rawParameter.startsWith("'")?rawParameter:"'"+rawParameter;if(parameters&&!parameters.has(parameter))fail('Undeclared stack row parameter: '+rawParameter);return {tag:'stack-row',name:parameter};}
+    if(name==='continuation'){const block=type();if(block.tag!=='quote')fail('continuation requires a block type');return {...block,tag:'continuation'};}
     if(name==='num')fail('num is a class; use float or int as the value type');
     if(name==='dict')return {tag:'adt',name:'dict',args:[type(),type()]};
     if(name==='vector')return {tag:'list',item:type()};
@@ -67,6 +68,10 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
     const input=side('->');expect('->');
     const never=tokens[i]==='!';if(never)i++;
     const result={tag:'quote',input,output:never?[]:side(end),...(never?{never:true}:{})};
+    for(const values of [result.input,result.output])for(let j=0;j<values.length;j++)if(values[j].tag==='stack-row'&&j!==0)fail('Stack row must appear once at the beginning of a stack');
+    const before=result.input[0]?.tag==='stack-row'?result.input[0].name:null,after=result.output[0]?.tag==='stack-row'?result.output[0].name:null;
+    if(!never&&before!==after)fail('Input and output must use the same stack row at the beginning');
+
     if(tokens[i]==='/') {
       i++;expect('{');result.effects=[];
       while(tokens[i]!=='}' && tokens[i]!=='|') {

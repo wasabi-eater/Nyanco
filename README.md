@@ -1,4 +1,4 @@
-# Nyanco 0.78 — 宣言と再代入の矢印
+# Nyanco 0.79 — 公開関数の型注釈とstack row
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1513,7 +1513,8 @@ import "./math" as math
 main = print (math.square 5)
 
 -- app/math/arithmetic.nyan
-pub square x = twice x
+pub square : mul 'a => 'a -> 'a
+square x = twice x
 
 -- app/math/helper.nyan
 twice x = x * x
@@ -1545,6 +1546,8 @@ identity x = x
 ```
 
 `import "./box" as b`なら、`b int`が`b.box int`の略になります。同名かどうかはimport先のディレクトリ名で判定します。非公開の型には使えず、値の位置での`box`は関数やコンストラクタの略にはなりません。型表示・LSPの補完・定義ジャンプも省略形に対応します。
+
+公開する通常の関数には、同じmodule内のいずれかのファイルで型注釈が必要です。引数なしの定数関数も対象です。
 
 `pub`と`open`を省いた型・クラス・effectも非公開です。型と値は別の名前空間で公開範囲を管理し、クラスと同名のメソッドも定義できます。instanceは読み込まれたクラスと型に対して共有します。importの修飾名はローカル変数で上書きできません。
 
@@ -1640,3 +1643,47 @@ r.x <<- 3
 ```
 
 従来の再代入で使っていた`x <- ...`は`x <<- ...`へ書き換えてください。`-> mut x`、`!`、条件付き挿入の`??<-`は引き続き使えます。REPL・module・Go出力・LSP・構文ハイライトにも対応しています。
+
+
+## 公開関数の型注釈とstack row（0.79）
+
+`pub`（または`open`）で公開する通常の関数は、型注釈が必須です。注釈は定義と同じファイルでも、同じmoduleの別ファイルでも構いません。非公開の関数は引き続き推論されます。公開クラスのメソッド、effect操作、dataのコンストラクタは、それぞれの宣言に書かれた型を使います。
+
+```nyanco
+pub double : add 'a => ..s 'a -> ..s 'a
+double = dup; +
+
+-- こちらの形式でも公開されます
+increment : int -> int
+pub increment = + 1
+
+pub defaultCount : int
+defaultCount = 0
+```
+
+stack rowの`..s`は、その下に残っている任意個の値をまとめて表します。前から順に「row、個々の値の型」と書き、入力と出力で同じrowを共有します。`..'s`という従来の表記も受け付けます。rowを省略した`int -> int`などの注釈も従来どおり使えます。
+
+```nyanco
+pub swapTop : ..s 'a 'b -> ..s 'b 'a
+swapTop = swap
+
+pub apply : ..s {..s -> ..s / { | 'e}} -> ..s / { | 'e}
+apply = call
+```
+
+明示的なstack rowには、次の制約があります。
+
+- 各スタックの先頭に1個だけ書けます。`'a ..s`や`..s ..s2`は型エラーです。
+- 入出力の両方に同じrowを書きます。`..s int -> int`、`int -> ..s int`、`..s -> ..t`は型エラーです。
+- blockの型の中でも同じ規則です。
+- `-> !`は戻らないため、出力rowを書く規則の例外です。
+- rowをvectorの要素型など、単一の値の型としては使えません。同じ型変数をrowと値に兼用することもできません。
+
+```nyanco
+pub failNow : ..s -> ! / {exn}
+failNow = exn "failed"
+```
+
+handlerを返す関数なども明示的に注釈できるよう、`continuation {int -> int}`のような継続の値型にも対応しています。継続の入出力には、その継続をresumeするときに渡す値と戻る値を書きます。
+
+既存の公開関数に注釈がなければ、コンパイルとLSPで`Exported function ... requires an explicit type annotation (:)`と表示します。実行例は`node cli.mjs examples/explicit-stack-rows`です。

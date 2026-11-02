@@ -78,10 +78,14 @@ test('module name resolution preserves shorthand keys and pattern local names',(
  try{
   mkdirSync(join(dir,'lib'));writeFileSync(join(dir,'lib/api.nyan'),`name = "module"
 age = 9
-pub stored = {:name, :age}
-pub interpolated = "record={ {:name} }"
-pub echo {:name, :age} = {:name, :age}
-pub speak {name: ~} = print
+pub stored : -> {name: string, age: int}
+stored = {:name, :age}
+pub interpolated : -> string
+interpolated = "record={ {:name} }"
+pub echo : {name: 'a, age: 'b | 'r} -> {name: 'a, age: 'b}
+echo {:name, :age} = {:name, :age}
+pub speak : ..s {name: 'a | 'r} -> ..s / {io}
+speak {name: ~} = print
 `);
   const entry=join(dir,'main.nyan');writeFileSync(entry,'import "./lib"\nmain = print lib.stored; print (lib.echo {name: "x", age: 1, extra: True}); lib.speak {name: "hello", extra: 1}; print lib.interpolated');
   const p=compileModule(entry),output=[];new VM({...p,output:s=>output.push(s),warning:()=>{}}).evaluate('main');assert.deepEqual(output,['{age: 9, name: "module"}','{age: 1, name: "x"}','hello','record={name: "module"}']);native(p,output,dir);

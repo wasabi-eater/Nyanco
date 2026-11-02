@@ -121,6 +121,7 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
       const original=group[i],t={...original,moduleID:mod.id};
       if(t.kind==='word'&&reserved.test(t.value))fail('Reserved module identifier',t);
       if(t.parts)t.parts=t.parts.map(part=>rewrite(part,mod,unit));
+      if(group[i-1]?.value==='..'&&typePosition(group,i)){references.push(t);out.push(t);continue;}
       const imp=!fields.has(original)&&unit.imports.get(t.value),member=group[i+1];
       if(imp&&member?.kind==='word'&&/^\.[A-Za-z_]/.test(member.value)){
         if(i===0&&(group[2]?.value===':'||group.some(t=>t.value==='=')&&!group.some(t=>t.value==='with')))fail('Cannot declare an imported name',t);
