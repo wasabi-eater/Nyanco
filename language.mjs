@@ -1510,11 +1510,19 @@ define('join',2,function*(vm,s,t){t={...t};const separator=vm.expect(s.pop(),'st
   yield* vm.loop(vm.walk(xs,function*(value){parts.push(vm.expect(value,'string',t));},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(parts.join(separator));
 });
 const numberText=/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
-for(const name of ['toNum','parseNum'])define(name,1,function*(vm,s,t){
+for(const name of ['toNum','parseFloat'])define(name,1,function*(vm,s,t){
   const source=vm.expect(s.pop(),'string',t),text=source.replace(/^[ \t\r\n\v\f]+|[ \t\r\n\v\f]+$/g,''),n=numberText.test(text)?Number(text):NaN;
   if(name==='toNum')s.push(Number.isFinite(n)?{kind:'adt',typeName:'option',constructor:'Some',fields:[scalar('float',n)]}:{kind:'adt',typeName:'option',constructor:'None',fields:[]});
   else if(Number.isFinite(n))s.push(scalar('float',n));
   else {yield {operation:ioEffects().get('exn'),args:['Invalid number: '+format(source)],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);}
+});
+define('parseInt',1,function*(vm,s,t){
+  const source=vm.expect(s.pop(),'string',t),text=source.replace(/^[ \t\r\n\v\f]+|[ \t\r\n\v\f]+$/g,'');
+  if(/^[+-]?[0-9]+$/.test(text)){
+    const n=BigInt(text);
+    if(n>=-9223372036854775808n&&n<=9223372036854775807n){s.push(Number(n));return;}
+  }
+  yield {operation:ioEffects().get('exn'),args:['Invalid integer: '+format(source)],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);
 });
 export const builtinNames = () => [...BUILTINS.keys()].sort();
 import { checkDefinitions, checkExpression, inferExpression, missingOperands, typeIR } from './types.mjs';

@@ -180,7 +180,7 @@ VMとGoは安定なマージソートを使います。キーは走査時に一�
 
 appendのプリミティブfallbackにstringを追加します。vectorの再利用最適化は、Go loweringで入力型がvectorであることも確認します。文字列を連続して連結する場合にはvector向けの破壊的処理を適用しません。
 
-splitの型は`string string -> stream string`で潜在エフェクトは空です。VMのstream値をREPLから再推論する場合にも、この型を復元します。joinは`streem c string`を要求し、コンテナの潜在エフェクトから自身が処理するbreakを除いたものを伝播します。toNumは標準option型を必要とし、parseNumはexnを型に含めます。VMとGoで同じ10進数文法・空白規則・有限性検査を使います。
+splitの型は`string string -> stream string`で潜在エフェクトは空です。VMのstream値をREPLから再推論する場合にも、この型を復元します。joinは`streem c string`を要求し、コンテナの潜在エフェクトから自身が処理するbreakを除いたものを伝播します。toNumは標準option型を必要とし、parseFloatとparseIntはexnを型に含め、結果の型はそれぞれfloatとintです。VMとGoで同じ10進数文法・空白規則・有限性検査を使います。
 
 showは1消費1生産の通常のクラスメソッドです。型変数にはshow制約を付け、具体型では明示instanceを優先し、存在しない場合は標準構造表示へfallbackします。instanceの型引数・文脈制約・戻り型は既存のクラス検査を使います。Goは具体的な型のinstanceを特殊化し、VMは解決済みの呼び出し型をinstanceへ渡します。printは無制約の構造表示のままです。
 

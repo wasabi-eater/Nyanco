@@ -725,8 +725,9 @@ sortBy [1, 3, 2] {0 -}                  -- [3, 2, 1]
 | --- | --- |
 | `split text separator` | 区切り文字列で分割する遅延`stream string` |
 | `join xs separator` | `streem`の文字列要素を区切り文字列で結合した`string` |
-| `toNum text` | 数値なら`Some int`、失敗なら`None` |
-| `parseNum text` | 数値なら`int`、失敗なら`exn` |
+| `toNum text` | 数値なら`Some float`、失敗なら`None` |
+| `parseFloat text` | 数値なら`float`、失敗なら`exn` |
+| `parseInt text` | 整数なら`int`、失敗なら`exn` |
 
 ```haskell
 toVector (split "a,,b," ",")      -- ["a", "", "b", ""]
@@ -734,17 +735,17 @@ join (split "a,b,c" ",") " / "   -- "a / b / c"
 join (map (1 ..= 3) {show}) ", " -- "1, 2, 3"
 toNum " -1.25e2 "               -- (Some -125)
 toNum "oops"                    -- None
-parseNum ".5"                   -- 0.5
+parseFloat ".5"                   -- 0.5
 ```
 
 区切りは正規表現ではなく文字列として扱い、複数文字も指定できます。先頭・末尾・連続する区切りで生じる空要素を保持します。空の区切り`""`はUnicodeコードポイント単位の分割で、`split "" ""`は空のstreamです。非空の区切りでは`split "" ","`は空文字列1個を返します。streamは再走査でき、`take`などで途中まで読むこともできます。
 
 `join`はvector・range以外も含むstreem実装型を受け取れますが、要素の型はstringでなければなりません。空の入力は`""`です。`cancel`に対応し、途中で終了した場合はそれまでの要素を結合して返します。走査時のエフェクトも推論されます。
 
-数値変換は前後のASCII空白を取り除き、符号付き10進数・小数・指数表記を受け付けます。空文字、途中に余計な文字があるもの、16進数、NaN、Infinity、有限範囲を超える値は失敗します。`parseNum`の失敗は`handle`で処理できます。
+数値変換は前後のASCII空白を取り除き、符号付き10進数・小数・指数表記を受け付けます。空文字、途中に余計な文字があるもの、16進数、NaN、Infinity、有限範囲を超える値は失敗します。`parseFloat`の失敗は`handle`で処理できます。
 
 ```haskell
-handle {parseNum "bad"} {exn: {-> message k; 0}} -- 0
+handle {parseFloat "bad"} {exn: {-> message k; 0}} -- 0
 ```
 
 `show`は次に相当する組み込みクラスになりました。
@@ -943,7 +944,7 @@ instance indexSet (box 'a) where
 
 添字の型はvector・stringではintです。floatの添字は型エラー、範囲外はexnになります。stringの更新結果が正しいUTF-8でなければexnとなり、元の変数は変更されません。
 
-既存のtoNum・parseNumはfloatを読み取る互換名として残しています。旧ソースの型注釈numは用途に応じてfloatまたはintへ変更してください。
+toNumはfloatを読み取ります。parseNumはparseFloatに改称しました。parseIntは符号付き10進整数を読み取り、64bit範囲外・小数・指数表記はexnになります。前後のASCII空白は許可します。旧ソースの型注釈numは用途に応じてfloatまたはintへ変更してください。
 
 [実行例](examples/scalars-indexers.nyan)
 

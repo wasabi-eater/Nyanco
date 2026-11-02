@@ -211,6 +211,13 @@ func(m *Machine) parseNumber(value any,optional bool,loc string) any {
  m.perform("exn",[]any{"Invalid number: "+text(source)},loc,true);fail(loc,"Non-returning effect returned");return nil
 }
 
+var integerText=regexp.MustCompile(`^[+-]?[0-9]+$`)
+func(m *Machine) parseInteger(value any,loc string) any {
+ source:=stringValue(value,loc);trimmed:=strings.Trim(source," \t\r\n\v\f")
+ if integerText.MatchString(trimmed){n,err:=strconv.ParseInt(trimmed,10,64);if err==nil{return n}}
+ m.perform("exn",[]any{"Invalid integer: "+text(source)},loc,true);fail(loc,"Non-returning effect returned");return nil
+}
+
 func(m *Machine) numericCast(value any,target,loc string) any {
  if target=="char"{if _,ok:=value.(Char);ok{return value}}
  if target=="int"{if _,ok:=value.(int64);ok{return value}}

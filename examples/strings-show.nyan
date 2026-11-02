@@ -8,5 +8,5 @@ main =
   print (join (split "a,b,c" ",") " / ");
   print (toNum " -1.25e2 ");
   print (toNum "oops");
-  print (handle {parseNum "bad"} {exn: {-> message k; 0}});
+  print (handle {parseFloat "bad"} {exn: {-> message k; 0}});
   print (show (Person "Ada" 37))

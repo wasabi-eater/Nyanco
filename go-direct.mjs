@@ -506,7 +506,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     }
     if(name==='bytes'){v.push(ctx.value(`byteValues(${pop()},${at})`));return;}
     if(name==='chars'){v.push(ctx.value(`chars(${pop()},${at})`));return;}
-    if(name==='toNum'||name==='parseNum'){v.push(ctx.value(`m.parseNumber(${pop()},${name==='toNum'},${at})`));return;}
+    if(name==='parseInt'){v.push(ctx.value(`m.parseInteger(${pop()},${at})`));return;}
+    if(name==='toNum'||name==='parseFloat'){v.push(ctx.value(`m.parseNumber(${pop()},${name==='toNum'},${at})`));return;}
     if(name==='fromYield') {
       const q=pop(),inv=invocation(info.bodyType),body=context();body.call(`m.${inv.name}`,[q,at],inv.output.length);
       v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.handle(func(m *Machine) []any {${body.lines.join(';')};return nil},map[string]EffectHandler{"yield":func(args []any,k *Continuation) []any {visit(args[0]);return resumeContinuation(k,nil,${at})}},${at},${label})}}`));return;

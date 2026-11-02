@@ -618,7 +618,7 @@ function builtinSchemes() {
   add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
   add('split',()=>{const s=row();return quote(stack(s,STRING,STRING),push(s,{tag:'stream',item:STRING,effects:effects()}));});
   add('toNum',()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'adt',name:'option',args:[FLOAT]}));});
-  {const s=row();out.set('parseNum',generalize(quote(push(s,STRING),push(s,FLOAT),effects([{name:'exn',args:[]}]))));}
+  for(const [name,type] of [['parseFloat',FLOAT],['parseInt',INT]]){const s=row();out.set(name,generalize(quote(push(s,STRING),push(s,type),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),latent=variable('effect-row');requireIterable(c,STRING,null,latent);
     out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));}
   for(const name of ['windows','chunks','chunkBy','groupBy']){
