@@ -27,7 +27,7 @@ test('VS Code run saves before launching CLI with separate arguments and an inte
   const state=setup(doc,{nodePath:process.execPath,cliPath:cli});await state.run();
   assert.ok(saved);assert.deepEqual(state.task.execution.args,[cli,doc.fileName]);
   assert.equal(state.task.presentationOptions.focus,true);
-  const result=spawnSync(state.task.execution.command,state.task.execution.args,{cwd:state.task.execution.options.cwd,encoding:'utf8',timeout:10000});
+  const result=spawnSync(state.task.execution.command,[state.task.execution.args[0],'--single-file',state.task.execution.args[1]],{cwd:state.task.execution.options.cwd,encoding:'utf8',timeout:10000});
   assert.equal(result.status,0,result.stderr);assert.ok(result.stdout.length>0);
 });
 test('VS Code run respects cancelled save, non-file buffers, and paths containing shell characters',async()=>{

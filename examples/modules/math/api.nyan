@@ -1,0 +1,5 @@
+pub square x = multiply x x
+pub data secret = Secret int
+pub make n = Secret n
+pub value (Secret n) = n
+open data box 'a = Box 'a deriving show, eq

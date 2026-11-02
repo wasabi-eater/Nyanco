@@ -1,7 +1,7 @@
 import {createInterface} from 'node:readline';
 
 const colors={comment:90,string:32,escape:36,number:33,keyword:35,type:36,constructor:36,stack:95,operator:93,label:94};
-const keywords=new Set('data class instance effect type deriving where case otherwise handle mask mut with end'.split(' '));
+const keywords=new Set('import as pub open data class instance effect type deriving where case otherwise handle mask mut with end'.split(' '));
 const types=new Set('int float byte char string bool vector stream range option result dict'.split(' '));
 const paint=(kind,text)=>`\x1b[${colors[kind]}m${text}\x1b[0m`;
 

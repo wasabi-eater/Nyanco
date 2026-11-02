@@ -21,6 +21,19 @@ export class StaticTypeError extends Error {
 }
 let nextId = 0;
 let activeClasses=new Map();
+let activeDataTypes=new Map();
+let activeModuleEffects=new Map();
+const handlerOperation=(record,name)=>activeModuleEffects.get(record.moduleID)?.get(name)||name;
+function aliasRepresentation(type,dataTypes=activeDataTypes){
+ type=prune(type);const declaration=type.tag==='adt'&&dataTypes.get(type.name);
+ return declaration?.aliasSyntax?syntaxType(declaration.aliasSyntax,new Map(declaration.parameters.map((p,i)=>[p,type.args[i]]))):type;
+}
+function visibleAlias(type,token){
+ type=prune(type);const declaration=type.tag==='adt'&&activeDataTypes.get(type.name);
+ if(declaration?.aliasSyntax&&(declaration.transparent||token?.moduleID&&token.moduleID===declaration.moduleID||token?.file===declaration.token.file))return visibleAlias(aliasRepresentation(type),token);
+ return type;
+}
+
 let activeEffects=new Map();
 let activeFamilies=new Map();
 let activeProtected=new Set();
@@ -66,7 +79,7 @@ function requireSuperclasses(c,args,token,items=[]){
 // A multi-parameter class is a relation, not an associated-type dependency.
 function requireRelation(c,args,token){
  if(args.length!==classParameters(c).length+(c.associated?.length||0))throw new StaticTypeError('Invalid class constraint arity: '+c.name,token);
- args=args.map(prune);if(hasRelationEvidence(c,args))return;
+ args=args.map(t=>visibleAlias(t,token));if(hasRelationEvidence(c,args))return;
  const n=classParameters(c).length,heads=args.slice(0,n),instance=lookupInstance(c,heads);
  if(instance||heads.every(t=>!['var','rigid'].includes(t.tag))){
   if(!instance){if(c.intoClass&&builtinConversion(heads))return;throw new StaticTypeError('No instance: '+c.name+' '+args.map(formatType).join(' '),token);}
@@ -77,7 +90,7 @@ function requireRelation(c,args,token){
  for(const v of vars){v.relations??=[];if(!v.relations.some(r=>r.name===c.name&&r.args.every((t,i)=>sameType(t,args[i]))))v.relations.push({name:c.name,args});}
 }
 function requireAssociated(c,container,items,token) {
-  container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
+  container=visibleAlias(container,token);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(container.tag==='var'||container.tag==='rigid') {
     if(container.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
     for(const fact of constraintFacts(container,c.name))if(fact.name===c.name&&sameType(fact.args[0],container)){items.forEach((t,i)=>unify(t,fact.args[i+1],token));return;}
@@ -99,7 +112,7 @@ function requireAssociated(c,container,items,token) {
 }
 function requireClass(name,type,token) {
   if(name==='streem')return requireIterable(type,variable(),token);
-  type=prune(type);
+  type=visibleAlias(type,token);
   const c=activeClasses.get(name);
   if(!c)throw new StaticTypeError(`Unknown class: ${name}`,token);
   if(c.associated?.length)return requireAssociated(c,type,c.associated.map(()=>variable()),token);
@@ -125,7 +138,7 @@ function requireClass(name,type,token) {
 }
 
 function requireIterable(container,item,token,latent=null) {
-  container=prune(container);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
+  container=visibleAlias(container,token);if(container.numericLiterals){unify(container,INT,token);container=prune(container);}
   if(latent){if(container.tag==='var'||container.tag==='rigid'){if(container.eachEffects)mergeEffects(latent,container.eachEffects,token);else container.eachEffects=latent;}else mergeEffects(latent,container.tag==='stream'?container.effects:effects(),token);}
   if(container.tag==='stream'){unify(container.item,item,token);return;}
   if(['var','rigid'].includes(container.tag))for(const fact of constraintFacts(container,'streem'))if(fact.name==='streem'&&sameType(fact.args[0],container)&&fact.args[1]){unify(item,fact.args[1],token);return;}
@@ -152,7 +165,8 @@ function requireHandlers(handlers,answer,token,residual=null) {
   const expected=new Map(),groupParameters=new Map();
   const bodyEffects=residual?.dependencies?.[0]?.row;
   const bodyEntries=bodyEffects?effectView(bodyEffects).entries:[];
-  for(const [name,type] of fields.fields){
+  for(const [field,type] of fields.fields){
+    const name=handlerOperation(handlers,field);
     const op=activeEffects.get(name);if(!op)throw new StaticTypeError(`Unknown effect: ${name}`,token);
     let parameters=new Map((op.rowParameters||[]).map(p=>[p,row()]));
     if(op.grouped){
@@ -176,7 +190,7 @@ function requireHandlers(handlers,answer,token,residual=null) {
       const escapes=(t,seen=new Set())=>{t=prune(t);if(rigidSet.has(t))return true;if(seen.has(t))return false;seen.add(t);return children(t).some(x=>escapes(x,seen));};
       if(escapes(answer)||[...activeProtected,...captured].some(v=>escapes(v)))throw new StaticTypeError('Polymorphic effect parameter escapes its handler',token);
     }
-    checkNeverPromises(type,handler,token);unify(type,handler,token);prune(type).handledArgs=(op.parameters||[]).map(n=>parameters.get(n));expected.set(name,handler);
+    checkNeverPromises(type,handler,token);unify(type,handler,token);prune(type).handledArgs=(op.parameters||[]).map(n=>parameters.get(n));handler.handlerField=field;expected.set(name,handler);
   }
   return expected;
 }
@@ -286,7 +300,7 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
   for(const d of t.dependencies||[]) {
     // Keep conversion effects dependent on the literal type until specialization.
     if(d.literalType){const type=prune(d.literalType);if(!(type.tag==='atom'&&['int','float','byte'].includes(type.name))&&!(type.tag==='var'&&!type.polymorphicNumber)){effectView(effects([{name:'exn',args:[]}]),excluded,seen,result);}continue;}
-    const h=d.handlers?prune(d.handlers):null,fields=h?.tag==='record'?flattenRecord(h.row).fields:null;
+    const h=d.handlers?prune(d.handlers):null,fields=h?.tag==='record'?new Map([...flattenRecord(h.row).fields].map(([name,q])=>[handlerOperation(h,name),q])):null;
     if(d.handlerEffects){
       if(fields)for(const [name,q] of fields){
         const handler=prune(q);if(!handler.effects)continue;
@@ -377,6 +391,7 @@ function weakEffects(t,seen=new Set()) {
 function occurs(v,t,seen=new Set()){t=prune(t);if(v===t)return true;if(seen.has(t))return false;seen.add(t);return children(t).some(x=>occurs(v,x,seen));}
 function unify(a, b, token) {
   a = prune(a); b = prune(b);
+  if(!(a.tag==='adt'&&b.tag==='adt'&&a.name===b.name)){a=visibleAlias(a,token);b=visibleAlias(b,token);}
   if (a === b) return;
   if(a.tag==='concat-row' && prune(a.base)===b)return unify(a.suffix,EMPTY,token);
   if(b.tag==='concat-row' && prune(b.base)===a)return unify(b.suffix,EMPTY,token);
@@ -423,6 +438,7 @@ function unify(a, b, token) {
   if (a.tag !== b.tag || (['atom','adt'].includes(a.tag) && a.name !== b.name) || (a.tag==='adt' && a.args.length!==b.args.length) || a.tag === 'rigid')
     throw new StaticTypeError(`Cannot unify ${formatType(a)} with ${formatType(b)}`, token);
   if(!checkingUniversalHandler && ['quote','continuation','stream'].includes(a.tag) && a.tag===b.tag){mergeEffects(a.effects??=variable('effect-row'),b.effects??=variable('effect-row'),token);}
+  if(a.tag==='record'&&b.tag==='record'){a.moduleID??=b.moduleID;b.moduleID??=a.moduleID;}
   if(a.tag==='quote' && b.tag==='quote'){const captured=[...new Set([...(a.captures||[]),...(b.captures||[])])];if(captured.length){a.captures=captured;b.captures=captured;}}
   const aa=children(a), bb=children(b);
   aa.forEach((child,i)=>unify(child,bb[i],token));
@@ -439,7 +455,7 @@ function clone(t, replacements) {
     result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{}),...(d.literalType?{literalType:clone(d.literalType,replacements)}:{}),...(d.breakOutput?{breakOutput:clone(d.breakOutput,replacements)}:{})}));return result;
   }
   if(['tuple','tuple-tail'].includes(t.tag))return {...t,items:t.items.map(x=>clone(x,replacements)),tail:clone(t.tail,replacements)};
-  if(t.tag==='record')return {tag:'record',row:clone(t.row,replacements)};
+  if(t.tag==='record')return {...t,row:clone(t.row,replacements)};
   if(t.tag==='record-row')return recordRow([...t.fields].map(([k,v])=>[k,clone(v,replacements)]),clone(t.tail,replacements));
   if(t.tag==='stream')return {tag:'stream',item:clone(t.item,replacements),effects:clone(t.effects,replacements),...(t.effectBound?{effectBound:clone(t.effectBound,replacements)}:{})};
   if(t.tag==='list') return list(clone(t.item,replacements));
@@ -906,7 +922,7 @@ class Inference {
         const bindings=new Map(bound);bindings.references=bound.references;
         holes.forEach((h,i)=>bindings.set(h,values[i]));
         const fields=[];for(const f of node.fields){const value=this.single(f.body,env,bindings,node);if(isBottom(value)){current=BOTTOM;break;}fields.push([f.name,value]);}
-        if(!isBottom(current))current=push(current,record(fields));
+        if(!isBottom(current))current=push(current,{...record(fields),...(node.moduleID?{moduleID:node.moduleID}:{})});
       } else if(node.kind==='field') {
         let value;[current,value]=this.pop(current,node);const item=variable();
         unify(value,record([[node.name,item]],variable('record-row')),node);current=push(current,item);
@@ -929,7 +945,7 @@ class Inference {
             const part=node.path[depth],item=variable();
             if(part.kind==='field') {
               const tail=variable('record-row');unify(type,record([[part.name,item]],tail),node);
-              const result=replace(item,depth+1);return isBottom(result)?BOTTOM:record([[part.name,result]],tail);
+              const result=replace(item,depth+1);return isBottom(result)?BOTTOM:{...record([[part.name,result]],tail),...(prune(type).moduleID?{moduleID:prune(type).moduleID}:{})};
             }
             if(part.kind==='tuple-index') {
               const items=Array.from({length:part.index+1},()=>variable()),tail=variable('tuple-row');
@@ -1073,7 +1089,7 @@ class Inference {
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
     if(value?.kind==='dict'){const key=variable(),item=variable();for(const [k,v] of dictEntries(value)){unify(key,this.value(k,token),token);unify(item,this.value(v,token),token);}return adt('dict',[key,item]);}
-    if(value?.kind==='record')return record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)]));
+    if(value?.kind==='record')return {...record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)])),...(value.moduleID?{moduleID:value.moduleID}:{})};
     if(value?.kind==='scalar')return atom(value.type);
     if(typeof value==='number') return INT;
     if(typeof value==='boolean') return BOOL;
@@ -1259,7 +1275,7 @@ function components(definitions,globals) {
 function prepare(definitions,globalValues,initialized=false) {
   definitions=withStandardFunctions(withOption(definitions));
   const operators=installOperatorClasses(new Map(definitions.classes||[]),new Map(definitions.methods||[]));resolveInheritance(operators.classes,(message,t)=>{throw new StaticTypeError(message,t);});
-  activeClasses=operators.classes;
+  activeClasses=operators.classes;activeDataTypes=definitions.dataTypes||new Map();activeModuleEffects=definitions.moduleEffects||new Map();
   const inference=new Inference();
   inference.classes=activeClasses;
   inference.effects=ioEffects(definitions.effects);activeEffects=inference.effects;activeFamilies=effectFamilies(activeEffects);
@@ -1411,7 +1427,7 @@ function specializeEffects(actual,expected,token) {
 // arguments are used to reconnect stored closures to those types, never to
 // guess an instance from a method result.
 function integerLiteralInfo(definitions,node,type){
- type=prune(type);if(type.tag==='var'){unify(type,INT,node);type=prune(type);}
+ type=visibleAlias(type,node);if(type.tag==='var'){unify(type,INT,node);type=prune(type);}
  if(type.tag==='atom'&&['int','float','byte'].includes(type.name))return {type:type.name};
  requireClass('num',type,node);
  try{const value=BigInt(node.numberSource??String(node.value));if(value< -9223372036854775808n||value>9223372036854775807n)throw new Error();}catch{throw new StaticTypeError('int literal is outside signed 64-bit range',node);}
@@ -1419,7 +1435,7 @@ function integerLiteralInfo(definitions,node,type){
  return {effect,conversion:castInfo(definitions,{...node,value:'fromInt'},effect)};
 }
 function castInfo(definitions,node,effect){
- const method=definitions.methods.get(node.value),c=definitions.classes.get(method.className),values=(effect.dispatchTypes||[effect.dispatchType]).map(prune);
+ const method=definitions.methods.get(node.value),c=definitions.classes.get(method.className),values=(effect.dispatchTypes||[effect.dispatchType]).map(t=>visibleAlias(t,node));
  const bindings=new Map(classParameters(c).map((p,i)=>[p,values[i]]));
  const args=c.intoClass?values:c.conversion.map(t=>syntaxType(t,bindings));
  for(let i=0;i<args.length;i++){let t=prune(args[i]);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}args[i]=t;if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous conversion: '+node.value+'; add a type annotation for source and result',node);}
@@ -1429,7 +1445,7 @@ function castInfo(definitions,node,effect){
 }
 function executionTypes(base,definitions) {
   const hostTypes=new WeakMap();
-  const activate=()=>{activeClasses=base.classes;activeEffects=base.effects;activeFamilies=effectFamilies(activeEffects);};
+  const activate=()=>{activeClasses=base.classes;activeDataTypes=definitions.dataTypes||new Map();activeModuleEffects=definitions.moduleEffects||new Map();activeEffects=base.effects;activeFamilies=effectFamilies(activeEffects);};
   function fresh() {
     activate();const inf=new Inference();
     Object.assign(inf,{functions:base.functions,globals:base.globals,constructors:base.constructors,dataTypes:base.dataTypes,effects:base.effects,trace:new Map(),quotations:new Map(),hostTypes});return inf;
@@ -1509,7 +1525,7 @@ export function inferExpression(nodes,definitions=new Map(),globals=new Map(),in
 export function loweringTypes(definitions) {
   const base=prepare(definitions,new Map());
   function analyze(nodes,input,env,blockLabel=null) {
-    activeClasses=base.classes;activeEffects=base.effects;activeFamilies=effectFamilies(activeEffects);
+    activeClasses=base.classes;activeDataTypes=definitions.dataTypes||new Map();activeModuleEffects=definitions.moduleEffects||new Map();activeEffects=base.effects;activeFamilies=effectFamilies(activeEffects);
     const inference=new Inference();
     inference.functions=base.functions;inference.globals=base.globals;inference.constructors=base.constructors;inference.dataTypes=base.dataTypes;
     inference.effects=base.effects;inference.trace=new Map();
@@ -1568,4 +1584,4 @@ export function occurrenceTypes(definitions,file) {
   }
   return result;
 }
-export const typeIR={syntaxType,integerLiteralInfo,castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};
+export const typeIR={aliasRepresentation,syntaxType,integerLiteralInfo,castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};

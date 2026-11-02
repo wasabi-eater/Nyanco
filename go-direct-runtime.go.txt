@@ -99,7 +99,7 @@ func text(v any) string {
  case *Record: if len(x.fields)==0{return "{:}"};keys:=[]string{};for k:=range x.fields{keys=append(keys,k)};sort.Strings(keys);parts:=[]string{};for _,k:=range keys{parts=append(parts,k+": "+text(x.fields[k]))};return "{"+strings.Join(parts,", ")+"}"
  case *Continuation: return "<continuation>"
  case *Quote: return "{ ... }"
- case *ADT: if len(x.fields)==0 { return x.constructor }; parts:=[]string{}; for _,v:=range x.fields { parts=append(parts,text(v)) }; return "("+x.constructor+" "+strings.Join(parts," ")+")"
+ case *ADT: if len(x.fields)==0 { return displayConstructor(x.constructor) }; parts:=[]string{}; for _,v:=range x.fields { parts=append(parts,text(v)) }; return "("+displayConstructor(x.constructor)+" "+strings.Join(parts," ")+")"
  }; panic("Unsupported value")
 }
 func equal(a,b any) bool {
@@ -260,3 +260,6 @@ func compareScalar(a,b any)int{
  default:panic("No ord instance for value")
  };return 0
 }
+
+var moduleConstructorPrefix=regexp.MustCompile(`^NyancoModule[0-9a-f]+_`)
+func displayConstructor(name string)string{return moduleConstructorPrefix.ReplaceAllString(name,"")}

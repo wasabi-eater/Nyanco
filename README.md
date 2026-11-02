@@ -1,4 +1,4 @@
-# Nyanco 0.75 — eq制約とderiving
+# Nyanco 0.76 — ディレクトリ単位のmodule
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -201,21 +201,21 @@ main = handle
 言語名は**Nyanco（ニャンコ）**、ソースファイルの拡張子は`.nyan`です。プロジェクト内で`npm link`を実行すると、`nyanco`コマンドを利用できます。Windowsではインストールせずに`.\nyanco.cmd`でも実行できます。
 
 ```sh
-nyanco examples/demo.nyan
-nyanco --check examples/demo.nyan
-nyanco examples/demo.nyan --build native/demo.exe
+nyanco --single-file examples/demo.nyan
+nyanco --check --single-file examples/demo.nyan
+nyanco --single-file examples/demo.nyan --build native/demo.exe
 ```
 
 
 ```text
 node cli.mjs
-node cli.mjs examples/prefix.nyan
+node cli.mjs --single-file examples/prefix.nyan
 node cli.mjs --eval "sum [1, 2, 3]"   （sumを定義したファイルを併用）
 node cli.mjs --eval "3 4"
 node cli.mjs --type "each"
-node cli.mjs --check examples/prefix.nyan
-node cli.mjs --types examples/prefix.nyan
-node cli.mjs examples/prefix.nyan --emit-go native/prefix.go --build native/prefix.exe
+node cli.mjs --check --single-file examples/prefix.nyan
+node cli.mjs --types --single-file examples/prefix.nyan
+node cli.mjs --single-file examples/prefix.nyan --emit-go native/prefix.go --build native/prefix.exe
 ```
 
 REPLは`:type`、`:stack`、`:clear`、`:words`、`:load PATH`、`:q`を使えます。複数行定義は`:{`と`:}`で囲みます。警告はstderrへ出力し、通常の結果はstdoutへ出力します。
@@ -1501,3 +1501,61 @@ show (Foo "x") -- "(Foo \"x\")"
 派生eqはコンストラクターと各フィールドを比較します。派生hashは型・コンストラクター名とフィールドのhashを組み合わせます。派生ordはコンストラクターの宣言順、同じコンストラクター同士ではフィールド順の辞書式比較です。派生showはコンストラクター名と各フィールドのshowで表示します。vector・tuple・recordなどのordにも対応し、フィールド側のinstanceを利用します。
 
 具体的なquotationフィールドを持つADTはeq・hash・ordをderivingできません。型引数のフィールドの場合は対応する制約が付き、そのinstanceを利用するときに検査します。
+
+
+## module（0.76）
+
+同じディレクトリの`.nyan`ファイルは1つのmoduleです。CLIは指定ファイルのディレクトリ内にある全ソースを読み込みます。ディレクトリ自体を指定しても実行できます。非公開の定義も同じmodule内のファイル間では共有します。
+
+```nyanco
+-- app/main.nyan
+import "./math" as math
+main = print (math.square 5)
+
+-- app/math/arithmetic.nyan
+pub square x = twice x
+
+-- app/math/helper.nyan
+twice x = x * x
+```
+
+`import "./math"`のようにasを省略すると、読み込むディレクトリ名が修飾名になります。パスはimportを書いたmoduleのディレクトリを基準に解決します。importはファイル単位、定義と公開範囲はmodule単位です。外部参照には`math.square`のような修飾名を使います。同じmoduleを複数経路でimportしても読み込みと初期化は一度です。循環importは拒否します。
+
+| 宣言 | 他moduleから参照できるもの |
+| --- | --- |
+| `f x = ...` | 非公開 |
+| `pub f x = ...` | 関数f |
+| `pub data secret = Secret int` | 型secretのみ。コンストラクタは非公開 |
+| `open data box 'a = Box 'a` | 型boxとコンストラクタBox |
+| `pub type token = int` | 型tokenのみ。外部ではintと同一視しない |
+| `open type pair 'a = #('a string)` | 型pairとaliasの実体 |
+| `pub class tagged 'a where ...` | クラスとそのメソッド |
+| `pub effect alert : string ->` | effect操作alert |
+
+`pub`と`open`を省いた型・クラス・effectも非公開です。型と値は別の名前空間で公開範囲を管理し、クラスと同名のメソッドも定義できます。instanceは読み込まれたクラスと型に対して共有します。importの修飾名はローカル変数で上書きできません。
+
+`pub type`はmodule内部ではaliasとして使えます。外部では同名の抽象型として渡せますが、元の型から直接値を作ったり、元のrecordとしてフィールドを読んだりはできません。抽象型を生成・操作する公開関数を用意してください。aliasには型引数を付けられ、再帰aliasは拒否します。
+
+```nyanco
+-- math/api.nyan
+pub type token = int
+pub makeToken : int -> token
+makeToken n = n
+pub readToken : token -> int
+readToken x = x
+
+-- main.nyan
+import "./math"
+main = print (math.readToken (math.makeToken 3))
+-- math.readToken 3 は型エラー
+```
+
+初期化は依存moduleを先に、同じmodule内ではファイル名順で行います。REPLの`:load`、CLIの型検査・Go出力・nativeビルド、LSPの補完・ホバー・定義ジャンプもmoduleに対応しています。LSPは未保存の変更も反映します。
+
+```sh
+node cli.mjs examples/modules/main.nyan
+node cli.mjs --check examples/modules
+node cli.mjs examples/modules --build native/modules.exe
+```
+
+従来の`examples`直下は独立したサンプルを同じディレクトリに置いているため、個別実行には`--single-file`を指定してください。通常のプロジェクトはディレクトリごとにmoduleを分けてください。プログラムからは`modules.mjs`の`compileModule(path)`で読み込めます。既存の`compile(source)`はインメモリの単一ソース用です。

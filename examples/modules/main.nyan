@@ -1,0 +1,2 @@
+import "./math"
+main = print (math.square 5); print (math.value (math.make 7)); print (math.Box "hello")

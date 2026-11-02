@@ -10,7 +10,8 @@ exports.activate = async function (context) {
     command: config.get('nodePath') || 'node',
     args: [config.get('serverPath') || path.resolve(context.extensionPath, '../../lsp.mjs')]
   }, {
-    documentSelector: [{ scheme: 'file', language: 'nyanco' }]
+    documentSelector: [{ scheme: 'file', language: 'nyanco' }],
+    synchronize: {fileEvents: vscode.workspace.createFileSystemWatcher('**/*.nyan')}
   });
   await client.start();
 };

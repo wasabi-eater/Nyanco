@@ -8,8 +8,10 @@ import {ioEffects} from './builtin-effects.mjs';
 import {instanceKey} from './type-names.mjs';
 import {readFileSync} from 'node:fs';
 import {parseExpression} from './language.mjs';
-import {checkExpression,loweringTypes,typeIR as T,formatType,missingOperands,StaticTypeError} from './types.mjs';
+import {checkExpression,loweringTypes,typeIR,formatType,missingOperands,StaticTypeError} from './types.mjs';
 
+const T={...typeIR,prune:t=>{let next=typeIR.prune(t);while(true){const rep=typeIR.aliasRepresentation(next);if(rep===next)return next;next=typeIR.prune(rep);}}};
+T.numericName=t=>typeIR.numericName(T.prune(t));
 const str=JSON.stringify;
 const lit=(v,type='int',source=null)=>v?.kind==='scalar'?`Char(${v.value.codePointAt(0)})`:typeof v==='string'?str(v):typeof v==='boolean'?String(v):`${type==='float'?'float64':type==='byte'?'uint8':'int64'}(${source??v})`;
 const location=n=>str(n?`${n.file}:${n.line}:${n.col}`:'<empty>');
@@ -69,7 +71,7 @@ function freshTypes(input,output,latent) {
 }
 
 export function transpileDirect(program,{expression='main',showStack=false,entryNodes=null,optimizeVectors=true}={}) {
-  const definitions=withStandardFunctions(withOption(Object.assign(new Map(program.definitions),{...program.definitions,effects:ioEffects(program.definitions.effects)}))),entry=entryNodes||parseExpression(expression,'<entry>',program.definitions.constructors);
+  const definitions=withStandardFunctions(withOption(Object.assign(new Map(program.definitions),{...program.definitions,effects:ioEffects(program.definitions.effects)}))),entry=entryNodes||parseExpression(definitions.moduleTokens?.(expression,'<entry>')||expression,'<entry>',program.definitions.constructors);
   checkExpression(entry,definitions);
   const vectorReuse=optimizeVectors?vectorOwnership(definitions,entry):new WeakSet();
   const types=loweringTypes(definitions),hashFunctions=[],hashNames=new Map(),comparisonNames=new Map(),showNames=new Map(),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
@@ -439,7 +441,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     }else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`d:=value.(*Dict);if d.size==0{return "[:]"};parts:=[]string{};for _,p:=range d.entries(){parts=append(parts,${showFunction(type.args[0])}(m,p[0])+": "+${showFunction(type.args[1])}(m,p[1]))};return "["+strings.Join(parts,", ")+"]"`);
     else if(type.tag==='adt'){
       const constructors=[...definitions.constructors.values()].filter(c=>c.typeName===type.name);
-      const cases=constructors.map(c=>{const bindings=new Map(c.parameters.map((p,i)=>[p,type.args[i]]));return `case ${str(c.name)}:return ${c.fields.length?'"('+c.name+' "+strings.Join([]string{'+c.fields.map((t,i)=>`${showFunction(T.syntaxType(t,bindings))}(m,a.fields[${i}])`).join(',')+'}," ")+")"':str(c.name)}`;});
+      const cases=constructors.map(c=>{const display=c.token.sourceName||c.name,bindings=new Map(c.parameters.map((p,i)=>[p,type.args[i]]));return `case ${str(c.name)}:return ${c.fields.length?str('('+display+' ')+'+strings.Join([]string{'+c.fields.map((t,i)=>`${showFunction(T.syntaxType(t,bindings))}(m,a.fields[${i}])`).join(',')+'}," ")+")"':str(display)}`;});
       ctx.lines.push(`a:=value.(*ADT);switch a.constructor{${cases.join(';')}};return text(value)`);
     }else ctx.lines.push('return text(value)');
     hashFunctions[index]=`func ${name}(m *Machine,value any) string {${ctx.lines.join(';')}}`;return name;
@@ -579,7 +581,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       };
       for(const [name,type] of info.handlers){
         const handler=invocation(type),count=effectParts(type).input.length-1;
-        entries.push(`${str(name)}:func(args []any,k *Continuation) []any {${pack('m',handler,[`recordField(${handlers},${str(name)},${at})`,at,...Array.from({length:count},(_,i)=>`args[${i}]`),'k'].join(','))}}`);
+        entries.push(`${str(name)}:func(args []any,k *Continuation) []any {${pack('m',handler,[`recordField(${handlers},${str(type.handlerField||name)},${at})`,at,...Array.from({length:count},(_,i)=>`args[${i}]`),'k'].join(','))}}`);
       }
       const result=`results${next++}`;
       ctx.lines.push(`${result}:=m.handle(func(child *Machine) []any {${pack('child',inv,`${body},${at}`)}},map[string]EffectHandler{${entries.join(',')}},${at},${label});_=${result}`);

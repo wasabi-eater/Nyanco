@@ -44,7 +44,8 @@ export function derivingSources(definitions,fail){
     const lines=[`instance ${constraints.length?constraints.join(', ')+' => ':''}${cls} ${syntaxSource(type)} where`];
     const pattern=(c,prefix)=>c.fields.length?'('+c.name+' '+c.fields.map((_,i)=>prefix+i).join(' ')+')':c.name;
     if(cls==='show')for(const c of constructors){
-      const body=c.fields.length?JSON.stringify('('+c.name+' ')+' ++ '+c.fields.map((_,i)=>`show left${i}`).join(' ++ " " ++ ')+' ++ ")"':JSON.stringify(c.name);
+      const display=c.token.sourceName||c.name;
+      const body=c.fields.length?JSON.stringify('('+display+' ')+' ++ '+c.fields.map((_,i)=>`show left${i}`).join(' ++ " " ++ ')+' ++ ")"':JSON.stringify(display);
       lines.push(`  show ${pattern(c,'left')} = ${body}`);
     }
     if(cls==='hash')for(const c of constructors){

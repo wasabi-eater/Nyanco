@@ -514,7 +514,7 @@ function resolveLabels(nodes,scope=new Map()) {
   }
   return nodes;
 }
-export const parseExpression = (source, file, constructors) => resolveLabels(parseTokens(lex(source, file),null,constructors));
+export const parseExpression = (source, file, constructors) => resolveLabels(parseTokens(Array.isArray(source)?source:lex(source, file),null,constructors));
 const identifier = /^(?!(?:_{2,}\d*|_\d+)$)[a-zA-Z_][a-zA-Z0-9_']*$/;
 
 function dataDeclarations(groups, definitions, globals) {
@@ -522,7 +522,7 @@ function dataDeclarations(groups, definitions, globals) {
   definitions.constructors = new Map(definitions.constructors);
   const pending=[];
   for (const group of groups) {
-    if (group[0].kind !== 'word' || group[0].value !== 'data') continue;
+    if (group[0].kind !== 'word' || !['data','type'].includes(group[0].value)) continue;
     const eq=group.findIndex(t=>t.kind==='word' && t.value==='=');
     const postfix=false;
     const originalName=group[postfix ? eq-1 : 1];
@@ -537,7 +537,7 @@ function dataDeclarations(groups, definitions, globals) {
       return t.value;
     });
     if(new Set(parameters).size!==parameters.length) throw new LanguageError('Duplicate type parameter',name);
-    const declaration={name:name.value,parameters,token:name,postfix};
+    const declaration={name:name.value,parameters,token:name,postfix,alias:group[0].value==='type',transparent:group[0].visibility!=='pub',moduleID:group[0].moduleID};
     definitions.dataTypes.set(name.value,declaration);
     const fields=group.slice(eq+1);let level=0,derive=-1;
     for(let j=0;j<fields.length;j++){const t=fields[j];if(!level&&t.value==='deriving'){derive=j;break;}if(['(','[','{'].includes(t.kind))level++;if([')',']','}'].includes(t.kind))level--;}
@@ -546,7 +546,14 @@ function dataDeclarations(groups, definitions, globals) {
   }
   Object.assign(definitions,withOption(definitions,{skipOption:pending.some(p=>p.tokens.some(t=>['Some','None'].includes(t.value))),skipResult:pending.some(p=>p.tokens.some(t=>['Ok','Err'].includes(t.value)))}));
   {const standard=withStandardFunctions(definitions);definitions.classes=standard.classes;definitions.methods=standard.methods;for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);}
+  for(const {declaration,tokens} of pending)if(declaration.alias){
+    const parser=typeSyntax(tokens.map(t=>t.value),definitions.dataTypes,new Set(declaration.parameters),m=>{throw new LanguageError(m,declaration.token);});
+    const types=parser.types();if(types.length!==1||!parser.done())throw new LanguageError('Type alias requires one complete type',declaration.token);declaration.aliasSyntax=types[0];
+  }
+  function aliasCycles(type,seen){if(!type||typeof type!=='object')return;if(type.tag==='adt'&&definitions.dataTypes.get(type.name)?.alias){if(seen.has(type.name))throw new LanguageError('Cyclic type alias: '+type.name,definitions.dataTypes.get(type.name).token);aliasCycles(definitions.dataTypes.get(type.name).aliasSyntax,new Set([...seen,type.name]));}for(const v of Object.values(type))if(Array.isArray(v))v.forEach(t=>aliasCycles(t,seen));else if(v&&typeof v==='object')aliasCycles(v,seen);}
+  for(const {declaration} of pending)if(declaration.alias)aliasCycles(declaration.aliasSyntax,new Set([declaration.name]));
   for(const {declaration,tokens} of pending) {
+    if(declaration.alias)continue;
     const alternatives=[[]];let depth=0;
     for(const t of tokens) {
       if(!depth && t.kind==='word' && t.value==='|') alternatives.push([]);
@@ -661,26 +668,33 @@ export function expressionWarnings(nodes,variables=new Set()) {
   }
   walk(nodes,variables);return warnings;
 }
-export function compile(source, file = '<input>', previous = new Map(), { checkTypes = true, globals = new Map() } = {}) {
-  const tokens = lex(source, file), groups = [];
+export function declarationGroups(tokens){
+  const groups=[];
   let depth = 0,afterDefinition=false,openDefinitions=0,guardHeader=false;
   for (const token of tokens) {
     if(token.kind===';;' && depth===0){
       if(openDefinitions>1){openDefinitions--;groups.at(-1).push(token);continue;}
       afterDefinition=true;openDefinitions=0;guardHeader=false;continue;
     }
-    if (afterDefinition || token.col === 1 && depth === 0 && !(token.kind==='word' && ['|','end'].includes(token.value))) {groups.push([]);openDefinitions=0;guardHeader=false;}
+    if (afterDefinition || (token.col === 1||token.declarationStart) && depth === 0 && !(token.kind==='word' && ['|','end'].includes(token.value))) {groups.push([]);openDefinitions=0;guardHeader=false;}
     afterDefinition=false;
     if (!groups.length) throw new LanguageError('Top-level declarations must start in column 1', token);
     if(!depth && token.value==='|')guardHeader=true;
-    if(!depth && token.value==='=' && !['data','class','instance','effect'].includes(groups.at(-1)[0]?.value)){
+    if(!depth && token.value==='=' && !['data','type','class','instance','effect'].includes(groups.at(-1)[0]?.value)){
       if(!guardHeader||!openDefinitions)openDefinitions++;guardHeader=false;
     }
     groups.at(-1).push(token);
     if (['[', '{', '('].includes(token.kind)) depth++;
     if ([']', '}', ')'].includes(token.kind)) depth--;
   }
+  return groups;
+}
+export function compile(source, file = '<input>', previous = new Map(), { checkTypes = true, globals = new Map(), tokens: sourceTokens = null, moduleEffects = previous.moduleEffects } = {}) {
+  const tokens = sourceTokens || previous.moduleTokens?.(source,file) || lex(source, file), groups = [];
+  groups.push(...declarationGroups(tokens));
+  for(const group of groups)if(['pub','open'].includes(group[0]?.value)){const modifier=group.shift();if(!group.length)throw new LanguageError('Visibility requires a declaration',modifier);group[0]={...group[0],declarationCol:modifier.col,visibility:modifier.value};}
   const definitions = new Map(previous), local = new Set(), signatures = new Map();
+  definitions.moduleTokens=previous.moduleTokens;definitions.moduleEffects=moduleEffects;definitions.moduleDisplay=previous.moduleDisplay;definitions.modulePublicNames=previous.modulePublicNames;
   definitions.classes=previous.classes;definitions.methods=previous.methods;
   definitions.dataTypes=previous.dataTypes;
   definitions.constructors=previous.constructors;
@@ -730,7 +744,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   for(const name of definitions.effects.keys())if(definitions.methods.has(name))throw new LanguageError(`Effect conflicts with class method: ${name}`);
   for (const group of expanded) {
     const [first, second] = group;
-    if(first.kind==='word' && first.value==='data')continue;
+    if(first.kind==='word' && ['data','type'].includes(first.value))continue;
     if(first.kind==='word' && first.value==='mut')throw new LanguageError('Declare mutable variables with value -> mut name',first);
     let level=0;const outer=group.filter(t=>{
       const top=level===0;
@@ -791,6 +805,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   return { definitions, signatures, types, warnings };
 }
 
+const displayConstructor=name=>name.replace(/^NyancoModule[0-9a-f]+_/,'');
 export function format(value) {
   if(value?.kind==='scalar')return value.type==='char'?charText(value.value):String(value.value);
   if(value?.kind==='continuation')return '<continuation>';
@@ -801,7 +816,7 @@ export function format(value) {
   if(value?.kind==='record')return Object.keys(value.fields).length ? `{${Object.keys(value.fields).sort().map(k=>`${k}: ${format(value.fields[k])}`).join(', ')}}` : '{:}';
   if (Array.isArray(value)) return `[${value.map(format).join(', ')}]`;
   if (value?.kind === 'closure') return '{ ... }';
-  if (value?.kind === 'adt') return value.fields.length ? `(${value.constructor} ${value.fields.map(format).join(' ')})` : value.constructor;
+  if (value?.kind === 'adt') return value.fields.length ? `(${displayConstructor(value.constructor)} ${value.fields.map(format).join(' ')})` : displayConstructor(value.constructor);
   if (typeof value === 'string') return JSON.stringify(value);
   if (typeof value === 'boolean') return value ? 'True' : 'False';
   return String(value);
@@ -914,9 +929,9 @@ export class VM {
     }
     return values;
   }
-  evaluate(source, stack = [], file = '<eval>') { return this.execute(parseExpression(source, file,this.definitions.constructors), stack); }
-  evaluateAsync(source, stack = [], file = '<eval>') { return this.executeAsync(parseExpression(source,file,this.definitions.constructors),stack); }
-  infer(source, file = '<type>') {const nodes=parseExpression(source,file,this.definitions.constructors);this.warnings=expressionWarnings(nodes,new Set([...this.globals].filter(([,v])=>v?.kind!=='local-function').map(([n])=>n)));for(const w of this.warnings)this.warning(w);return inferExpression(nodes,this.definitions,this.globals, this.initialized === this.definitions); }
+  evaluate(source, stack = [], file = '<eval>') { return this.execute(parseExpression(this.definitions.moduleTokens?.(source,file)||source, file,this.definitions.constructors), stack); }
+  evaluateAsync(source, stack = [], file = '<eval>') { return this.executeAsync(parseExpression(this.definitions.moduleTokens?.(source,file)||source,file,this.definitions.constructors),stack); }
+  infer(source, file = '<type>') {const nodes=parseExpression(this.definitions.moduleTokens?.(source,file)||source,file,this.definitions.constructors);this.warnings=expressionWarnings(nodes,new Set([...this.globals].filter(([,v])=>v?.kind!=='local-function').map(([n])=>n)));for(const w of this.warnings)this.warning(w);const type=inferExpression(nodes,this.definitions,this.globals, this.initialized === this.definitions);return this.definitions.moduleDisplay?.(type)||type; }
   declare(env, name, value, mutable, token, index = 0) {
     if(this.definitions.constructors?.has(name))throw new LanguageError(`Cannot shadow constructor: ${name}`,token);
     if (env.locals.has(name)) throw new LanguageError(`Variable already declared: ${name}`, token);
@@ -1049,7 +1064,7 @@ export class VM {
     if(items){const parts=[];for(const v of items)parts.push(yield* this.showValue(v,t));return Array.isArray(value)?'['+parts.join(', ')+']':'#('+parts.join(' ')+')';}
     if(value?.kind==='record'){const parts=[];for(const k of Object.keys(value.fields).sort())parts.push(k+': '+(yield* this.showValue(value.fields[k],t)));return parts.length?'{'+parts.join(', ')+'}':'{:}';}
     if(value?.kind==='dict'){const parts=[];for(const [k,v] of value.entries)parts.push((yield* this.showValue(k,t))+': '+(yield* this.showValue(v,t)));return parts.length?'['+parts.join(', ')+']':'[:]';}
-    if(value?.kind==='adt'){const parts=[];for(const v of value.fields)parts.push(yield* this.showValue(v,t));return parts.length?'('+value.constructor+' '+parts.join(' ')+')':value.constructor;}
+    if(value?.kind==='adt'){const parts=[];for(const v of value.fields)parts.push(yield* this.showValue(v,t));return parts.length?'('+displayConstructor(value.constructor)+' '+parts.join(' ')+')':displayConstructor(value.constructor);}
     return format(value);
   }
   *eqValue(a,b,t){
@@ -1228,7 +1243,7 @@ export class VM {
           bound.references=missing.references;holes.forEach((h,i)=>bound.set(h,values[i]));
           const fields=Object.create(null);
           for(const field of t.fields)fields[field.name]=yield* this.operand(field.body,env,bound,t,'Record field');
-          stack.push({kind:'record',fields});
+          stack.push({kind:'record',fields,...(t.moduleID?{moduleID:t.moduleID}:{})});
         }
         else if(t.kind==='field') {
           this.need(stack,1,t);const value=stack.pop();
@@ -1250,7 +1265,7 @@ export class VM {
             if(part.kind==='field') {
               if(value?.kind!=='record'||!Object.hasOwn(value.fields,part.name))throw new LanguageError(`Missing record field: ${part.name}`,t);
               const replacement=yield* copy(value.fields[part.name],depth+1);
-              return {kind:'record',fields:{...value.fields,[part.name]:replacement}};
+              return {...value,fields:{...value.fields,[part.name]:replacement}};
             }
             if(part.kind==='tuple-index') {
               if(value?.kind!=='tuple'||part.index>=value.items.length)throw new LanguageError('Tuple index out of bounds',t);
@@ -1352,7 +1367,8 @@ export class VM {
 const BUILTINS = new Map();
 const define = (name, count, fn) => BUILTINS.set(name, function*(vm, s, t) { vm.need(s, count, t); const result=fn(vm,s,t);if(result?.next)yield* result; });
 define('handle',2,function*(vm,s,t){
-  const handlers=s.pop(),body=vm.expect(s.pop(),'quotation',t);
+  let handlers=s.pop();const body=vm.expect(s.pop(),'quotation',t);
+  if(handlers?.moduleID){const aliases=vm.definitions.moduleEffects?.get(handlers.moduleID);handlers={...handlers,fields:Object.fromEntries(Object.entries(handlers.fields).map(([name,q])=>[aliases?.get(name)||name,q]))};}
   if(handlers?.kind!=='record')throw new LanguageError('handle requires a handler record',t);
   for(const [name,q] of Object.entries(handlers.fields)){if(!ioEffects(vm.definitions.effects).has(name))throw new LanguageError(`Unknown effect: ${name}`,t);vm.expect(q,'quotation',t);}
   const local=[],generator=vm.call(body,local,t);

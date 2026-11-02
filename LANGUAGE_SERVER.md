@@ -60,3 +60,6 @@ node --test test/lsp.test.mjs
 ```
 
 型検査・補完・ホバー・定義位置・未完成のソースからの復帰に加え、実サーバーへの分割フレーム送信、Unicode、incremental change、古い変更通知の無視、shutdown/exitを検証します。
+
+
+moduleでは同じディレクトリのソースとimport先を合わせて型検査します。未保存のファイルも参照し、`pub`／`open`の公開範囲に従って補完と定義ジャンプを提供します。VS Code拡張は`.nyan`の追加・変更・削除も監視します。

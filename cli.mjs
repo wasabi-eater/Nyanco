@@ -8,11 +8,13 @@ import {createReplInterface,highlight} from './repl-highlight.mjs';
 import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression, formatWarning } from './language.mjs';
 import { checkExpression } from './types.mjs';
+import {compileModule} from './modules.mjs';
 
-const help = `Nyanco 0.75.0 — statically typed stack language
+const help = `Nyanco 0.76.0 — statically typed stack language
 Usage:
   nyanco                       Interactive REPL
-  nyanco program.nyan           Execute main
+  nyanco program.nyan           Execute main (all .nyan files in its directory)
+  nyanco --single-file file.nyan Execute a standalone file
   nyanco program.nyan --stack   Execute main and show final stack
   nyanco --eval "2 + 3"         Evaluate and show final stack
   nyanco program.nyan --eval "factorial 5"
@@ -41,14 +43,14 @@ async function repl() {
   const color=Boolean(stdin.isTTY&&stdout.isTTY)&&!('NO_COLOR' in process.env)&&process.env.TERM!=='dumb';
   const lines = rl[Symbol.asyncIterator]();
   const vm = new VM({input:async()=>{const line=await lines.next();return line.done?'':line.value;}}); let stack = [], block = null;
-  const install = async (source, file) => {
+  const install = async (source, file, module = false) => {
     const previous = vm.definitions;
-    const program = compile(source, file, previous, {globals: vm.globals});
+    const program = module?compileModule(file,{previous,globals:vm.globals}):compile(source, file, previous, {globals: vm.globals});
     for(const warning of program.warnings||[])process.stderr.write(formatWarning(warning)+'\n');
     vm.definitions = program.definitions;
     try { await vm.executeAsync([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('Nyanco 0.75.0 — static types; :type EXPR for inference\n');
+  stdout.write('Nyanco 0.76.0 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
     const input = line.trim();
@@ -65,10 +67,10 @@ async function repl() {
       else if (input === ':stack') stdout.write(format(stack) + '\n');
       else if (input.startsWith(':type ')) {const type=vm.infer(input.slice(6),'<repl-type>');stdout.write((color?highlight(type):type)+'\n');}
       else if (input === ':clear') { stack = []; stdout.write('[]\n'); }
-      else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys()])].join(' ') + '\n');
+      else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys(),...vm.definitions.modulePublicNames||[]])].filter(n=>!/^nyancoModule/i.test(n)&&!n.startsWith('__tc_')).join(' ') + '\n');
       else if (input.startsWith(':load ')) {
         const path = input.slice(6).trim();
-        await install(await readFile(path, 'utf8'), path);
+        await install(null,path,true);
         stdout.write(`Loaded ${path}\n`);
       } else if (input.startsWith(':')) throw new Error(`Unknown REPL command: ${input}`);
       else if (isDefinition(input)) {
@@ -89,7 +91,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (!args.length) return repl();
   if (args.length === 1 && args[0] === '--lsp') { const {startServer}=await import('./lsp.mjs'); startServer(); return; }
-  let file, expression, typeExpression, emitGo, build, check = false, showStack = false, showTypes = false;
+  let file, expression, typeExpression, emitGo, build, check = false, singleFile = false, showStack = false, showTypes = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') { stdout.write(help); return; }
@@ -105,6 +107,7 @@ async function main() {
       if(arg==='--emit-go')emitGo=resolve(path);else build=resolve(path);
     } else if (arg === '--types') showTypes = true;
     else if (arg === '--check') check = true;
+    else if (arg === '--single-file') singleFile = true;
     else if (arg === '--stack') showStack = true;
     else if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`);
     else if (!file) file = arg;
@@ -116,10 +119,10 @@ async function main() {
   if((emitGo || build) && (check || showTypes || typeExpression!==undefined))throw new Error('Go output cannot be combined with --check, --types or --type');
   if((emitGo && emitGo===build) || (file && [emitGo,build].includes(resolve(file))))throw new Error('Input, Go source and executable paths must be different');
   if (!file && expression === undefined && typeExpression === undefined) throw new Error('Specify a file, --eval or --type');
-  const program = file ? compile(await readFile(file, 'utf8'), file) : { definitions: new Map() };
+  const program = file ? (singleFile?compile(await readFile(file, 'utf8'), file):compileModule(file)) : { definitions: new Map() };
   const vm = new VM(program);
   if (typeExpression !== undefined) {stdout.write(vm.infer(typeExpression) + '\n');return;}
-  if (showTypes) {for(const [name,type] of program.types)stdout.write(`${name} : ${type}\n`);return;}
+  if (showTypes) {for(const [name,type] of program.types)if(!/^nyancoModule/i.test(name)&&!name.startsWith('__tc_'))stdout.write(`${name} : ${type}\n`);return;}
   if (check) {
     // A file with main is also checked as an executable starting with no values.
     if(program.definitions.has('main')) {

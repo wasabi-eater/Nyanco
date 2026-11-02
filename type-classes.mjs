@@ -26,7 +26,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     const first=group[0];
     if(first.value!=='class' && first.value!=='instance'){ordinary.push(group);continue;}
     const header=group.filter(t=>t.line===first.line),body=group.slice(header.length);
-    if(header.length<4 || header.at(-1).value!=='where' || body[0]?.col<=first.col)fail('Expected class Name \'a where or instance Name Type where with indented members',first);
+    if(header.length<4 || header.at(-1).value!=='where' || body[0]?.col<=(first.declarationCol||first.col))fail('Expected class Name \'a where or instance Name Type where with indented members',first);
     const classPostfix=false;
     let name=lowerName(header[classPostfix?2:1].value),arg=header[classPostfix?1:2].value;
     if(first.value==='instance') {

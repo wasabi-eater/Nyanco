@@ -25,7 +25,7 @@
         },
         {
           "name": "keyword.declaration.nyanco",
-          "match": "\\b(?:data|class|instance|effect|type|mut|with|deriving)\\b(?!')"
+          "match": "\\b(?:pub|open|import|as|data|class|instance|effect|type|mut|with|deriving)\\b(?!')"
         },
         {
           "name": "constant.language.boolean.nyanco",
