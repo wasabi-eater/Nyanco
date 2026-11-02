@@ -1,4 +1,4 @@
-# Nyanco 0.74 — 永続HashMapとhashクラス
+# Nyanco 0.75 — eq制約とderiving
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1461,3 +1461,31 @@ counts [] -- [:]
 ```
 
 存在確認付きの内部検索と加算で実装しているため、counts自身はexnを要求しません。pureなsourceを渡すとpureになり、IOやexnなどのsourceのeffectはそのまま伝播します。cancelでは途中までの辞書を返し、breakでは辞書の戻り値を指定できます。辞書の走査順は保証しません。
+
+## eqとderiving
+
+`==`と`/=`には`eq 'a`制約が必要です。int・float・byte・char・bool・string・range、およびoption・result・vector・tuple・record・辞書に標準実装があります。複合型は、その要素やフィールドもeqである場合に限って比較でき、各要素の独自eq instanceも使います。quotation・関数・streamにはeqを提供しません。継続は同一性で比較できます。
+
+```nyanco
+same : eq 'a => 'a 'a -> bool
+same = ==
+-- {1} == {1} は型エラー
+```
+
+ADTのinstanceは明示的に定義するか、data宣言の末尾にderivingを書きます。
+
+```nyanco
+data foo 'a = Foo 'a deriving show, eq, hash, ord
+data tree 'a = Leaf 'a | Node (tree 'a) (tree 'a)
+    deriving show, eq, hash, ord
+
+Foo 1 == Foo 1 -- True
+Foo 1 < Foo 2  -- True
+show (Foo "x") -- "(Foo \"x\")"
+```
+
+対応クラスはshow・eq・hash・ordです。フィールドに必要な制約を持つ通常のinstanceへ展開します。再帰・相互再帰にも対応し、未使用の型引数には制約を付けません。既存のフィールド型のinstanceが別の制約を要求する場合、その制約を引き継ぎます。手動instanceと同じクラスを重複してderivingすることはできません。
+
+派生eqはコンストラクターと各フィールドを比較します。派生hashは型・コンストラクター名とフィールドのhashを組み合わせます。派生ordはコンストラクターの宣言順、同じコンストラクター同士ではフィールド順の辞書式比較です。派生showはコンストラクター名と各フィールドのshowで表示します。vector・tuple・recordなどのordにも対応し、フィールド側のinstanceを利用します。
+
+具体的なquotationフィールドを持つADTはeq・hash・ordをderivingできません。型引数のフィールドの場合は対応する制約が付き、そのinstanceを利用するときに検査します。

@@ -63,7 +63,7 @@ test('native builtins, captures, ADTs and nested operands preserve semantics',{s
     '0 (4 Some) get; 2 None get; [(1 Some) None] show; (1 Some == 1 Some)',
     '[1 2 3] sum; [[1] [2]] flattenPair',
     '"日本語 😀 <>&" show; "line\\nquote\\\"" show; ([] :: 1) show',
-    '{} dup (==); {} {} (==)',
+    '[1] dup (==); [1] [2] (==)',
     'global ! (+ 1); global',
   ];
   const program=compile(`data 'a option = None | 'a Some

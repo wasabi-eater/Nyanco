@@ -43,6 +43,7 @@ async function main() {
   check('loop @outer {break@outer}', '@outer', 'entity.name.label.nyanco');
   check('f = 1.25e-3', '1.25', 'constant.numeric.nyanco');
   check('dict int string', 'dict', 'storage.type.nyanco');
+  check("data foo 'a = Foo 'a deriving eq, hash", 'deriving', 'keyword.declaration.nyanco');
   check('r.x <- 1', '.x', 'variable.other.property.nyanco');
   for (const op of ['<-', '->', '??<-', '??=', '??', '::', '.<<.', '.>>.', '.&.', '.|.', '..=', '&&', '||'])
     check('x '+op+' y', op, 'keyword.operator.nyanco');

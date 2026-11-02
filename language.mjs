@@ -1,3 +1,4 @@
+import {derivingSources} from './deriving.mjs';
 import {emptyDict,dictGet,dictSet,dictEntries,dictHashedEntries,hashMix,hashText,scalarHash} from './hash-map.mjs';
 import {bitOperation,bitOperators,bitFunctions} from './bit-values.mjs';
 import {scalar,scalarType,scalarValue,numericBinary,charText} from './numeric-values.mjs';
@@ -15,6 +16,7 @@ import { typeSyntax, patternNames } from './type-syntax.mjs';
 
 export class LanguageError extends Error {
   constructor(message, token) {
+    token=token?.derivedFrom||token;
     super(token ? `${token.file}:${token.line}:${token.col}: ${message}` : message);
     this.name = 'LanguageError';
     this.token = token;
@@ -537,7 +539,10 @@ function dataDeclarations(groups, definitions, globals) {
     if(new Set(parameters).size!==parameters.length) throw new LanguageError('Duplicate type parameter',name);
     const declaration={name:name.value,parameters,token:name,postfix};
     definitions.dataTypes.set(name.value,declaration);
-    pending.push({declaration,tokens:group.slice(eq+1)});
+    const fields=group.slice(eq+1);let level=0,derive=-1;
+    for(let j=0;j<fields.length;j++){const t=fields[j];if(!level&&t.value==='deriving'){derive=j;break;}if(['(','[','{'].includes(t.kind))level++;if([')',']','}'].includes(t.kind))level--;}
+    if(derive>=0){const clauses=fields.slice(derive+1),names=clauses.filter(t=>t.kind!==',').map(t=>t.value);if(!names.length||clauses.some((t,j)=>j%2===0?t.kind!=='word':t.kind!==',')||clauses.at(-1)?.kind===','||new Set(names).size!==names.length)throw new LanguageError('Expected distinct deriving classes separated by commas',fields[derive]);declaration.deriving=names;}
+    pending.push({declaration,tokens:derive<0?fields:fields.slice(0,derive)});
   }
   Object.assign(definitions,withOption(definitions,{skipOption:pending.some(p=>p.tokens.some(t=>['Some','None'].includes(t.value))),skipResult:pending.some(p=>p.tokens.some(t=>['Ok','Err'].includes(t.value)))}));
   {const standard=withStandardFunctions(definitions);definitions.classes=standard.classes;definitions.methods=standard.methods;for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);}
@@ -719,6 +724,9 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   }
   definitions.initializers = [];
   const expanded=expandClasses(groups.filter(g=>g[0].value!=='effect'),definitions,previous,BUILTINS,globals);
+  const newDataNames=new Set(groups.filter(g=>g[0]?.value==='data').map(g=>typeName(g[1]?.value)));
+  const derived=derivingSources(definitions,(message,t)=>{throw new LanguageError(message,t);}).filter(d=>newDataNames.has(d.declaration.name)).map(d=>lex(d.source,`<deriving ${d.declaration.name} ${d.cls}>`).map(t=>({...t,derivedFrom:d.declaration.token})));
+  if(derived.length)expanded.push(...expandClasses(derived,definitions,definitions,BUILTINS,globals));
   for(const name of definitions.effects.keys())if(definitions.methods.has(name))throw new LanguageError(`Effect conflicts with class method: ${name}`);
   for (const group of expanded) {
     const [first, second] = group;
@@ -1034,6 +1042,51 @@ export class VM {
     if(xs?.kind==='range'){const step=xs.start<=xs.end?1:-1,count=Math.abs(xs.end-xs.start)+(xs.inclusive?1:0);for(let i=0;i<count;i++){this.steps++;if(this.steps>this.maxSteps)throw new LanguageError('Execution step limit exceeded',t);yield* consume(xs.start+i*step);}}
     else for(const value of this.expect(xs,'list',t))yield* consume(value);
   }
+  *showValue(value,t){
+    const target=this.definitions.classes?.get('show')?.instances.get(runtimeTypeKey(value))?.implementations.get('show');
+    if(target){const local=[value];yield* this.run([{...t,kind:'word',value:target}],local,new Map(this.globals));return local[0];}
+    const items=Array.isArray(value)?value:value?.kind==='tuple'?value.items:null;
+    if(items){const parts=[];for(const v of items)parts.push(yield* this.showValue(v,t));return Array.isArray(value)?'['+parts.join(', ')+']':'#('+parts.join(' ')+')';}
+    if(value?.kind==='record'){const parts=[];for(const k of Object.keys(value.fields).sort())parts.push(k+': '+(yield* this.showValue(value.fields[k],t)));return parts.length?'{'+parts.join(', ')+'}':'{:}';}
+    if(value?.kind==='dict'){const parts=[];for(const [k,v] of value.entries)parts.push((yield* this.showValue(k,t))+': '+(yield* this.showValue(v,t)));return parts.length?'['+parts.join(', ')+']':'[:]';}
+    if(value?.kind==='adt'){const parts=[];for(const v of value.fields)parts.push(yield* this.showValue(v,t));return parts.length?'('+value.constructor+' '+parts.join(' ')+')':value.constructor;}
+    return format(value);
+  }
+  *eqValue(a,b,t){
+    const child=function*(vm,x,y){const pair=[x,y];yield* vm.binary('==',pair,t);return pair[0];};
+    if(a?.kind==='closure'||a?.kind==='quote'||a?.kind==='stream')throw new LanguageError('No eq instance for quotation or stream',t);
+    if(a?.kind==='dict'){
+      if(b?.kind!=='dict'||a.size!==b.size)return false;
+      const remaining=[...dictEntries(b)];
+      for(const [k,v] of dictEntries(a)){let found=-1;for(let j=0;j<remaining.length;j++)if(yield* child(this,k,remaining[j][0])){found=j;break;}if(found<0||!(yield* child(this,v,remaining[found][1])))return false;remaining.splice(found,1);}return true;
+    }
+    if(a?.kind==='record'){
+      const keys=Object.keys(a.fields).sort();if(b?.kind!=='record'||keys.length!==Object.keys(b.fields).length)return false;
+      for(const k of keys)if(!Object.hasOwn(b.fields,k)||!(yield* child(this,a.fields[k],b.fields[k])))return false;return true;
+    }
+    let aa,bb;
+    if(Array.isArray(a)){if(!Array.isArray(b))return false;aa=a;bb=b;}
+    else if(a?.kind==='tuple'){if(b?.kind!=='tuple')return false;aa=a.items;bb=b.items;}
+    else if(a?.kind==='adt'){
+      if(!['option','result'].includes(a.typeName))throw new LanguageError('No eq instance for '+a.typeName,t);
+      if(a.typeName!==b?.typeName||a.constructor!==b.constructor)return false;aa=a.fields;bb=b.fields;
+    }else return equal(a,b);
+    if(aa.length!==bb.length)return false;for(let i=0;i<aa.length;i++)if(!(yield* child(this,aa[i],bb[i])))return false;return true;
+  }
+  *compareValue(a,b,t){
+    const vm=this,cmp=function*(x,y){const pair=[x,y];yield* vm.binary('<',pair,t);if(pair[0])return -1;const other=[x,y];yield* vm.binary('>',other,t);return other[0]?1:0;};
+    const sequence=function*(xs,ys){for(let i=0;i<Math.min(xs.length,ys.length);i++){const n=yield* cmp(xs[i],ys[i]);if(n)return n;}return Math.sign(xs.length-ys.length);};
+    if(Array.isArray(a))return yield* sequence(a,b);
+    if(a?.kind==='tuple')return yield* sequence(a.items,b.items);
+    if(a?.kind==='record'){const keys=Object.keys(a.fields).sort();return yield* sequence(keys.map(k=>a.fields[k]),keys.map(k=>b.fields[k]));}
+    if(a?.kind==='dict'){
+      const ordered=function*(d){const result=[];for(const pair of dictEntries(d)){let i=result.length;while(i>0&&(yield* cmp(pair[0],result[i-1][0]))<0)i--;result.splice(i,0,pair);}return result;};
+      const aa=yield* ordered(a),bb=yield* ordered(b);for(let i=0;i<Math.min(aa.length,bb.length);i++){const n=(yield* cmp(aa[i][0],bb[i][0]))||(yield* cmp(aa[i][1],bb[i][1]));if(n)return n;}return Math.sign(aa.length-bb.length);
+    }
+    if(a?.kind==='adt'&&['option','result'].includes(a.typeName)){const names=a.typeName==='option'?['None','Some']:['Ok','Err'];return a.constructor===b.constructor?yield* sequence(a.fields,b.fields):Math.sign(names.indexOf(a.constructor)-names.indexOf(b.constructor));}
+    if(a?.kind==='range')return yield* sequence([a.start,a.end,a.inclusive],[b.start,b.end,b.inclusive]);
+    const x=scalarValue(a),y=scalarValue(b);return x<y?-1:x>y?1:0;
+  }
   *binary(name,values,token) {
     const m=this.definitions.methods?.get(name);
     const target=m && this.definitions.classes.get(m.className).instances.get(runtimeTypeKey(values[0]))?.implementations.get(name);
@@ -1314,10 +1367,9 @@ define('resume',1,function*(vm,s,t){
   s.push(...(yield* k.resume(returned)));
 });
 define('nop',0,()=>{});
-for(const name of ['+','-','*','/','%','^','<','>','<=','>='])define(name,2,(vm,s,t)=>{
- const b=s.pop(),a=s.pop();try{s.push(numericBinary(name,a,b));}catch(e){throw new LanguageError(e.message,t);}
-});
-for (const name of ['==', '/=']) define(name, 2, (_vm,s) => { const b=s.pop(), a=s.pop(); s.push(name === '==' ? equal(a,b) : !equal(a,b)); });
+for(const name of ['+','-','*','/','%','^'])define(name,2,(vm,s,t)=>{const b=s.pop(),a=s.pop();try{s.push(numericBinary(name,a,b));}catch(e){throw new LanguageError(e.message,t);}});
+for(const name of ['<','<=','>','>='])define(name,2,function*(vm,s,t){const b=s.pop(),a=s.pop(),n=yield* vm.compareValue(a,b,t);s.push(name==='<'?n<0:name==='<='?n<=0:name==='>'?n>0:n>=0);});
+for(const name of ['==','/='])define(name,2,function*(vm,s,t){const b=s.pop(),a=s.pop(),value=yield* vm.eqValue(a,b,t);s.push(name==='=='?value:!value);});
 for(const name of ['&&','||'])define(name,2,(vm,s,t)=>{const b=vm.expect(s.pop(),'boolean',t),a=vm.expect(s.pop(),'boolean',t);s.push(name==='&&'?a&&b:a||b);});
 for(const name of [...bitOperators,...bitFunctions])define(name,2,function*(vm,s,t){
  const b=s.pop(),a=s.pop(),m=vm.definitions.methods?.get(name),target=m&&vm.definitions.classes.get(m.className).instances.get(runtimeTypeKey(a))?.implementations.get(name);
@@ -1451,7 +1503,7 @@ define('print',1,function*(vm,s,t){const value=s.pop();yield {operation:ioEffect
 define('show',1,function*(vm,s,t){
   const target=vm.definitions.classes?.get('show')?.instances.get(runtimeTypeKey(s.at(-1)))?.implementations.get('show');
   if(target){const call={...t,kind:'word',value:target};yield* vm.run([call],s,new Map(vm.globals),new Map(),t.showEffect?new Map([[call,{input:t.showEffect.input,effect:t.showEffect}]]):undefined);}
-  else s.push(format(s.pop()));
+  else s.push(yield* vm.showValue(s.pop(),t));
 });
 define('split',2,(vm,s,t)=>{const separator=vm.expect(s.pop(),'string',t),source=vm.expect(s.pop(),'string',t);s.push({kind:'stream',mode:'split',source,separator});});
 define('join',2,function*(vm,s,t){t={...t};const separator=vm.expect(s.pop(),'string',t),xs=s.pop(),parts=[];

@@ -13,6 +13,7 @@ import {operatorFallback,operatorSpecs,builtinInstance,installOperatorClasses} f
 import { typeSyntax, patternNames } from './type-syntax.mjs';
 export class StaticTypeError extends Error {
   constructor(message, token) {
+    token=token?.derivedFrom||token;
     super(`${token ? `${token.file}:${token.line}:${token.col}: ` : ''}Type error: ${message}`);
     this.name = 'StaticTypeError';
     this.token = token;
@@ -102,9 +103,8 @@ function requireClass(name,type,token) {
   const c=activeClasses.get(name);
   if(!c)throw new StaticTypeError(`Unknown class: ${name}`,token);
   if(c.associated?.length)return requireAssociated(c,type,c.associated.map(()=>variable()),token);
-  if(c.operatorClass && !c.supers?.length && !c.instances.size && [...c.methods.keys()].every(op=>operatorSpecs.get(op)?.universal))return;
-  if(type.tag==='var') {
-    if(type.sort!=='value'&&!(c.hashClass&&['record-row','tuple-row'].includes(type.sort)))throw new StaticTypeError('Class constraint requires a value type',token);
+    if(type.tag==='var') {
+    if(type.sort!=='value'&&!((c.hashClass||['eq','ord'].includes(c.name))&&['record-row','tuple-row'].includes(type.sort)))throw new StaticTypeError('Class constraint requires a value type',token);
     type.classes ??= new Set();if(hasRelationEvidence(c,[type]))return;for(const n of type.classes)if(inheritedConstraints(c,[type]).some(f=>f.name===n&&f.args.length===1&&sameType(f.args[0],type)))type.classes.delete(n);type.classes.add(name);return;
   }
   if(type.tag==='rigid') {
@@ -114,11 +114,11 @@ function requireClass(name,type,token) {
   requireSuperclasses(c,[type],token);
   const key=instanceKey(type),inst=c.instances.get(key);
   if(inst) { const parameters=new Map();unify(type,syntaxType(inst.head,parameters),token);applyContext(inst.context,parameters,token);return; }
-  if(c.hashClass){
-    if(type.tag==='list')requireClass('hash',type.item,token);
-    else if(['tuple','tuple-tail'].includes(type.tag)){for(const item of type.items)requireClass('hash',item,token);requireClass('hash',type.tail||TEND,token);}
-    else if(['record','record-row'].includes(type.tag)){const {fields,tail}=flattenRecord(type.tag==='record'?type.row:type);for(const item of fields.values())requireClass('hash',item,token);requireClass('hash',tail,token);}
-    else if(type.tag==='adt'&&['option','result','dict'].includes(type.name))for(const item of type.args)requireClass('hash',item,token);
+  if(c.hashClass||['eq','ord'].includes(c.name)){
+    if(type.tag==='list')requireClass(c.name,type.item,token);
+    else if(['tuple','tuple-tail'].includes(type.tag)){for(const item of type.items)requireClass(c.name,item,token);requireClass(c.name,type.tail||TEND,token);}
+    else if(['record','record-row'].includes(type.tag)){const {fields,tail}=flattenRecord(type.tag==='record'?type.row:type);for(const item of fields.values())requireClass(c.name,item,token);requireClass(c.name,tail,token);}
+    else if(type.tag==='adt'&&['option','result','dict'].includes(type.name))for(const item of type.args)requireClass(c.name,item,token);
   }
   if(c.conversion)return;
   if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${name} ${formatType(type)}`,token);
@@ -1439,7 +1439,7 @@ function executionTypes(base,definitions) {
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
     if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialCast||method.specialBits))return node.value;
-    if(!result && operatorFallback(definitions.classes.get(method.className),type))return node.value;
+    if(!result && (operatorFallback(definitions.classes.get(method.className),type)||['eq','ord'].includes(method.className)&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;
   }
@@ -1568,4 +1568,4 @@ export function occurrenceTypes(definitions,file) {
   }
   return result;
 }
-export const typeIR={integerLiteralInfo,castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};
+export const typeIR={syntaxType,integerLiteralInfo,castInfo,numericName:t=>{if(!t)return null;t=prune(t);return t.tag==='atom'?t.name:t.numericLiterals?'int':null;},specializeEffects,effectSnapshot:row=>effects(effectView(row).entries.map(e=>({...e,args:[...e.args]}))),iterableItem:type=>{const item=variable();requireIterable(type,item);return prune(item);},prune,clone,free,unify,instantiate,mono,generalize,quote,stack,EMPTY,BOTTOM,isBottom,checkNeverPromises,row,variable};

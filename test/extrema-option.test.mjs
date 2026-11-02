@@ -36,7 +36,7 @@ test('binary extrema use ord and unwrap returns payloads or raises exn',()=>{
 
 test('missing instance diagnostics put class names before their type arguments',()=>{
  for(const [source,message] of [
-  ['main = max True False','No instance: ord bool'],
+  ['data opaque = Opaque\nmain = max Opaque Opaque','No instance: ord opaque'],
   ['main = maxi True','No instance: streem bool'],
   ['main = (Some 1).[0]','No instance: indexGet (option int)'],
   ['main = testBit 1.0 0','No instance: bits float'],

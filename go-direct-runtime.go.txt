@@ -238,3 +238,18 @@ func(m *Machine) bitOperation(name string,a,b any,loc string) any {
  var r int64;switch name{case ".&.":r=x&y;case ".|.":r=x|y;case "xor":r=x^y;case ".<<.":r=x<<uint(y);case ".>>.":r=x>>uint(y);case "testBit":return x&(int64(1)<<uint(y))!=0;case "setBit":r=x|(int64(1)<<uint(y));case "clearBit":r=x&^(int64(1)<<uint(y))}
  if small{return uint8(r)};return r
 }
+
+func compareSize(a,b int)int{if a<b{return -1};if a>b{return 1};return 0}
+func constructorRank(name string)int{if name=="None"||name=="Ok"{return 0};return 1}
+func compareScalar(a,b any)int{
+ switch x:=a.(type){
+ case int64:y:=b.(int64);if x<y{return -1};if x>y{return 1}
+ case uint8:y:=b.(uint8);if x<y{return -1};if x>y{return 1}
+ case Char:y:=b.(Char);if x<y{return -1};if x>y{return 1}
+ case float64:y:=b.(float64);if x<y{return -1};if x>y{return 1}
+ case string:y:=b.(string);if x<y{return -1};if x>y{return 1}
+ case bool:y:=b.(bool);if x!=y{if y{return -1};return 1}
+ case *Range:y:=b.(*Range);if n:=compareScalar(x.start,y.start);n!=0{return n};if n:=compareScalar(x.end,y.end);n!=0{return n};return compareScalar(x.inclusive,y.inclusive)
+ default:panic("No ord instance for value")
+ };return 0
+}

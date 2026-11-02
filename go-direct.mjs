@@ -72,7 +72,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   const definitions=withStandardFunctions(withOption(Object.assign(new Map(program.definitions),{...program.definitions,effects:ioEffects(program.definitions.effects)}))),entry=entryNodes||parseExpression(expression,'<entry>',program.definitions.constructors);
   checkExpression(entry,definitions);
   const vectorReuse=optimizeVectors?vectorOwnership(definitions,entry):new WeakSet();
-  const types=loweringTypes(definitions),hashFunctions=[],hashNames=new Map(),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
+  const types=loweringTypes(definitions),hashFunctions=[],hashNames=new Map(),comparisonNames=new Map(),showNames=new Map(),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
   const nodeIds=new Map();let next=0;
   const nodeID=n=>{if(!nodeIds.has(n))nodeIds.set(n,nodeIds.size);return nodeIds.get(n);};
   const returns=n=>n?`(${Array(n).fill('any').join(',')})`:'';
@@ -156,6 +156,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const input=items(T.prune(effect).input),type=T.prune(input.at(-2));
       const target=definitions.classes.get(m.className).instances.get(instanceKey(type))?.implementations.get(op.value);
       if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,[a,b],1)[0];}
+    }
+    if(['==','/=','<','<=','>','>='].includes(op.value)){
+      const type=T.prune(items(T.prune(effect).input).at(-2)),order=!['==','/='].includes(op.value),value=`${comparisonFunction(type,order)}(m,${a},${b})`;
+      return ctx.value(order?`${value}${op.value}0`:op.value==='/='?`!${value}`:value);
     }
     return ctx.value(['.&.','.|.','.<<.','.>>.'].includes(op.value)?`m.bitOperation(${str(op.value)},${a},${b},${location(op)})`:`binary(${str(op.value)},${a},${b},${location(op)})`);
   }
@@ -367,6 +371,37 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,args,1)[0];}
     return ctx.value(name==='at'?`m.listIndex(${args},${at})`:`m.indexSetOwned(${args},${at},${reuse})`);
   }
+  function comparisonFunction(type,order=false){
+    type=T.prune(type);const key=(order?'ord:':'eq:')+formatType(type);if(comparisonNames.has(key))return comparisonNames.get(key);
+    const index=hashFunctions.length,name=`compareType${index}`,ret=order?'int':'bool';hashFunctions.push('');comparisonNames.set(key,name);
+    const c=definitions.classes.get(order?'ord':'eq'),instance=c?.instances.get(instanceKey(type)),ctx=context();
+    const custom=op=>{const target=instance?.implementations.get(op);if(!target)return null;const effect=T.instantiate(types.functions.get(target));T.unify(effect.input,T.stack(T.EMPTY,type,type));const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,['a','b'],1)[0];};
+    if(instance?.implementations.get(order?'<':'==')){
+      if(order){ctx.lines.push(`if ${custom('<')}.(bool){return -1}`);ctx.lines.push(`if ${custom('>')}.(bool){return 1};return 0`);}else ctx.lines.push(`return ${custom('==')}.(bool)`);
+    }else if(type.tag==='list'){
+      const compare=comparisonFunction(type.item,order);ctx.lines.push(`xs,ys:=a.([]any),b.([]any)`);
+      if(order)ctx.lines.push(`for i:=0;i<len(xs)&&i<len(ys);i++{if n:=${compare}(m,xs[i],ys[i]);n!=0{return n}};return compareSize(len(xs),len(ys))`);
+      else ctx.lines.push(`if len(xs)!=len(ys){return false};for i:=range xs{if !${compare}(m,xs[i],ys[i]){return false}};return true`);
+    }else if(type.tag==='tuple'){
+      const ts=[...type.items];let tail=T.prune(type.tail);while(tail.tag==='tuple-tail'){ts.push(...tail.items);tail=T.prune(tail.tail);}
+      ctx.lines.push('xs,ys:=a.(*Tuple).items,b.(*Tuple).items;_=xs;_=ys');
+      if(!order)ctx.lines.push('if len(xs)!=len(ys){return false}');
+      ts.forEach((t,i)=>ctx.lines.push(order?`if n:=${comparisonFunction(t,true)}(m,xs[${i}],ys[${i}]);n!=0{return n}`:`if !${comparisonFunction(t)}(m,xs[${i}],ys[${i}]){return false}`));ctx.lines.push(order?'return 0':'return true');
+    }else if(type.tag==='record'){
+      const fields=new Map();let row=T.prune(type.row);while(row.tag==='record-row'){for(const [k,v] of row.fields)fields.set(k,v);row=T.prune(row.tail);}
+      const cases=[...fields].map(([k,v])=>`case ${str(k)}:${order?`if n:=${comparisonFunction(v,true)}(m,x.fields[k],y.fields[k]);n!=0{return n}`:`if !${comparisonFunction(v)}(m,x.fields[k],y.fields[k]){return false}`}`).join(';');
+      ctx.lines.push(`x,y:=a.(*Record),b.(*Record);if len(x.fields)!=len(y.fields){${order?'return compareSize(len(x.fields),len(y.fields))':'return false'}};keys:=[]string{};for k:=range x.fields{keys=append(keys,k)};sort.Strings(keys);for _,k:=range keys{if _,ok:=y.fields[k];!ok{${order?'return -1':'return false'}};switch k{${cases?cases+';':''}default:${order?'if n:=compareScalar(x.fields[k],y.fields[k]);n!=0{return n}':'if !equal(x.fields[k],y.fields[k]){return false}'}}};return ${order?'0':'true'}`);
+    }else if(type.tag==='adt'&&['option','result'].includes(type.name)){
+      const cases=type.name==='option'?[['Some',type.args[0]]]:[['Ok',type.args[0]],['Err',type.args[1]]];
+      ctx.lines.push(`x,y:=a.(*ADT),b.(*ADT);if x.constructor!=y.constructor{${order?'return compareSize(constructorRank(x.constructor),constructorRank(y.constructor))':'return false'}};switch x.constructor{${cases.map(([name,t])=>`case ${str(name)}:return ${comparisonFunction(t,order)}(m,x.fields[0],y.fields[0])`).join(';')}};return ${order?'0':'true'}`);
+    }else if(type.tag==='adt'&&type.name==='dict'){
+      const kc=comparisonFunction(type.args[0],order),vc=comparisonFunction(type.args[1],order);
+      ctx.lines.push('x,y:=a.(*Dict),b.(*Dict);xs,ys:=[][2]any{},[][2]any{};x.walk(func(k,v any){xs=append(xs,[2]any{k,v})});y.walk(func(k,v any){ys=append(ys,[2]any{k,v})})');
+      if(order)ctx.lines.push(`sort.Slice(xs,func(i,j int)bool{return ${kc}(m,xs[i][0],xs[j][0])<0});sort.Slice(ys,func(i,j int)bool{return ${kc}(m,ys[i][0],ys[j][0])<0});for i:=0;i<len(xs)&&i<len(ys);i++{if n:=${kc}(m,xs[i][0],ys[i][0]);n!=0{return n};if n:=${vc}(m,xs[i][1],ys[i][1]);n!=0{return n}};return compareSize(len(xs),len(ys))`);
+      else ctx.lines.push(`if len(xs)!=len(ys){return false};for _,p:=range xs{found:=-1;for j,q:=range ys{if ${kc}(m,p[0],q[0]){found=j;break}};if found<0||!${vc}(m,p[1],ys[found][1]){return false};ys=append(ys[:found],ys[found+1:]...)};return true`);
+    }else ctx.lines.push(order?'return compareScalar(a,b)':'return equal(a,b)');
+    hashFunctions[index]=`func ${name}(m *Machine,a,b any) ${ret} {${ctx.lines.join(';')}}`;return name;
+  }
   function hashFunction(type){
     type=T.prune(type);const key=formatType(type);if(hashNames.has(key))return hashNames.get(key);
     const name=`hashType${hashFunctions.length}`,index=hashFunctions.length;hashFunctions.push('');hashNames.set(key,name);
@@ -388,11 +423,33 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     hashFunctions[index]=`func ${name}(m *Machine,value any) uint32 {${ctx.lines.join(';')}}`;return name;
   }
   const hasher=type=>`func(key any)uint32{return ${hashFunction(type)}(m,key)}`;
+  function showFunction(type){
+    type=T.prune(type);const key=formatType(type);if(showNames.has(key))return showNames.get(key);
+    const index=hashFunctions.length,name=`showType${index}`;hashFunctions.push('');showNames.set(key,name);const ctx=context();
+    const target=definitions.classes.get('show')?.instances.get(instanceKey(type))?.implementations.get('show');
+    if(target){const effect=T.instantiate(types.functions.get(target));T.unify(effect.input,T.stack(T.EMPTY,type));const spec=named(target,effect),value=ctx.call(`m.${spec.fn}`,['value'],1)[0];ctx.lines.push(`return ${value}.(string)`);}
+    else if(type.tag==='list')ctx.lines.push(`parts:=[]string{};for _,v:=range value.([]any){parts=append(parts,${showFunction(type.item)}(m,v))};return "["+strings.Join(parts,", ")+"]"`);
+    else if(type.tag==='tuple'){
+      const ts=[...type.items];let tail=T.prune(type.tail);while(tail.tag==='tuple-tail'){ts.push(...tail.items);tail=T.prune(tail.tail);}
+      ctx.lines.push(`items:=value.(*Tuple).items;_=items;return "#("+strings.Join([]string{${ts.map((t,i)=>`${showFunction(t)}(m,items[${i}])`).join(',')}}," ")+")"`);
+    }else if(type.tag==='record'){
+      const fields=new Map();let row=T.prune(type.row);while(row.tag==='record-row'){for(const [k,v] of row.fields)fields.set(k,v);row=T.prune(row.tail);}
+      const cases=[...fields].map(([k,v])=>`case ${str(k)}:shown=${showFunction(v)}(m,r.fields[k])`).join(';');
+      ctx.lines.push(`r:=value.(*Record);if len(r.fields)==0{return "{:}"};parts,keys:=[]string{},[]string{};for k:=range r.fields{keys=append(keys,k)};sort.Strings(keys);for _,k:=range keys{shown:="";switch k{${cases?cases+';':''}default:shown=text(r.fields[k])};parts=append(parts,k+": "+shown)};return "{"+strings.Join(parts,", ")+"}"`);
+    }else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`d:=value.(*Dict);if d.size==0{return "[:]"};parts:=[]string{};for _,p:=range d.entries(){parts=append(parts,${showFunction(type.args[0])}(m,p[0])+": "+${showFunction(type.args[1])}(m,p[1]))};return "["+strings.Join(parts,", ")+"]"`);
+    else if(type.tag==='adt'){
+      const constructors=[...definitions.constructors.values()].filter(c=>c.typeName===type.name);
+      const cases=constructors.map(c=>{const bindings=new Map(c.parameters.map((p,i)=>[p,type.args[i]]));return `case ${str(c.name)}:return ${c.fields.length?'"('+c.name+' "+strings.Join([]string{'+c.fields.map((t,i)=>`${showFunction(T.syntaxType(t,bindings))}(m,a.fields[${i}])`).join(',')+'}," ")+")"':str(c.name)}`;});
+      ctx.lines.push(`a:=value.(*ADT);switch a.constructor{${cases.join(';')}};return text(value)`);
+    }else ctx.lines.push('return text(value)');
+    hashFunctions[index]=`func ${name}(m *Machine,value any) string {${ctx.lines.join(';')}}`;return name;
+  }
   function shown(value,type,ctx,at,rawString=false) {
     type=T.prune(type);
     const target=definitions.classes.get('show')?.instances.get(instanceKey(type))?.implementations.get('show');
     if(target){const effect=T.instantiate(types.functions.get('show'));T.unify(effect.input,T.stack(T.EMPTY,type));const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,[value],1)[0];}
-    return ctx.value(`${rawString?'outputText':'text'}(${value})`);
+    if(rawString&&type.tag==='atom'&&type.name==='string')return ctx.value(`outputText(${value})`);
+    return ctx.value(`${showFunction(type)}(m,${value})`);
   }
   function builtin(n,info,v,ctx,env,at) {
     const name=n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
@@ -503,7 +560,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);return;
     }
     if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','&&','||','.&.','.|.','.<<.','.>>.','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
-      const b=pop(),a=pop();v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name)},${a},${b},${at})`));
+      const b=pop(),a=pop();if(['==','/=','<','<=','>','>='].includes(name)){v.push(binaryCall(n,a,b,info.effect,ctx));return;}v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name)},${a},${b},${at})`));
     } else if(['not','head','tail','length'].includes(name))v.push(ctx.value(`unary(${str(name)},${pop()},${at})`));
     else if(name==='nop'){}
     else if(name==='dup')v.push(v.at(-1));

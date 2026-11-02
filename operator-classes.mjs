@@ -2,8 +2,8 @@
 // Primitive fallbacks preserve the language's existing operator semantics.
 export const operatorSpecs=new Map([
   ...['+','-','*','/','%','^'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom' && ['int','float','byte'].includes(t.name),primitive:'num'}]),
-  ...['<','<=','>','>='].map(op=>[op,{result:'bool',accept:t=>t.tag==='atom' && ['int','float','byte','char'].includes(t.name),primitive:'num'}]),
-  ...['==','/='].map(op=>[op,{result:'bool',accept:()=>true,universal:true}]),
+  ...['<','<=','>','>='].map(op=>[op,{result:'bool',accept:t=>t.tag==='atom' && ['int','float','byte','char','string'].includes(t.name),primitive:'num'}]),
+  ...['==','/='].map(op=>[op,{result:'bool',accept:t=>t.tag==='atom'&&['int','float','byte','char','bool','string','range'].includes(t.name)}]),
   ...['.&.','.|.','xor'].map(op=>[op,{result:"'a",accept:t=>t.tag==='atom'&&['bool','int','byte'].includes(t.name)}]),
   ...['.<<.','.>>.'].map(op=>[op,{result:"'a",right:'int',exn:true,accept:t=>t.tag==='atom'&&['int','byte'].includes(t.name)}]),
   ['||',{result:"'a",accept:t=>t.tag==='atom'&&t.name==='bool'}],
@@ -18,7 +18,7 @@ export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='dict'?'dict'
 export function builtinInstance(c,t) {
   if(!c)return false;
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
-  return !!(c.hashClass&&(t.tag==='atom'&&['int','float','byte','char','string','bool','range'].includes(t.name)||['list','tuple','tuple-tail','tuple-end','record','record-row','record-empty'].includes(t.tag)||t.tag==='adt'&&['option','result','dict'].includes(t.name))||c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
+  return !!(c.name==='eq'&&t.tag==='continuation'||(c.hashClass||c.name==='eq'||c.name==='ord')&&(t.tag==='atom'&&(c.name==='ord'?['int','float','byte','char','string','bool','range']:['int','float','byte','char','string','bool','range']).includes(t.name)||['list','tuple','tuple-tail','tuple-end','record','record-row','record-empty'].includes(t.tag)||t.tag==='adt'&&['option','result','dict'].includes(t.name))||c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
 }
 export function primitiveOperatorClass(name,ops,token) {
   const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a ${operatorSpecs.get(op).right||"'a"} -> ${operatorSpecs.get(op).result}${operatorSpecs.get(op).exn?' / {exn}':''}`,token,inputCount:2,dispatchIndex:0,...(op==='xor'?{specialBits:true}:{})}]));

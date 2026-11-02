@@ -4,7 +4,7 @@ import {compile, lex, builtinNames, parseExpression} from './language.mjs';
 import {inferExpression,occurrenceTypes} from './types.mjs';
 import {patternNames} from './type-syntax.mjs';
 
-const keywords=['case','otherwise','data','class','instance','where','effect','mut','with','handle','mask'];
+const keywords=['case','otherwise','data','deriving','class','instance','where','effect','mut','with','handle','mask'];
 const position=(line=1,col=1)=>({line:Math.max(0,line-1),character:Math.max(0,col-1)});
 const range=t=>({start:position(t.line,t.col),end:position(t.endLine??t.line,t.endCol??(t.col+String(t.value??'').length||1))});
 const offset=(text,p)=>{
@@ -106,7 +106,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
   function dispatch(message){
     const {id,method,params={}}=message,request=id!==undefined;
     if(method==='exit'){exit(shutdown?0:1);return;}
-    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.74.0'}});return;}
+    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.75.0'}});return;}
     if(!initialized){if(request)fail(id,-32002,'Server not initialized');return;}
     if(shutdown){if(request)fail(id,-32600,'Server has shut down');return;}
     if(method==='shutdown'){shutdown=true;reply(id,null);return;}

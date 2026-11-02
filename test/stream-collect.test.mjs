@@ -47,7 +47,8 @@ test('collectors accept streem instances, preserve stable order and stop on canc
 test('collector types include key effects and latent producer effects',()=>{
  const p=compile('f xs = sortBy xs {print $; nop}');assert.match(p.types.get('f'),/ord/);assert.match(p.types.get('f'),/io/);
  assert.match(compile('f = fold (fromYield {print "hi"; yield 1}) 0 {+}').types.get('f'),/io/);
- assert.throws(()=>compile('main = sort [{x: 1}]'),/instance/i);
+ assert.deepEqual(run('main = sort [{x: 2}, {x: 1}]').stack[0].map(r=>r.fields.x),[1,2]);
+ assert.throws(()=>compile('main = sort [{x: {1}}]'),/instance/i);
  assert.throws(()=>compile('main = sortBy [1] {dup}'),/unify|stack/i);
  assert.doesNotMatch(run('main = fold (1 ..= 3) 0 {when ($ == 2) {cancel}; +}').p.types.get('main'),/cancel/);
 });

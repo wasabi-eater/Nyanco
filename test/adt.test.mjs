@@ -44,8 +44,8 @@ test('forward and mutually recursive type references are resolved together',()=>
   assert.deepEqual(vm.evaluate('End B A matched'),[true]);
 });
 
-test('ADT equality is structural and distinct nominal types cannot unify',()=>{
-  const vm=vmFor(`${maybe}\ndata Other a = Other a`);
+test('ADT equality can be derived and distinct nominal types cannot unify',()=>{
+  const vm=vmFor("-- Nyanco 0.38 prefix\ndata maybe 'a = Nothing | Just 'a deriving eq\ndata other 'a = Other 'a");
   assert.deepEqual(vm.evaluate('(1 Just) == (1 Just); (1 Just) /= (2 Just); Nothing == Nothing; [1 Just] == [1 Just]'),[true,true,true,true]);
   assert.throws(()=>vm.evaluate('(1 Just) == (1 Other)'),StaticTypeError);
   assert.throws(()=>vm.evaluate('[Nothing 1 Other]'),StaticTypeError);
