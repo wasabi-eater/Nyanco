@@ -490,6 +490,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       if(target){const spec=named(target,info.effect);v.push(...ctx.call(`m.${spec.fn}`,[a,b],1));}
       else v.push(ctx.value(`m.bitOperation(${str(name)},${a},${b},${at})`));return;
     }
+    if(name==='toDict'){
+      const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=ctx.value(`newDict(${hasher(T.prune(info.output).item.args[0])})`),br=`breakResult${next++}`;
+      ctx.lines.push(`${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){pair:=item.(*Tuple).items;${result}=${result}.(*Dict).set(pair[0],pair[1])})},${at},${label})`);v.push(result);returnedBreak(br);return;
+    }
     if(name==='toVector') {
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`,br=`breakResult${next++}`;
       ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);return;

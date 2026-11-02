@@ -500,7 +500,7 @@ function resolveLabels(nodes,scope=new Map()) {
     }
     if(n.kind==='label') {
       const root=n.body.length===1?n.body[0]:null,head=root?.kind==='application'?root.body[0]:root;
-      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','nth','zip','vzip','windows','chunks','chunkBy','groupBy','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
+      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','toDict','nth','zip','vzip','windows','chunks','chunkBy','groupBy','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
       n.key??=`@label${nextLabel++}`;head.handlerLabel=n.key;
       const nested=new Map(scope);nested.set(n.name,n.key);resolveLabels(n.body,nested);continue;
     }
@@ -1370,6 +1370,7 @@ define('nth',2,function*(vm,s,t){t={...t};let remaining=vm.expect(s.pop(),'numbe
  if(Number.isSafeInteger(remaining)&&remaining>=0){try{yield* vm.loop(vm.walk(source,function*(item){if(remaining--===0){result={kind:'adt',typeName:'option',constructor:'Some',fields:[item]};throw stop;}},t),t);}catch(error){if(error!==stop)throw error;}}
  if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);
 });
+define('toDict',1,function*(vm,s,t){t={...t};const source=s.pop();let result=emptyDict();yield* vm.loop(vm.walk(source,function*(item){if(item?.kind!=='tuple'||item.items.length!==2)throw new LanguageError('toDict requires key/value pairs',t);const [key,value]=item.items,hash=yield* vm.hashValue(key,t);result=dictSet(result,key,value,hash,equal);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
 define('toVector',1,function*(vm,s,t){t={...t};const xs=s.pop(),result=[];yield* vm.loop(vm.walk(xs,function*(value){result.push(value);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
 for(const [name,mode] of transforms)define(name,mode==='flatten'?1:2,function*(vm,s,t){
   const argument=mode==='flatten'?null:s.pop(),source=s.pop();

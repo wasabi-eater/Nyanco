@@ -11,3 +11,5 @@ main =
     print (d with [2] ??= "c")
     print (d with ?[9] ! ++ "!")
     print ([10, 20] with {?[1] ! + 2, ?[9] ! + 100})
+
+    print (toDict (zip [0, 1] ["a", "b"]))

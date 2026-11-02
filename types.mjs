@@ -611,6 +611,7 @@ function builtinSchemes() {
     const s=row(),a=variable();requireClass('num',a);out.set(name,generalize(quote(push(s,a),push(s,result),effects([{name:'exn',args:[]}]))));
   }
   {const s=row();out.set('toChar',generalize(quote(push(s,INT),push(s,CHAR),effects([{name:'exn',args:[]}]))));}
+  {const s=row(),c=variable(),k=variable(),v=variable(),latent=variable('effect-row');requireIterable(c,tuple([k,v]),null,latent);requireClass('hash',k);const output=push(s,adt('dict',[k,v]));out.set('toDict',generalize(quote(push(s,c),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
   add('values',()=>{const s=row(),k=variable(),v=variable();return quote(push(s,adt('dict',[k,v])),push(s,{tag:'stream',item:v,effects:effects()}));});
   add('bytes',()=>{const s=row();return quote(push(s,STRING),push(s,list(BYTE)));});
   add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
