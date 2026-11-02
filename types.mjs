@@ -43,7 +43,7 @@ function sameType(a,b){a=prune(a);b=prune(b);if(a===b)return true;if(['var','rig
 function inheritedConstraints(c,args,seen=new Set()){
  const identity=t=>{t=prune(t);return t.id??[t.tag,t.name,...children(t).map(identity)].join(':');};const key=c.name+':'+args.map(identity).join(',');if(seen.has(key))return [];seen.add(key);
  const bindings=new Map(classParameters(c).map((p,i)=>[p,args[i]]));for(const [i,a] of (c.associated||[]).entries())bindings.set(a.param,args[classParameters(c).length+i]);
- return [{name:c.name,args},...superConstraints(c).flatMap(sc=>{const pc=activeClasses.get(sc.name),values=sc.args.map(t=>syntaxType(t,bindings));if(sc.name==='streem'&&c.associated?.some(a=>a.name==='item'))values.push(bindings.get(c.associated.find(a=>a.name==='item').param));else for(const a of pc.associated||[])values.push(bindings.get(a.param));return inheritedConstraints(pc,values,seen);})];
+ return [{name:c.name,args},...superConstraints(c).flatMap(sc=>{const pc=activeClasses.get(sc.name),values=sc.args.map(t=>t.tag==='param'&&bindings.has(t.name)?bindings.get(t.name):syntaxType(t,bindings));if(sc.name==='streem'&&c.associated?.some(a=>a.name==='item'))values.push(bindings.get(c.associated.find(a=>a.name==='item').param));else for(const a of pc.associated||[])values.push(bindings.get(a.param));return inheritedConstraints(pc,values,seen);})];
 }
 // Rigid anchors carry declared evidence; mutable anchors carry deferred obligations.
 function constraintFacts(v,wanted){
@@ -57,7 +57,7 @@ function hasRelationEvidence(c,args){
 function requireSuperclasses(c,args,token,items=[]){
  const bindings=new Map(classParameters(c).map((p,i)=>[p,args[i]]));for(const [i,a] of (c.associated||[]).entries())bindings.set(a.param,items[i]);
  for(const sc of superConstraints(c)){
-  const pc=activeClasses.get(sc.name),values=sc.args.map(t=>syntaxType(t,bindings));
+  const pc=activeClasses.get(sc.name),values=sc.args.map(t=>t.tag==='param'&&bindings.has(t.name)?bindings.get(t.name):syntaxType(t,bindings));
   if(sc.name==='streem'&&c.associated?.some(a=>a.name==='item'))values.push(items[c.associated.findIndex(a=>a.name==='item')]);
   else for(const a of pc.associated||[])values.push(items[c.associated.findIndex(x=>x.name===a.name)]);
   requireConstraint(sc.name,values,token);

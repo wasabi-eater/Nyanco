@@ -7,7 +7,19 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const run=s=>{const p=compile(s),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,output,stack:vm.evaluate('main')};};
-const source=`class show \'a => left \'a where
+const source=`sameOrdered : ord 'a => 'a 'a -> bool
+sameOrdered = ==
+differentOrdered : ord 'a => 'a 'a -> bool
+differentOrdered = /=
+data ordered = Ordered int
+instance ord ordered where
+  (==) (Ordered a) (Ordered b) = a == b
+  (/=) (Ordered a) (Ordered b) = a /= b
+  (<) (Ordered a) (Ordered b) = a < b
+  (<=) (Ordered a) (Ordered b) = a <= b
+  (>) (Ordered a) (Ordered b) = a > b
+  (>=) (Ordered a) (Ordered b) = a >= b
+class show \'a => left \'a where
 class show \'a => right \'a where
 class left \'a, right \'a => named \'a where
   name : \'a -> string
@@ -43,9 +55,9 @@ collect = toVector
 data code = Code int
 instance toChar code where
   toChar (Code n) = toChar n
-main = print (collect [4,5]); print (collect (Seq [1,2,3])); print (toChar (Code 66)); print (render (Person "Ada")); print (name (Person "Bob")); print (readChecked (Box 7)); print (cast 3); print (bytes "日本😀"); print (toChar 65); print (toChar 128512); print (toChar 'あ'); print (handle {toChar 55296} {exn: {-> msg k; 'x'}})`;
+main = print (sameOrdered (Ordered 3) (Ordered 3)); print (differentOrdered [1] [2]); print (collect [4,5]); print (collect (Seq [1,2,3])); print (toChar (Code 66)); print (render (Person "Ada")); print (name (Person "Bob")); print (readChecked (Box 7)); print (cast 3); print (bytes "日本😀"); print (toChar 65); print (toChar 128512); print (toChar 'あ'); print (handle {toChar 55296} {exn: {-> msg k; 'x'}})`;
 test('inheritance carries methods and associated types through diamonds and generic annotations',()=>{
- assert.deepEqual(run(source).output,['[4, 5]','[1, 2, 3]',"'B'",'person:Ada','Bob','7','3','[230, 151, 165, 230, 156, 172, 240, 159, 152, 128]',"'A'","'😀'","'あ'","'x'"]);
+ assert.deepEqual(run(source).output,['True','True','[4, 5]','[1, 2, 3]',"'B'",'person:Ada','Bob','7','3','[230, 151, 165, 230, 156, 172, 240, 159, 152, 128]',"'A'","'😀'","'あ'","'x'"]);
  assert.deepEqual(run('class show \'a => named \'a where\n  name : \'a -> string\ndata p = P\ninstance show p where\n  show P = "p"\ninstance named p where\n  name P = "name"\nmain = show P; name P').stack,['p','name']);
  assert.deepEqual(run(`class show 'a => parent 'a where
 class parent 'a => child 'a where
@@ -102,4 +114,18 @@ instance child (box 'a) where
 test('native superclass dictionaries and character/byte conversions match VM',()=>{
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-inheritance-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('ord requires eq implementations and entails eq in generic annotations',()=>{
+ const p=compile(source);
+ assert.match(p.types.get('sameOrdered'),/ord 'a/);
+ assert.doesNotMatch(p.types.get('sameOrdered'),/eq 'a/);
+ assert.throws(()=>compile(`data opaque = Opaque
+instance ord opaque where
+  (<) _ _ = False
+  (<=) _ _ = True
+  (>) _ _ = False
+  (>=) _ _ = True`),/Missing instance method: ==/);
+ assert.throws(()=>compile(`f : eq 'a => 'a 'a -> bool
+f = <`),/Missing constraint: ord/);
 });

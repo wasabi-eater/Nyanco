@@ -22,7 +22,7 @@ export function builtinInstance(c,t) {
 }
 export function primitiveOperatorClass(name,ops,token) {
   const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a ${operatorSpecs.get(op).right||"'a"} -> ${operatorSpecs.get(op).result}${operatorSpecs.get(op).exn?' / {exn}':''}`,token,inputCount:2,dispatchIndex:0,...(op==='xor'?{specialBits:true}:{})}]));
-  return {name,param,methods,instances:new Map(),token,operatorClass:true};
+  return {name,param,methods,instances:new Map(),token,operatorClass:true,...(name==='ord'?{supers:['eq']}: {})};
 }
 
 export function installOperatorClasses(classes,methods) {

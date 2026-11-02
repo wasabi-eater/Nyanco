@@ -1464,6 +1464,8 @@ counts [] -- [:]
 
 ## eqとderiving
 
+`ord 'a`は`eq 'a`を継承するため、ord制約があれば`==`と`/=`も使えます。独自のord instanceにはeqの実装も必要です（別のeq instanceで提供しても構いません）。
+
 `==`と`/=`には`eq 'a`制約が必要です。int・float・byte・char・bool・string・range、およびoption・result・vector・tuple・record・辞書に標準実装があります。複合型は、その要素やフィールドもeqである場合に限って比較でき、各要素の独自eq instanceも使います。quotation・関数・streamにはeqを提供しません。継続は同一性で比較できます。
 
 ```nyanco

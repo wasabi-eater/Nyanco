@@ -70,7 +70,7 @@ test('eq constraints reject quotations and non-derived ADTs, including nested va
   assert.throws(()=>compile("same : 'a 'a -> bool\nsame = =="),/eq/);
   assert.throws(()=>compile('data bad = Bad {-> int} deriving eq'),/eq/);
   assert.throws(()=>compile('data bad = Bad {-> int} deriving hash'),/hash/);
-  assert.throws(()=>compile('data bad = Bad {-> int} deriving ord'),/ord/);
+  assert.throws(()=>compile('data bad = Bad {-> int} deriving eq, ord'),/eq|ord/);
   assert.throws(()=>compile('data bad = Bad deriving unknown'),/derive/);
   assert.throws(()=>compile('data bad = Bad deriving eq, eq'),/deriving/);
   assert.throws(()=>compile('data bad = Bad deriving eq,\n'),/deriving/);

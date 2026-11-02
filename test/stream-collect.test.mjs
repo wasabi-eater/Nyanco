@@ -11,7 +11,7 @@ const custom=`class zero 'a where
   zero : -> 'a
 instance zero int where
   zero = 0
-data key = Key int
+data key = Key int deriving eq
 instance ord key where
   (<) (Key a) (Key b) = a > b
   (<=) (Key a) (Key b) = a >= b

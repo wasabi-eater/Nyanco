@@ -151,6 +151,8 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
         const owner=classes.get(m.className),parent=owner!==c&&owner&&lookupInstance(owner,ancestorArguments(classes,c,heads,owner.name));
         if(parent&&parent.implementations.get(method)){instance.implementations.set(method,parent.implementations.get(method));continue;}
         if(builtinInstance(owner,head)||owner?.intoClass&&builtinConversion(ancestorArguments(classes,c,heads,owner.name))||owner?.conversion&&lookupInstance(classes.get('into'),owner.conversion.map(t=>substitute(t,new Map([[owner.param,ancestorArguments(classes,c,heads,owner.name)[0]]])))))continue;
+        // Derived superclass instances are expanded in the next compile pass.
+        if(owner!==c&&head.tag==='adt'&&definitions.dataTypes.get(head.name)?.deriving?.includes(owner.name))continue;
         fail(`Missing instance method: ${method}`,token);
       }
       const used=new Set(m.signature?.match(/'[A-Za-z0-9_]+/g)||[]);let fresh=0;
@@ -170,7 +172,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     for(const sc of superConstraints(c)){const parent=classes.get(sc.name),heads=sc.args.map(t=>substitute(t,bindings)),key=relationKey(heads);let inherited=lookupInstance(parent,heads);
       const implementations=c.conversion&&parent.intoClass?new Map([['from',instance.implementations.get(c.name)]]):new Map([...parent.methods.keys()].map(m=>[m,instance.implementations.get(m)]));
       const hasImplementation=[...implementations.values()].some(Boolean),builtin=parent.intoClass?builtinConversion(heads):builtinInstance(parent,heads[0]);
-      if(!inherited&&builtin&&!hasImplementation)continue;
+      if(!inherited&&!hasImplementation&&(builtin||heads[0]?.tag==='adt'&&definitions.dataTypes.get(heads[0].name)?.deriving?.includes(parent.name)))continue;
       if(!inherited){inherited={...instance,target:key,head:heads[0],heads,implementations,signatures:new Map()};parent.instances.set(key,inherited);}
       else if(hasImplementation&&[...implementations].some(([m,fn])=>fn&&inherited.implementations.get(m)!==fn))fail('Conflicting superclass instance: '+parent.name,instance.token);
       publishParents(parent,inherited,seen);

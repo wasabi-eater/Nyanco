@@ -9,6 +9,8 @@ import {join} from 'node:path';
 const run=s=>{const p=compile(s),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,output,stack:vm.evaluate('main')};};
 const source=`data ranked = Ranked int string
 instance ord ranked where
+  (==) (Ranked a _) (Ranked b _) = a == b
+  (/=) (Ranked a _) (Ranked b _) = a /= b
   (<) (Ranked a x) (Ranked b y) = a < b
   (<=) (Ranked a x) (Ranked b y) = a <= b
   (>) (Ranked a x) (Ranked b y) = a > b
@@ -36,7 +38,7 @@ test('binary extrema use ord and unwrap returns payloads or raises exn',()=>{
 
 test('missing instance diagnostics put class names before their type arguments',()=>{
  for(const [source,message] of [
-  ['data opaque = Opaque\nmain = max Opaque Opaque','No instance: ord opaque'],
+  ['data opaque = Opaque deriving eq\nmain = max Opaque Opaque','No instance: ord opaque'],
   ['main = maxi True','No instance: streem bool'],
   ['main = (Some 1).[0]','No instance: indexGet (option int)'],
   ['main = testBit 1.0 0','No instance: bits float'],
