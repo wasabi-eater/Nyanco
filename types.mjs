@@ -933,7 +933,7 @@ class Inference {
             }
             if(part.kind==='tuple-index') {
               const items=Array.from({length:part.index+1},()=>variable()),tail=variable('tuple-row');
-              unify(type,tuple(items,tail),node);items[part.index]=replace(items[part.index],depth+1);return isBottom(items[part.index])?BOTTOM:tuple(items,tail);
+              unify(type,tuple(items,tail),node);const result=replace(items[part.index],depth+1);return isBottom(result)?BOTTOM:tuple(items.map((item,i)=>i===part.index?result:item),tail);
             }
             const get=instantiate(this.functions.get('at')),set=instantiate(this.functions.get('setAt'));
             unify(get,quote(stack(EMPTY,type,args[part.argument]),push(EMPTY,item)),node);

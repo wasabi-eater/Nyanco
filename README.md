@@ -592,6 +592,15 @@ r.x.y.[1] ! + 2  -- r <- r with {.x.y.[1] ! + 2}
 
 immutableなコピー更新ではrecordフィールドやtuple要素の型を変えられます。listの要素型は均一のままで、mutable変数への再代入では変数全体の型も維持する必要があります。その他のrecordフィールドはrow polymorphismで保持します。
 
+`=`による置換、`!`による変換ともに型を変更でき、入れ子のパスでも同じです。
+
+```nyanco
+{x: 1, keep: True} with x = "hello" -- {x: string, keep: bool}
+#(1, True) with 0 ! show             -- #(string bool)
+{x: #(1, True)} with x.0 = "hello"  -- {x: #(string bool)}
+```
+
+
 サンプル: `examples/with-update.nyan`。
 
 ## vectorとstream（0.49・破壊的変更）
