@@ -19,4 +19,4 @@ treeSum (Node left right) =
   (((left, treeSum)) + ((right, treeSum)))
 
 main =
-  0, (42, Some), fromOption, print, 0, None, fromOption, print, (1, Leaf), ((2, Leaf), (3, Leaf), Node), Node, treeSum, print, [(1, Some), None, (3, Some)], {0, swap, fromOption}, vmap, print, ((((42, Some)) == ((42, Some)))), print, None, -> mut result, result <- (7, Some); result, print
+  0, (42, Some), fromOption, print, 0, None, fromOption, print, (1, Leaf), ((2, Leaf), (3, Leaf), Node), Node, treeSum, print, [(1, Some), None, (3, Some)], {0, swap, fromOption}, vmap, print, ((((42, Some)) == ((42, Some)))), print, None, -> mut result, result <<- (7, Some); result, print

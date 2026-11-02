@@ -68,9 +68,9 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       Object.assign(token,stringToken(token));
     } else {
       const rest = source.slice(i);
-      const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
+      const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-','<<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?<-|\?\?=|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?<-|\?\?=|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->>|->|<<-|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -99,6 +99,19 @@ export function recordShorthands(tokens){
  return out;
 }
 
+// Only a top-level left arrow starts a declaration; arrows inside patterns,
+// quotations and nested expressions belong to those nested scopes.
+export function leftDeclarationAt(tokens,start){
+ const first=tokens[start];if(!first||!(first.kind==='word'&&identifier.test(first.value)||['{','[','#'].includes(first.kind)))return -1;
+ let depth=0;
+ for(let j=start;j<tokens.length;j++){
+  const t=tokens[j];
+  if(!depth){if([';',';;',')',']','}'].includes(t.kind)||['=','->','->>','<<-','!','??<-','with','|','?',':'].includes(t.value))return -1;if(t.line>first.line&&t.line!==tokens[j-1]?.line)return -1;if(t.value==='<-')return j;}
+  if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;
+ }
+ return -1;
+}
+
 const OPERATORS = new Map([
   ['??', 0.5], ['||', 1], ['&&', 2], ['.|.', 3.2], ['.&.', 3.3], ['.<<.', 4.7], ['.>>.', 4.7], ['==', 3], ['/=', 3],
   ['<', 3], ['>', 3], ['<=', 3], ['>=', 3],
@@ -122,8 +135,25 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
     return [{...previous,kind:';',value:';',line:previous.endLine??previous.line,col:previous.endCol??previous.col,layout:true},token];
   });
   const obsolete=tokens.find(t=>t.kind==='word'&&t.value===':=');
-  if(obsolete)throw new LanguageError(':= has been removed; use <- for reassignment',obsolete);
+  if(obsolete)throw new LanguageError(':= has been removed; use <<- for reassignment',obsolete);
   let i = 0;
+  function binding(parts,token,left=false){
+    const mutableNames=new Set(),clean=[],segments=[[]];let depth=0;
+    parts=parts.filter(t=>!t.layout);
+    for(let j=0;j<parts.length;j++){
+      const t=parts[j];
+      if(t.value==='mut'&&parts[j+1]?.value!==':'){const name=parts[++j];if(!name||name.kind!=='word'||!identifier.test(name.value)||name.value==='_'||BUILTINS.has(name.value))throw new LanguageError('Expected a variable after mut',t);mutableNames.add(name.value);clean.push(name);segments.at(-1).push(name);continue;}
+      if(left&&!depth&&t.kind===','){segments.push([]);continue;}
+      clean.push(t);segments.at(-1).push(t);
+      if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;
+    }
+    const patterns=left?segments.flatMap(part=>{const parsed=parsePatterns(part,constructors);if(parsed.length!==1)throw new LanguageError('Separate declaration patterns with commas',part[0]||token);return parsed;}):parsePatterns(clean,constructors),names=patternNames(patterns);
+    if(!patterns.length)throw new LanguageError('Declaration requires at least one pattern',token);
+    if(new Set(names).size!==names.length)throw new LanguageError('Duplicate pattern variable',token);
+    if([...mutableNames].some(n=>!names.includes(n)))throw new LanguageError('mut must precede a pattern variable',token);
+    if(names.some(n=>BUILTINS.has(n)))throw new LanguageError('Declaration cannot bind built-ins',token);
+    return [{...token,kind:'bind',patterns,names,mutable:names.map(n=>mutableNames.has(n))},...patternStack(patterns,true)];
+  }
   function scope(end, opener, context = null) {
     const nodes = [];
     // Parentheses share this lexical clause. References discovered later
@@ -136,7 +166,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       let depth=0;
       for(let k=start;k<tokens.length && (depth||tokens[k].line===tokens[start]?.line||tokens[k].line===tokens[k-1]?.line);k++) {
         const t=tokens[k];
-        if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->','<-','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
+        if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->','->>','<-','<<-','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
         if(!depth&&t.kind==='word'&&t.value==='with')return -1;
         if(!depth && t.kind==='word' && t.value==='=')return k;
         if(['(','[','{'].includes(t.kind))depth++;
@@ -152,13 +182,13 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         while(tokens[j]?.kind==='word' && tokens[j].value.startsWith('.')) {
           const part=tokens[j++];if(['.','.?'].includes(part.value)) {if(tokens[j++]?.kind!=='[')return -1;let depth=1;while(j<tokens.length&&depth){if(tokens[j].kind==='[')depth++;if(tokens[j].kind===']')depth--;j++;}}
         }
-        return ['<-','!','??<-'].includes(tokens[j]?.value)?j:-1;
+        return ['<<-','!','??<-'].includes(tokens[j]?.value)?j:-1;
       }
       while(tokens[j]?.kind===',' && target(tokens[j+1])){j+=2;}
-      return tokens[j]?.kind==='word' && ['<-','!','??<-'].includes(tokens[j].value)?j:-1;
+      return tokens[j]?.kind==='word' && ['<<-','!','??<-'].includes(tokens[j].value)?j:-1;
     };
-    const statement = () => updateAt(i)>=0 || definitionAt(i)>=0 || tokens[i]?.kind === 'word' && (tokens[i].value === 'mut' || identifier.test(tokens[i].value) && tokens[i+1]?.kind === 'word' && ['<-', '!', '??<-'].includes(tokens[i+1].value));
-    const boundary = () => done() || [';',';;',','].includes(tokens[i].kind) || statement() || (tokens[i].kind === 'word' && tokens[i].value === '->');
+    const statement = () => leftDeclarationAt(tokens,i)>=0 || updateAt(i)>=0 || definitionAt(i)>=0 || tokens[i]?.kind === 'word' && (tokens[i].value === 'mut' || identifier.test(tokens[i].value) && tokens[i+1]?.kind === 'word' && ['<<-', '!', '??<-'].includes(tokens[i+1].value));
+    const boundary = () => done() || [';',';;',','].includes(tokens[i].kind) || statement() || (tokens[i].kind === 'word' && ['->','->>'].includes(tokens[i].value));
     function slot(t) {
       const match=t.value.match(/^(_+|\$+)(\d*)$/),depth=match[1].length-1,index=Number(match[2]||0),peek=t.value[0]==='$';
       if(!Number.isSafeInteger(index) || index>100000)throw new LanguageError('Stack reference index must be between 0 and 100000',t);
@@ -408,10 +438,26 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       }
       return left;
     }
+    const initializer=operator=>{
+      const start=i;let depth=0;
+      while(i<tokens.length&&(depth||tokens[i].kind!==end)){
+        const t=tokens[i];if(!depth&&([';',';;'].includes(t.kind)||t.line>operator.line))break;
+        if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind)){if(!depth)break;depth--;}i++;
+      }
+      if(start===i)throw new LanguageError('Initializer requires a value',operator);
+      return tokens.slice(start,i);
+    };
     while (!done()) {
       if (tokens[i].kind === ',') {i++;continue;}
       if ([';',';;'].includes(tokens[i].kind)) { startClause(tokens[i++]); continue; }
-      if(tokens[i].kind==='word' && tokens[i].value==='mut')throw new LanguageError('Declare mutable variables with value -> mut name',tokens[i]);
+      const declaration=leftDeclarationAt(tokens,i);
+      if(declaration>=0){
+        const parts=tokens.slice(i,declaration),operator=tokens[declaration];i=declaration+1;
+        if(parts.some(t=>t.kind==='word'&&t.value.startsWith('.')))throw new LanguageError('Use <<- to reassign a field or index',parts[0]);
+        const rhs=initializer(operator);nodes.push(...parseTokens(rhs,context,constructors),...binding(parts,operator,true));
+        if(!done()&&![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);continue;
+      }
+      if(tokens[i].kind==='word' && tokens[i].value==='mut')throw new LanguageError('Declare mutable variables with value -> mut name or mut name <- value',tokens[i]);
       const eq=definitionAt(i);
       if(eq>=0) {
         const first=tokens[i],name=tokens[i],operator=tokens[eq];
@@ -448,17 +494,8 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         for(const name of targets)if(['_','mut','data','mask','with'].includes(name.value)||BUILTINS.has(name.value))throw new LanguageError('Expected a variable name',name);
         const names=targets.map(t=>t.value);
         if(new Set(names).size!==names.length)throw new LanguageError('Duplicate assignment target',targets[0]);
-        // Both update operators bind less tightly than comma, for any target count.
-        const start=i;let depth=0;
-        while(i<tokens.length && (depth || tokens[i].kind!==end)) {
-          const t=tokens[i];
-          if(!depth && ([';',';;'].includes(t.kind) || t.line>operator.line))break;
-          if(['(','[','{'].includes(t.kind))depth++;
-          if([')',']','}'].includes(t.kind)){if(!depth)break;depth--;}
-          i++;
-        }
-        if(start===i)throw new LanguageError('Initializer requires a value',operator);
-        let rhs=tokens.slice(start,i);
+        // Reassignment and modification bind less tightly than comma.
+        let rhs=initializer(operator);
         if(operator.value==='??<-'&&!access)throw new LanguageError('??<- requires an indexed mutable variable',operator);
         if(access)rhs=[targets[0],{...operator,kind:'word',value:'with'},{...operator,kind:'{',value:'{'},...access,{...operator,kind:'word',value:operator.value==='!'?'!':operator.value==='??<-'?'??=':'='},...rhs,{...operator,kind:'}',value:'}'}];
         if(operator.value==='!'&&!access) {
@@ -469,24 +506,24 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(i<tokens.length && ![';',';;',','].includes(tokens[i].kind) && tokens[i].line>operator.line)startClause(tokens[i]);
         continue;
       }
-      if (tokens[i].kind === 'word' && tokens[i].value === '->') {
-        const arrow=tokens[i++],parts=[],mutableNames=new Set();let depth=0;
-        while(i<tokens.length && (depth || !done() && ![';',';;',','].includes(tokens[i].kind) && tokens[i].line===arrow.line)) {
-          const t=tokens[i++];
-          if(t.value==='mut'&&tokens[i]?.value!==':') {
-            const name=tokens[i];
-            if(!name || name.line!==t.line || !identifier.test(name.value) || name.value==='_' || BUILTINS.has(name.value))throw new LanguageError('Expected a variable after mut',t);
-            mutableNames.add(name.value);continue;
-          }
-          if(['(','[','{'].includes(t.kind))depth++;
-          if([')',']','}'].includes(t.kind))depth--;
-          parts.push(t);
+      if(tokens[i].value==='->>'){
+        const arrow=tokens[i++],parts=[];let depth=0;
+        while(i<tokens.length&&(depth||!done()&&![';',';;'].includes(tokens[i].kind)&&tokens[i].line===arrow.line)){
+          const t=tokens[i++];if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;parts.push(t);
         }
-        const patterns=parsePatterns(parts,constructors),names=patternNames(patterns);
-        if([...mutableNames].some(n=>!names.includes(n)))throw new LanguageError('mut must precede a pattern variable',arrow);
-        if(!patterns.length)throw new LanguageError('Assignment requires at least one pattern',arrow);
-        if(names.some(n=>BUILTINS.has(n)))throw new LanguageError('Assignment cannot bind built-ins',arrow);
-        nodes.push({...arrow,kind:'bind',patterns,names,mutable:names.map(n=>mutableNames.has(n))},...patternStack(patterns,true));
+        const access=parts[1]?.value?.startsWith?.('.')?parts.slice(1):null,targets=access?[parts[0]]:parts.filter(t=>t.kind!==',');
+        if(!targets.length||targets.some(t=>t.kind!=='word'||!identifier.test(t.value)||['_','mut'].includes(t.value)||BUILTINS.has(t.value))||access?.some(t=>t.kind===','))throw new LanguageError('->> requires variable names or one field/index target',arrow);
+        const names=targets.map(t=>t.value);if(new Set(names).size!==names.length)throw new LanguageError('Duplicate assignment target',arrow);
+        const body=access?parseTokens([targets[0],{...arrow,value:'with'},{...arrow,kind:'{',value:'{'},...access,{...arrow,value:'='},{...arrow,value:'_'},{...arrow,kind:'}',value:'}'}],null,constructors):[];
+        nodes.push({...arrow,kind:'update',names,name:names[0],body,fromStack:true});
+        if(!done()&&![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);continue;
+      }
+      if (tokens[i].kind === 'word' && tokens[i].value === '->') {
+        const arrow=tokens[i++],parts=[];let depth=0;
+        while(i<tokens.length&&(depth||!done()&&![';',';;',','].includes(tokens[i].kind)&&tokens[i].line===arrow.line)){
+          const t=tokens[i++];if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;parts.push(t);
+        }
+        nodes.push(...binding(parts,arrow));
         if(!done() && ![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);
       } else {const start=i,parsed=expression();if(i===start)throw new LanguageError('Unexpected token: '+tokens[i].value,tokens[i]);nodes.push(...parsed);}
     }
@@ -777,7 +814,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   for (const group of expanded) {
     const [first, second] = group;
     if(first.kind==='word' && ['data','type'].includes(first.value))continue;
-    if(first.kind==='word' && first.value==='mut')throw new LanguageError('Declare mutable variables with value -> mut name',first);
+    if(first.kind==='word' && first.value==='mut' && leftDeclarationAt(group,0)<0)throw new LanguageError('Declare mutable variables with value -> mut name or mut name <- value',first);
     let level=0;const outer=group.filter(t=>{
       const top=level===0;
       if(['(','[','{'].includes(t.kind))level++;
@@ -785,7 +822,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
       return top;
     });
     const withAt=outer.findIndex(t=>t.value==='with'),headerTokens=withAt<0?outer:outer.slice(0,withAt);
-    if (outer.some(t => t.kind === 'word' && t.value === '->') && !headerTokens.some(t => t.kind === 'word' && (t.value === '=' || t.value === ':'))) {
+    if (outer.some(t => t.kind === 'word' && ['->','->>','<-','<<-'].includes(t.value)) && !headerTokens.some(t => t.kind === 'word' && (t.value === '=' || t.value === ':'))) {
       definitions.initializers.push(...parseTokens(group,null,definitions.constructors)); continue;
     }
     if (second?.kind === 'word' && second.value === ':') { signatures.set(first.value, group.slice(2).map(t => t.value).join(' ')); continue; }
@@ -1192,7 +1229,8 @@ export class VM {
             if(!env.has(name))throw new LanguageError(`Unknown variable: ${name}`,t);
             const cell=env.get(name);if(cell?.kind!=='cell')throw new LanguageError(`Cannot assign to immutable variable: ${name}`,t);return cell;
           });
-          const values=[];yield* this.run(t.body,values,new Map(env),missing);
+          if(t.fromStack)this.need(stack,names.length,t);
+          const values=t.fromStack?stack.splice(-names.length):[];yield* this.run(t.body,values,new Map(env),missing);
           if(values.length!==names.length)throw new LanguageError(`Assignment requires ${names.length} value(s); produced ${values.length}`,t);
           cells.forEach((cell,i)=>{if(!this.journal.has(cell))this.journal.set(cell,cell.value);cell.value=values[i];});
         }

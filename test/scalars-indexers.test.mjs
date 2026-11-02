@@ -29,7 +29,7 @@ const body=`main =
  print ("あ".[0]); print ("あ".[1]); print ("あ".[2]);
  print ("あ".?[3]); print ("abc" with {.[1] = 100});
  print ((Box [1,2]).[1]); print ((Box [1,2]) with {.[1] ! + 10});
- Box [1,2] -> mut xs; xs.[0] <- 9; print xs;
+ Box [1,2] -> mut xs; xs.[0] <<- 9; print xs;
  print (handle {toByte 256} {exn: {-> message k; toByte 0}});
  print (handle {"あ" with {.[0] = 0}} {exn: {-> message k; "invalid UTF-8"}})`;
 function native(source){const p=compile(source),dir=mkdtempSync(join(tmpdir(),'nyanco-scalars-'));try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);return result.stdout;}finally{rmSync(dir,{recursive:true,force:true});}}

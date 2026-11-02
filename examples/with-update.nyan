@@ -9,8 +9,8 @@ main =
   print ([0, 1, 2] with {.[1] = 3});
   {x: {y: [1, 2, 3]}} -> mut nested;
   nested -> original;
-  nested.x.y.[1] <- 10;
+  nested.x.y.[1] <<- 10;
   nested.x.y.[1] ! _ * _;
   print original;
   print nested;
-  handle {nested.x.y.[9] <- 0} {exn: {-> message k; print message}}
+  handle {nested.x.y.[9] <<- 0} {exn: {-> message k; print message}}

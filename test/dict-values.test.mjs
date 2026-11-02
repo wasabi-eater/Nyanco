@@ -19,7 +19,7 @@ const source=`main =
  0; each (values [0: 1, 1: 1]) {+; break}; print
  [0: 10] -> mut d
  values d -> saved
- d.[1] <- 20
+ d.[1] <<- 20
  print (toVector saved)
  print (sort (values d))
  print (toVector saved)`;

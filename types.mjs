@@ -857,7 +857,8 @@ class Inference {
           if(!env.has(name))throw new StaticTypeError(`Unknown variable: ${name}`,node);
           const binding=env.get(name);if(!binding.mutable)throw new StaticTypeError(`Cannot assign to immutable variable: ${name}`,node);return binding;
         });
-        const output=this.sequence(node.body,EMPTY,new Map(env),bound);
+        const initial=[];if(node.fromStack)for(const name of names){let value;[current,value]=this.pop(current,node);initial.unshift(value);}
+        const output=this.sequence(node.body,stack(EMPTY,...initial),new Map(env),bound);
         if(isBottom(output))current=BOTTOM;
         else {
           const values=names.map(()=>variable());

@@ -45,8 +45,8 @@ async function main() {
   check('dict int string', 'dict', 'storage.type.nyanco');
   check("data foo 'a = Foo 'a deriving eq, hash", 'deriving', 'keyword.declaration.nyanco');
   for(const keyword of ['pub','open','import','as'])check(keyword+' foo',keyword,'keyword.declaration.nyanco');
-  check('r.x <- 1', '.x', 'variable.other.property.nyanco');
-  for (const op of ['<-', '->', '??<-', '??=', '??', '::', '.<<.', '.>>.', '.&.', '.|.', '..=', '&&', '||'])
+  check('r.x <<- 1', '.x', 'variable.other.property.nyanco');
+  for (const op of ['<-', '<<-', '->>', '->', '??<-', '??=', '??', '::', '.<<.', '.>>.', '.&.', '.|.', '..=', '&&', '||'])
     check('x '+op+' y', op, 'keyword.operator.nyanco');
   check('f = "value {1 + 2}"', '+', 'keyword.operator.nyanco');
   check('f = "value {1 + 2}"', '1', 'meta.embedded.inline.nyanco');

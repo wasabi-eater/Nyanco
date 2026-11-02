@@ -28,7 +28,7 @@ test('conditional indexed reassignment inserts once and skips existing keys',()=
 test('REPL and malformed operator sequences finish in bounded subprocesses',{timeout:15000},()=>{
   const repl=spawnSync(process.execPath,['--max-old-space-size=64','cli.mjs'],{input:'[:] -> mut d\nd.[4] ??<- []\nd\n:q\n',encoding:'utf8',timeout:5000,windowsHide:true});
   assert.equal(repl.status,0,repl.stderr);assert.match(repl.stdout,/\[4: \[\]\]/);
-  for(const text of ['d.[4] ?? <- []','+ <- 1','?? ! []','+ mut x']){
+  for(const text of ['d.[4] ?? <<- []','+ <<- 1','?? ! []','+ mut x']){
     const result=spawnSync(process.execPath,['--max-old-space-size=64','cli.mjs','--eval',text],{encoding:'utf8',timeout:3000,windowsHide:true});
     assert.equal(result.status,1,`${text}: ${result.error||result.stderr}`);assert.match(result.stderr,/Error:/);assert.doesNotMatch(result.stderr,/heap|allocation|memory/i);
   }

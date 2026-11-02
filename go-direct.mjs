@@ -272,7 +272,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         ctx.lines.push(`if !${matched} {fail(${at},"No matching case branch")}`);
         values=outputs;
       } else if(n.kind==='update') {
-        const result=child(n.body);
+        const result=child(n.body,n.fromStack?values.splice(-(n.names||[n.name]).length):[]);
         (n.names||[n.name]).forEach((name,i)=>ctx.lines.push(`${env}.update(${str(name)},${result[i]},${at})`));
       } else if(n.kind==='binary' || n.kind==='comparison-chain') {
         const missing=missingOperands([n]).filter(h=>!holes.has(h)),bindings=new Map(holes),vs=missing.length?values.splice(-missing.length):[];

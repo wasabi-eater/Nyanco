@@ -41,7 +41,7 @@ test('labels work in deferred streams and mask retains its routing semantics',()
  assert.deepEqual(run('main = each [1] @a {drop; each [2] {drop; mask cancel {cancel}}; print "bad"}').stack,[]);
 });
 test('labelled blocks cannot leak their active label through results, cells, streams or effect payloads',()=>{
- for(const src of ['main = call @a {{cancel@a}}','main = call @a {fromYield {yield 1; cancel@a}}','effect send : {-> ! / {cancel}} ->\nmain = call @a {send {cancel@a}}','main = {nop} -> mut saved; call @a {saved <- {cancel@a}}'])assert.throws(()=>compile(src),/escape|Effect|Cannot unify/i,src);
+ for(const src of ['main = call @a {{cancel@a}}','main = call @a {fromYield {yield 1; cancel@a}}','effect send : {-> ! / {cancel}} ->\nmain = call @a {send {cancel@a}}','main = {nop} -> mut saved; call @a {saved <<- {cancel@a}}'])assert.throws(()=>compile(src),/escape|Effect|Cannot unify/i,src);
  assert.throws(()=>compile('main = call @a {nop}; cancel@a'),/Unknown effect label/);
  assert.deepEqual(run('main = call @a {fromYield @b {yield@b 1}}; toVector').stack,[[1]]);
 });

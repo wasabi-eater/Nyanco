@@ -1,0 +1,8 @@
+main =
+    x, y <- 3, 4
+    print #(x, y)
+    mut count <- 0
+    count <<- 1
+    2 ->> count
+    count ! + 1
+    print count

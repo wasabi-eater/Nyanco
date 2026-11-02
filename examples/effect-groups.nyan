@@ -8,5 +8,5 @@ work = write 42; ask
 main =
     0 -> mut value;
     handle {work} {ask: {-> k; resume value k},
-       write: {-> x k; value <- x; resume k}};
+       write: {-> x k; value <<- x; resume k}};
     print

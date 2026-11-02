@@ -23,7 +23,7 @@ main =
  0; each [0: 10, 1: 20] @done {drop; drop; 5; break@done}; print
  [0: "a"] -> mut d
  map d {nop} -> saved
- d.[1] <- "b"
+ d.[1] <<- "b"
  print (toVector saved)`;
 const expected=['[#(0 "a"), #(1 "b")]','[#(0 "a"), #(2 "c")]','[]','33','33','["a", "b"]','[#(1 20), #(2 30)]','1','5','[#(0 "a")]'];
 const run=()=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s)});vm.evaluate('main');return {p,output};};

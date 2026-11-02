@@ -66,7 +66,7 @@ main =
  print (hash {:}); print (hash #()); print (hash (1 ..= 3))
  print (hash some); print (hash result)
  [:] -> mut big
- each (0 ..= 999) {-> n; big.[n] <- n}
+ each (0 ..= 999) {-> n; big.[n] <<- n}
  print big.[500]
  print (length (toVector (values big)))
  print (hash [0: "a", 1: "b"] == hash [1: "b", 0: "a"])

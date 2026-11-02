@@ -29,7 +29,7 @@ main =
   print (all [] {> 0}); print (any [] {> 0});
   0 -> mut seen;
   print (all (fromYield {seen ! + 1; yield 1; seen ! + 1; yield 0; seen ! + 1; yield 9}) {> 0}); print seen;
-  seen <- 0;
+  seen <<- 0;
   print (any (fromYield {seen ! + 1; yield 0; seen ! + 1; yield 1; seen ! + 1; yield 9}) {> 0}); print seen;
   print (all (Bag [1,2,3]) {when ($ == 2) {cancel}; > 0});
   print (any [1,2,3] {when ($ == 2) {cancel}; > 2});

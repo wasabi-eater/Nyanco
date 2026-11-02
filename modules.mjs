@@ -2,7 +2,7 @@ import {readFileSync,readdirSync,realpathSync,statSync,existsSync} from 'node:fs
 import {resolve,dirname,basename,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-import {compile,lex,recordShorthands,declarationGroups,LanguageError} from './language.mjs';
+import {compile,lex,recordShorthands,leftDeclarationAt,declarationGroups,LanguageError} from './language.mjs';
 
 const space=kind=>['data','type','class'].includes(kind)?'type':kind==='effect'?'both':'value';
 const identifier=/^[a-zA-Z_][a-zA-Z0-9_']*$/;
@@ -100,6 +100,8 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
       // A top-level update is an initializer, not a function declaration.
       if(!group.some(t=>t.value==='with')||group.findIndex(t=>t.value==='=')<group.findIndex(t=>t.value==='with')){declare(mod,first,'function',visibility);return;}
     }
+    const declaration=leftDeclarationAt(group,0);
+    if(declaration>=0){if(visibility!=='private')fail('Visibility requires a function, type, class, or effect declaration',first);for(const [i,t] of group.slice(0,declaration).entries())if(t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value)&&group[i+1]?.value!==':')declare(mod,t,'variable');return;}
     if(visibility!=='private')fail('Visibility requires a function, type, class, or effect declaration',first);
     let depth=0,binding=false;
     for(const [i,t] of group.entries()){if(!depth&&t.value==='->'){binding=true;continue;}if(!depth&&[';',','].includes(t.kind))binding=false;if(binding&&group[i+1]?.value!==':'&&t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value))declare(mod,t,'variable');if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
@@ -109,7 +111,7 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
     group=recordShorthands(group);
     const fields=new Set();
     // Record labels and the first component of an update path are not names.
-    for(let i=0;i<group.length;i++)if(group[i+1]?.value===':'){const t=group[i],symbol=mod.symbols.get(t.value);if(i!==0&&!symbol?.declarations.some(d=>d.file===t.file&&d.line===t.line&&d.col===t.col))fields.add(t);}
+    for(let i=0,depth=0;i<group.length;i++){const t=group[i];if(group[i+1]?.value===':'){const symbol=mod.symbols.get(t.value);if(depth||i!==0&&!symbol?.declarations.some(d=>d.file===t.file&&d.line===t.line&&d.col===t.col))fields.add(t);}if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
     for(let i=0;i<group.length;i++)if(group[i].value==='with'){
       let j=i+1,braced=group[j]?.kind==='{',depth=0,path=true;if(braced)j++;
       for(;j<group.length;j++){const t=group[j];if(!depth&&['=','!','??='].includes(t.value))path=false;if(path&&!depth&&t.kind==='word'&&identifier.test(t.value))fields.add(t);if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind)){if(!depth)break;depth--;}if(!depth&&braced&&[',',';'].includes(t.kind))path=true;if(!braced&&!depth&&[',',';'].includes(t.kind))break;}
