@@ -1,3 +1,4 @@
+import {emptyDict,dictGet,dictSet,dictEntries,dictHashedEntries,hashMix,hashText,scalarHash} from './hash-map.mjs';
 import {bitOperation,bitOperators,bitFunctions} from './bit-values.mjs';
 import {scalar,scalarType,scalarValue,numericBinary,charText} from './numeric-values.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
@@ -800,7 +801,7 @@ export function format(value) {
 function equal(a, b) {
   if(a?.kind==='scalar'||b?.kind==='scalar')return a?.kind==='scalar'&&b?.kind==='scalar'&&a.type===b.type&&a.value===b.value;
   if(a?.kind==='range' && b?.kind==='range')return a.start===b.start && a.end===b.end && a.inclusive===b.inclusive;
-  if(a?.kind==='dict'&&b?.kind==='dict')return a.entries.length===b.entries.length&&a.entries.every(([k,v])=>b.entries.some(([key,value])=>equal(k,key)&&equal(v,value)));
+  if(a?.kind==='dict'&&b?.kind==='dict'){if(a.size!==b.size)return false;for(const [k,v,h] of dictHashedEntries(a)){const p=dictGet(b,k,h,equal);if(!p||!equal(v,p.value))return false;}return true;}
   if(a?.kind==='tuple' && b?.kind==='tuple')return equal(a.items,b.items);
   if(a?.kind==='record' && b?.kind==='record')return Object.keys(a.fields).length===Object.keys(b.fields).length && Object.keys(a.fields).every(k=>Object.hasOwn(b.fields,k) && equal(a.fields[k],b.fields[k]));
   if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => equal(v, b[i]));
@@ -937,10 +938,25 @@ export class VM {
     finally {iterator.return();holder.current=null;}
 
   }
+  *hashValue(value,t){
+    const target=this.definitions.classes?.get('hash')?.instances.get(runtimeTypeKey(value))?.implementations.get('hash');
+    if(target){const local=[value];yield* this.run([{...t,kind:'word',value:target}],local,new Map(this.globals));return scalarHash(scalarValue(local[0]),'int');}
+    const type=scalarType(value)||(typeof value==='boolean'?'bool':typeof value==='string'?'string':null),simple=scalarHash(scalarValue(value),type);
+    if(simple!==null)return simple;
+    if(value?.kind==='dict'){let sum=0;for(const [k,v] of dictEntries(value))sum=(sum+hashMix(yield* this.hashValue(k,t),yield* this.hashValue(v,t)))>>>0;return hashMix(hashMix(hashText('dict'),value.size),sum);}
+    let tag,items;
+    if(Array.isArray(value)){tag='vector';items=value;}
+    else if(value?.kind==='tuple'){tag='tuple';items=value.items;}
+    else if(value?.kind==='record'){let h=hashText('record');for(const key of Object.keys(value.fields).sort()){h=hashMix(h,hashText(key));h=hashMix(h,yield* this.hashValue(value.fields[key],t));}return h;}
+    else if(value?.kind==='range'){tag='range';items=[value.start,value.end,value.inclusive];}
+    else if(value?.kind==='adt'&&['option','result'].includes(value.typeName)){tag=value.typeName+':'+value.constructor;items=value.fields;}
+    else throw new LanguageError('No hash instance for value',t);
+    let h=hashText(tag);for(const item of items)h=hashMix(h,yield* this.hashValue(item,t));return h;
+  }
   *walk(xs,consume,t) {
     const vm=this,callback=consume,consumerTarget=t.loopTarget;
     consume=function*(value){const iterator=callback(value);try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&consumerTarget)request.bypassUntil=request.operation.name==='break'&&t.cancelOnly?t.breakTarget:consumerTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}};
-    if(xs?.kind==='stream'&&xs.mode==='dict-values'){for(const [,value] of xs.source.entries)yield* consume(value);return;}
+    if(xs?.kind==='stream'&&xs.mode==='dict-values'){for(const [,value] of dictEntries(xs.source))yield* consume(value);return;}
     if(xs?.kind==='stream'&&xs.mode==='snapshot'){for(const item of xs.items)yield* consume(item);return;}
     if(xs?.kind==='stream') {
       if(xs.mode==='partition'){
@@ -1012,6 +1028,7 @@ export class VM {
       }
       return;
     }
+    if(xs?.kind==='dict'){for(const [key,value] of dictEntries(xs))yield* consume({kind:'tuple',items:[key,value]});return;}
     const target=this.definitions.classes?.get('streem')?.instances.get(runtimeTypeKey(xs))?.implementations.get('each');
     if(target){const visitor={kind:'closure',native:function*(local){const iterator=consume(local.pop());try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&t.loopTarget)request.bypassUntil=t.loopTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}}};yield* this.run([{...t,kind:'word',value:target}],[xs,visitor],new Map(this.globals));return;}
     if(xs?.kind==='range'){const step=xs.start<=xs.end?1:-1,count=Math.abs(xs.end-xs.start)+(xs.inclusive?1:0);for(let i=0;i<count;i++){this.steps++;if(this.steps>this.maxSteps)throw new LanguageError('Execution step limit exceeded',t);yield* consume(xs.start+i*step);}}
@@ -1165,7 +1182,7 @@ export class VM {
           if(value?.kind!=='record' || !Object.hasOwn(value.fields,t.name))throw new LanguageError(`Missing record field: ${t.name}`,t);
           stack.push(value.fields[t.name]);
         }
-        else if(t.kind==='dict'){const entries=[];for(let j=0;j<t.fields.length;j+=2){const key=yield* this.operand(t.fields[j].body,env,missing,t,'Dictionary key'),value=yield* this.operand(t.fields[j+1].body,env,missing,t,'Dictionary value');const old=entries.findIndex(([k])=>equal(k,key));if(old<0)entries.push([key,value]);else entries[old]=[key,value];}stack.push({kind:'dict',entries});}
+        else if(t.kind==='dict'){let result=emptyDict();for(let j=0;j<t.fields.length;j+=2){const key=yield* this.operand(t.fields[j].body,env,missing,t,'Dictionary key'),value=yield* this.operand(t.fields[j+1].body,env,missing,t,'Dictionary value'),hash=yield* this.hashValue(key,t);result=dictSet(result,key,value,hash,equal);}stack.push(result);}
         else if(t.kind==='path-update') {
           this.need(stack,1,t);const original=stack.pop(),args=[];
           for(const field of t.fields.slice(0,-1))args.push(yield* this.operand(field.body,env,missing,t,'Update index'));
@@ -1342,9 +1359,9 @@ for(const name of ['windows','chunks','chunkBy','groupBy'])define(name,2,functio
     if(!Number.isSafeInteger(argument)||argument<=0){yield {operation:ioEffects().get('exn'),args:[name+': size must be a positive integer'],token:t};throw new LanguageError('Non-returning effect returned',t);}
   }
   if(name==='groupBy'){
-    const block=vm.expect(argument,'quotation',t),entries=[];
-    yield* vm.loop(vm.walk(source,function*(item){const local=[item];yield* vm.call(block,local,t);vm.need(local,1,t);const key=local.pop(),found=entries.findIndex(([k])=>equal(k,key));if(found<0)entries.push([key,[item]]);else entries[found][1].push(item);},t),t);
-    s.push(...(t.breakValues||[{kind:'dict',entries}]));return;
+    const block=vm.expect(argument,'quotation',t);let result=emptyDict();
+    yield* vm.loop(vm.walk(source,function*(item){const local=[item];yield* vm.call(block,local,t);vm.need(local,1,t);const key=local.pop(),hash=yield* vm.hashValue(key,t),old=dictGet(result,key,hash,equal),items=old?old.value:[];items.push(item);result=dictSet(result,key,items,hash,equal);},t),t);
+    s.push(...(t.breakValues||[result]));return;
   }
   s.push({kind:'stream',mode:'partition',operation:name,source,label:t.label,...(name==='chunkBy'?{block:vm.expect(argument,'quotation',t)}:{count:argument})});
 });
@@ -1471,13 +1488,14 @@ for(const name of ['from',...['to','from'].flatMap(prefix=>['Int','Float','Byte'
  }
  s.push(scalar(type,type==='char'?String.fromCodePoint(result):result));
 });
+define('hash',1,function*(vm,s,t){const value=s.pop(),target=vm.definitions.classes?.get('hash')?.instances.get(runtimeTypeKey(value))?.implementations.get('hash');if(target){const local=[value];yield* vm.run([{...t,kind:'word',value:target}],local,new Map(vm.globals));s.push(local[0]);}else s.push(yield* vm.hashValue(value,t));});
 define('values',1,(vm,s,t)=>{const source=s.pop();if(source?.kind!=='dict')throw new LanguageError('values requires a dictionary',t);s.push({kind:'stream',mode:'dict-values',source});});
 define('bytes',1,(vm,s,t)=>s.push([...new TextEncoder().encode(vm.expect(s.pop(),'string',t))].map(v=>scalar('byte',v))));
 for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];
  const target=vm.definitions.classes?.get(name==='at'?'indexGet':'indexSet')?.instances.get(runtimeTypeKey(container))?.implementations.get(name);
  if(target){const call={...t,kind:'word',value:target},effect=t.indexEffect;yield* vm.run([call],values,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(values[0]);return;}
- if(container?.kind==='dict'){const entries=container.entries,found=entries.findIndex(([key])=>equal(key,index));if(name==='at'){if(found<0){yield {operation:ioEffects().get('exn'),args:['Dictionary key not found: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}s.push(entries[found][1]);}else{const result=entries.map(pair=>[...pair]);if(found<0)result.push([index,values[2]]);else result[found]=[index,values[2]];s.push({kind:'dict',entries:result});}return;}
+ if(container?.kind==='dict'){const hash=yield* vm.hashValue(index,t),found=dictGet(container,index,hash,equal);if(name==='at'){if(!found){yield {operation:ioEffects().get('exn'),args:['Dictionary key not found: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}s.push(found.value);}else s.push(dictSet(container,index,values[2],hash,equal));return;}
  const xs=typeof container==='string'?new TextEncoder().encode(container):vm.expect(container,'list',t);
  if(scalarType(index)!=='int'||!Number.isSafeInteger(index)||index<0||index>=xs.length){yield {operation:ioEffects().get('exn'),args:['Index out of bounds: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}
  if(name==='at'){s.push(typeof container==='string'?scalar('byte',xs[index]):xs[index]);return;}

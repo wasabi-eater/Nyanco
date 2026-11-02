@@ -115,8 +115,8 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     if(c.intoClass&&heads.every(t=>t.tag==='param'||t.tag==='atom'&&['int','float','byte','char'].includes(t.name)))fail('Built-in conversion instance already exists',token);
     if((c.castClass||c.numClass)&&head.tag==='atom'&&(['int','float','byte'].includes(head.name)||c.castClass&&head.name==='char'))fail('Built-in numeric instance already exists',token);
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);
-    if(c.indexClass&&(head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
-    if(name==='streem' && ['vector','range'].includes(target))fail('Built-in streem instance already exists',token);
+    if(c.indexClass&&(head.tag==='adt'&&head.name==='dict'||head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
+    if(name==='streem' && ['vector','range','dict'].includes(target))fail('Built-in streem instance already exists',token);
     if([...c.instances.values()].some(i=>instanceHeads(i).every((t,n)=>t.tag==='param'||heads[n].tag==='param'||instanceKey(t)===instanceKey(heads[n]))))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
     const instance={target,head,heads,context,implementations:new Map(),token};c.instances.set(target,instance);
     const parts=members(body);instance.associated=new Map();instance.associatedSources=new Map();

@@ -1,4 +1,4 @@
-# Nyanco 0.73 — with短縮構文
+# Nyanco 0.74 — 永続HashMapとhashクラス
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1358,7 +1358,7 @@ Some 3 -> Some(~); print -- 3
 [:].?[0]                   -- None
 ```
 
-辞書の型は`dict key value`で、キーと値はそれぞれ同じ型である必要があります。`[:]`は空の辞書です。リテラル内のキー・値には式を書けます。キーは構造的な等価性で比較し、挿入順を保ちます。同じキーを再指定すると値を置き換えます。内部は順序付きエントリー列で、検索・更新は線形時間です。
+辞書の型は`dict key value`で、キーと値はそれぞれ同じ型である必要があります。`[:]`は空の辞書です。リテラル内のキー・値には式を書けます。キーは構造的な等価性で比較します。辞書の走査・values・表示の順序は保証しません。同じキーを再指定すると値を置き換えます。内部は永続HashMap（圧縮した二分ハッシュトライ）です。通常の検索・更新は短い探索経路だけをたどり、更新時もその経路だけをコピーします。キーのハッシュがすべて衝突する場合は、衝突バケット内のキー比較が線形時間になります。
 
 `.[key]`はindexGetのat、`with`での更新はindexSetのsetAtを使います。存在しないキーの参照はexn、`.?[key]`はoptionを返します。setAtは存在しないキーにも挿入できます。更新は元の辞書を変更しません。
 
@@ -1398,7 +1398,7 @@ r with x.y[2] = 10 -> r2
 
 ## 辞書のvalues
 
-`values`は辞書の値を挿入順に返す、effectを持たない遅延streamです。型は`dict 'k 'v -> stream 'v { -> }`です。辞書全体から新しいvectorを作らずに走査し、空の辞書からは空のstreamを返します。
+`values`は辞書の値を返す、effectを持たない遅延streamです。順序は保証しません。型は`dict 'k 'v -> stream 'v { -> }`です。辞書全体から新しいvectorを作らずに走査し、空の辞書からは空のstreamを返します。
 
 ```nyanco
 [0: "a", 1: "b"]; values; toVector -- ["a", "b"]
@@ -1406,3 +1406,33 @@ r with x.y[2] = 10 -> r2
 ```
 
 streamを作成した時点の辞書を参照するため、元のmutable変数に別の辞書を再代入しても既存のstreamは変わりません。繰り返し走査でき、map・filter・nth・eachなどのstream操作と組み合わせられます。
+
+辞書は`streem`にも対応し、`each`にはキー・値のtuple `#(key value)`が渡されます。走査順は保証しません。`map`・`filter`・`fold`・`toVector`などのstream関数も辞書に直接使えます。
+
+```nyanco
+each [0: "a", 1: "b"] {-> #(key value); print #(key, value)}
+-- #(0 "a") と #(1 "b")（順序は未規定）
+```
+
+## hashクラスと永続HashMap
+
+`hash : hash 'a => 'a -> int`はeffectを持たないクラスメソッドです。辞書の作成・キー検索・更新・groupByではキーに`hash 'k`制約が必要です。走査・valuesはキーの再検索をしないのでhash制約を要求しません。
+
+int・float・byte・char・bool・string・rangeに標準実装があります。vector・tuple・recordは各要素・各フィールドがhashである場合にhashになります。option・resultの型引数、辞書のキーと値についても同様です。関数やstreamには標準のhash実装はありません。
+
+```nyanco
+data userId = UserId int
+instance hash userId where
+    hash (UserId n) = hash n
+
+make : hash 'k => 'k -> dict 'k string
+make k = [k: "value"]
+
+[UserId 1: "Alice"].[UserId 1]
+[#(1, "x"): "tuple key"].[#(1, "x")]
+[{x: 1, y: [2, 3]}: "record key"].[{y: [2, 3], x: 1}]
+```
+
+異なるキーが同じハッシュ値になっても、構造的なキー比較で区別します。独自hash実装は、構造的に等しいキーに同じ値を返す必要があります。辞書に格納したキーのhash結果が後から変わる実装は使えません。
+
+内部の32bitハッシュを使った圧縮トライの深さは最大32です。更新は全体のコピーを行わず、古い辞書と新しい辞書で未変更の部分を共有します。キー・値のサイズや、独自hash自体の計算量は別途かかります。辞書のeach・values・表示順は引き続き保証しません。

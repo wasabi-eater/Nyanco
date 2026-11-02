@@ -18,7 +18,7 @@ export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='dict'?'dict'
 export function builtinInstance(c,t) {
   if(!c)return false;
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
-  return !!(c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
+  return !!(c.hashClass&&(t.tag==='atom'&&['int','float','byte','char','string','bool','range'].includes(t.name)||['list','tuple','tuple-tail','tuple-end','record','record-row','record-empty'].includes(t.tag)||t.tag==='adt'&&['option','result','dict'].includes(t.name))||c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
 }
 export function primitiveOperatorClass(name,ops,token) {
   const param="'a",methods=new Map(ops.map(op=>[op,{name:op,className:name,param,signature:`'a ${operatorSpecs.get(op).right||"'a"} -> ${operatorSpecs.get(op).result}${operatorSpecs.get(op).exn?' / {exn}':''}`,token,inputCount:2,dispatchIndex:0,...(op==='xor'?{specialBits:true}:{})}]));
@@ -50,6 +50,10 @@ export function installOperatorClasses(classes,methods) {
     const associated=[{name:'key',owner:name,param:"'indexKey"},{name:'item',owner:name,param:"'indexItem"}],param="'c";
     const m={name:method,className:name,param,signature:method==='at'?"'c 'indexKey -> 'indexItem / {exn}":"'c 'indexKey 'indexItem -> 'c / {exn}",inputCount:method==='at'?2:3,dispatchIndex:0,specialIndex:true};
     classes.set(name,{name,param,associated,methods:new Map([[method,m]]),instances:new Map(),standard:true,indexClass:true});methods.set(method,m);
+  }
+  if(!classes.has('hash')){
+    const m={name:'hash',className:'hash',param:"'a",signature:"'a -> int",inputCount:1,dispatchIndex:0,specialHash:true};
+    classes.set('hash',{name:'hash',param:"'a",methods:new Map([['hash',m]]),instances:new Map(),standard:true,hashClass:true});methods.set('hash',m);
   }
   if(!classes.has('show') && !methods.has('show')) {
     const m={name:'show',className:'show',param:"'a",signature:"'a -> string",inputCount:1,dispatchIndex:0,specialShow:true};

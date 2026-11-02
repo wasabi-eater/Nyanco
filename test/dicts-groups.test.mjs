@@ -59,7 +59,7 @@ test('dictionary literals, conditional updates and grouping streams work togethe
 test('typing, saved values and short-circuiting traversal remain sound',()=>{
   for(const s of ['[0: 1, "a": 2]','[0: 1, 1: "a"]','[0: "a"] with {.?[1] ! + 2}','windows [1] 2.0','chunks True 2'])assert.throws(()=>compile('main = '+s),s);
   assert.deepEqual(run('main = 0; each (windows [1,2,3] 2) {drop; + 1; when ($ == 1) {break}}').stack,[1]);
-  assert.deepEqual(run('main = groupBy [1,2] @done {drop; [9: [9]]; break@done}').stack,[{kind:'dict',entries:[[9,[9]]]}]);
+  assert.equal(format(run('main = groupBy [1,2] @done {drop; [9: [9]]; break@done}').stack[0]),'[9: [9]]');
   assert.equal(format(run('main = [0: 1] -> mut d; d.?[9] ! + 2; d').stack[0]),'[0: 1]');
   assert.deepEqual(run('main = [0: \"a\", 1: \"b\"] == [1: \"b\", 0: \"a\"]').stack,[true]);
   const vm=new VM({warning:()=>{}});vm.evaluate('[0: 10] -> d');assert.equal(format(vm.evaluate('d.[0]')[0]),'10');

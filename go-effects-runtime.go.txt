@@ -74,7 +74,7 @@ func(m *Machine) handleWith(body func(*Machine) []any,handlers map[string]Effect
 }
 
 func(m *Machine) listIndex(value,index any,loc string) any {
- if d,ok:=value.(*Dict);ok{i:=d.find(index);if i<0{m.perform("exn",[]any{"Dictionary key not found: "+text(index)},loc,true);fail(loc,"Non-returning effect returned")};return d.entries[i][1]}
+ if d,ok:=value.(*Dict);ok{v,found:=d.get(index);if !found{m.perform("exn",[]any{"Dictionary key not found: "+text(index)},loc,true);fail(loc,"Non-returning effect returned")};return v}
  n:=number(index,loc);size:=0;var xs []any;var text string;isString:=false
  if s,ok:=value.(string);ok{text=s;size=len(s);isString=true}else{xs=list(value,loc);size=len(xs)}
  if math.IsNaN(n)||math.Trunc(n)!=n||n<0||n>=float64(size){m.perform("exn",[]any{"Index out of bounds: "+textValue(index)},loc,true);fail(loc,"Non-returning effect returned")}
@@ -111,6 +111,7 @@ func(m *Machine) walkUnresolved(value any,visit func(any),loc string) {
  switch xs:=value.(type) {
  case []any: for _,item:=range xs{visit(item)}
  case *Range: for i:=0;i<xs.count();i++{m.tick(loc);visit(xs.start+int64(i)*xs.step())}
+ case *Dict: xs.walk(func(k,v any){visit(&Tuple{[]any{k,v}})})
  case *Stream: xs.walk(m,visit)
  default: fail(loc,"Unresolved native streem container")
  }
@@ -208,5 +209,5 @@ func(m *Machine) partitionItems(walk func(*Machine,func(any)),key func(any)any,c
  if len(pending)>0&&mode!="windows"{emit(pending)}
 }
 func(m *Machine) groupItems(walk func(*Machine,func(any)),key func(any)any,result *Dict){
- walk(m,func(item any){k:=key(item);i:=result.find(k);if i<0{result.entries=append(result.entries,[2]any{k,[]any{item}})}else{result.entries[i][1]=append(result.entries[i][1].([]any),item)}})
+ walk(m,func(item any){k:=key(item);v,found:=result.get(k);items:=[]any{};if found{items=v.([]any)};updated:=result.set(k,append(items,item));*result=*updated})
 }

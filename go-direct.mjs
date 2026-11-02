@@ -72,7 +72,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   const definitions=withStandardFunctions(withOption(Object.assign(new Map(program.definitions),{...program.definitions,effects:ioEffects(program.definitions.effects)}))),entry=entryNodes||parseExpression(expression,'<entry>',program.definitions.constructors);
   checkExpression(entry,definitions);
   const vectorReuse=optimizeVectors?vectorOwnership(definitions,entry):new WeakSet();
-  const types=loweringTypes(definitions),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
+  const types=loweringTypes(definitions),hashFunctions=[],hashNames=new Map(),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
   const nodeIds=new Map();let next=0;
   const nodeID=n=>{if(!nodeIds.has(n))nodeIds.set(n,nodeIds.size);return nodeIds.get(n);};
   const returns=n=>n?`(${Array(n).fill('any').join(',')})`:'';
@@ -206,7 +206,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const fields=n.fields.map(f=>`${str(f.name)}:${child(f.body,[],bindings)[0]}`);
         values.push(ctx.value(`&Record{map[string]any{${fields.join(',')}}}`));
       }
-      else if(n.kind==='dict'){const pairs=[];for(let j=0;j<n.fields.length;j+=2){const k=child(n.fields[j].body,[],holes)[0],v=child(n.fields[j+1].body,[],holes)[0];pairs.push(`[2]any{${k},${v}}`);}values.push(ctx.value(`makeDict([][2]any{${pairs.join(',')}})`));}
+      else if(n.kind==='dict'){const pairs=[];for(let j=0;j<n.fields.length;j+=2){const k=child(n.fields[j].body,[],holes)[0],v=child(n.fields[j+1].body,[],holes)[0];pairs.push(`[2]any{${k},${v}}`);}values.push(ctx.value(`makeDict([][2]any{${pairs.join(',')}},${hasher(T.prune(info.output).item.args[0])})`));}
       else if(n.kind==='tuple')values.push(ctx.value(`&Tuple{[]any{${child(n.body,[],holes).join(',')}}}`));
       else if(n.kind==='path-update') {
         const original=values.pop(),args=n.fields.slice(0,-1).map(f=>child(f.body,[],holes)[0]);
@@ -301,7 +301,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         else values.push(value);
         if(n.ephemeral)ctx.lines.push(`delete(${env}.values,${str(n.value)});delete(${env}.locals,${str(n.value)})`);
       }
-      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
+      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialHash && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
         let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
         const target=lookupInstance(definitions.classes.get(m.className),(info.effect.dispatchTypes||[type]).map(t=>{t=T.prune(t);if(t.numericLiterals){T.unify(t,{tag:'atom',name:'int'},n);t=T.prune(t);}return t;}))?.implementations.get(n.value);
@@ -332,6 +332,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const name=`walk${next++}`;
     ctx.lines.push(`${name}:=func(m *Machine,visit func(any)){`);
     if(type.tag==='list')ctx.lines.push(`for _,x:=range list(${value},${at}){visit(x)}`);
+    else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`${value}.(*Dict).walk(func(k,v any){visit(&Tuple{[]any{k,v}})})`);
     else if(type.tag==='atom' && type.name==='range')ctx.lines.push(`r:=${value}.(*Range);for i:=0;i<r.count();i++{m.tick(${at});visit(r.start+int64(i)*r.step())}`);
     else {
       const instance=definitions.classes?.get('streem')?.instances.get(instanceKey(type)),target=instance?.implementations.get('each');
@@ -366,6 +367,27 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,args,1)[0];}
     return ctx.value(name==='at'?`m.listIndex(${args},${at})`:`m.indexSetOwned(${args},${at},${reuse})`);
   }
+  function hashFunction(type){
+    type=T.prune(type);const key=formatType(type);if(hashNames.has(key))return hashNames.get(key);
+    const name=`hashType${hashFunctions.length}`,index=hashFunctions.length;hashFunctions.push('');hashNames.set(key,name);
+    const ctx=context(),target=definitions.classes.get('hash')?.instances.get(instanceKey(type))?.implementations.get('hash');
+    if(target){const effect=T.instantiate(types.functions.get(target));T.unify(effect.input,T.stack(T.EMPTY,type));const spec=named(target,effect),result=ctx.call(`m.${spec.fn}`,['value'],1)[0];ctx.lines.push(`return hashAny(${result})`);}
+    else if(type.tag==='list')ctx.lines.push(`h:=hashText("vector");for _,item:=range value.([]any){h=hashMix(h,${hashFunction(type.item)}(m,item))};return h`);
+    else if(type.tag==='tuple'){
+      const ts=[...type.items];let tail=T.prune(type.tail);while(tail.tag==='tuple-tail'){ts.push(...tail.items);tail=T.prune(tail.tail);}
+      ctx.lines.push(`h:=hashText("tuple");items:=value.(*Tuple).items;_ = items;${ts.map((t,i)=>`h=hashMix(h,${hashFunction(t)}(m,items[${i}]))`).join(';')};return h`);
+    }else if(type.tag==='record'){
+      const fields=new Map();let row=T.prune(type.row);while(row.tag==='record-row'){for(const [k,v] of row.fields)fields.set(k,v);row=T.prune(row.rest||row.tail);}
+      const cases=[...fields].map(([k,v])=>`case ${str(k)}:h=hashMix(h,${hashFunction(v)}(m,r.fields[k]))`).join(';');
+      ctx.lines.push(`r:=value.(*Record);h:=hashText("record");keys:=[]string{};for k:=range r.fields{keys=append(keys,k)};sort.Strings(keys);for _,k:=range keys{h=hashMix(h,hashText(k));switch k{${cases?cases+';':''}default:h=hashMix(h,hashAny(r.fields[k]))}};return h`);
+    }else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`d:=value.(*Dict);sum:=uint32(0);d.walk(func(k,v any){sum+=hashMix(${hashFunction(type.args[0])}(m,k),${hashFunction(type.args[1])}(m,v))});return hashMix(hashMix(hashText("dict"),uint32(d.size)),sum)`);
+    else if(type.tag==='adt'&&['option','result'].includes(type.name)){
+      const cases=type.name==='option'?`case "Some":h=hashMix(h,${hashFunction(type.args[0])}(m,a.fields[0]))`:`case "Ok":h=hashMix(h,${hashFunction(type.args[0])}(m,a.fields[0]));case "Err":h=hashMix(h,${hashFunction(type.args[1])}(m,a.fields[0]))`;
+      ctx.lines.push(`a:=value.(*ADT);h:=hashText(a.name+":"+a.constructor);switch a.constructor{${cases}};return h`);
+    }else ctx.lines.push('return hashAny(value)');
+    hashFunctions[index]=`func ${name}(m *Machine,value any) uint32 {${ctx.lines.join(';')}}`;return name;
+  }
+  const hasher=type=>`func(key any)uint32{return ${hashFunction(type)}(m,key)}`;
   function shown(value,type,ctx,at,rawString=false) {
     type=T.prune(type);
     const target=definitions.classes.get('show')?.instances.get(instanceKey(type))?.implementations.get('show');
@@ -381,7 +403,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       let key='nil',count='int64(0)';
       if(keyed){const vs=['item'];invoke(inner,arg,vs,T.prune(topTypes.at(-1)),at);inner.lines.push(T.prune(topTypes.at(-1)).originalNever?'panic("Non-returning callback returned")':`return ${vs[0]}`);key=`func(item any)any{${inner.lines.join(';')}}`;}
       else count=ctx.value(`m.partitionCount(${arg},${str(name)},${at})`)+'.(int64)';
-      if(name==='groupBy'){const result=ctx.value('&Dict{}'),br=`breakResult${next++}`;ctx.lines.push(`${br}:=m.loop(func(m *Machine){m.groupItems(${walk},${key},${result}.(*Dict))},${at},${label})`);v.push(result);returnedBreak(br);}
+      if(name==='groupBy'){const result=ctx.value(`newDict(${hasher(T.prune(info.output).item.args[0])})`),br=`breakResult${next++}`;ctx.lines.push(`${br}:=m.loop(func(m *Machine){m.groupItems(${walk},${key},${result}.(*Dict))},${at},${label})`);v.push(result);returnedBreak(br);}
       else v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.loop(func(m *Machine){m.partitionItems(${walk},${key},${count},${str(name)},visit,${at})},${at},${label})}}`));
       return;
     }
@@ -410,7 +432,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else if(arg){const checked=ctx.value(`m.iterationCount(${arg},${str(name)},${at})`);count=`number(${checked},${at})`;}
       v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${rows}:=[]any{};m.loop(func(m *Machine){${walk}(m,func(v any){${rows}=append(${rows},v)})},${at},nil);${extra}m.combinations(${rows},${other},${count},${str(name)},visit,${at})}}`));return;
     }
-    if(name==='values'){const source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){for _,pair:=range ${source}.(*Dict).entries{visit(pair[1])}}}`));return;}
+    if(name==='hash'){const value=pop(),type=T.prune(topTypes.at(-1)),target=definitions.classes.get('hash')?.instances.get(instanceKey(type))?.implementations.get('hash');if(target){const effect=T.instantiate(types.functions.get(target));T.unify(effect.input,T.stack(T.EMPTY,type));const spec=named(target,effect);v.push(ctx.call(`m.${spec.fn}`,[value],1)[0]);}else v.push(ctx.value(`int64(${hashFunction(type)}(m,${value}))`));return;}
+    if(name==='values'){const source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${source}.(*Dict).walk(func(_ any,value any){visit(value)})}}`));return;}
     if(name==='split') {
       const separator=pop(),source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.walkSplit(${source},${separator},visit,${at})}}`));return;
     }
@@ -595,5 +618,5 @@ ${initialCtx.lines.join('\n')}
 ${mainCtx.lines.join('\n')}
 ${showStack?`fmt.Println(text([]any{${results}}))`:''}
 }`;
-  return readFileSync(new URL('./go-direct-runtime.go.txt',import.meta.url),'utf8')+'\n'+readFileSync(new URL('./go-effects-runtime.go.txt',import.meta.url),'utf8')+'\n'+functions.join('\n\n')+'\n'+dispatch.join('\n\n')+'\n'+main+'\n';
+  return readFileSync(new URL('./go-direct-runtime.go.txt',import.meta.url),'utf8')+'\n'+readFileSync(new URL('./go-effects-runtime.go.txt',import.meta.url),'utf8')+'\n'+hashFunctions.join('\n\n')+'\n'+functions.join('\n\n')+'\n'+dispatch.join('\n\n')+'\n'+main+'\n';
 }

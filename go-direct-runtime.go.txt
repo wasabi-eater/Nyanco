@@ -9,10 +9,49 @@ func (r *Range) step() int64 {if r.start>r.end{return -1};return 1}
 func (r *Range) count() int {n:=int(r.end-r.start);if n<0{n=-n};if r.inclusive{n++};return n}
 type Env struct{values map[string]any;locals map[string]bool}
 type NativeVisitor struct{visit func(any)}
-type Dict struct{entries [][2]any}
-func(d *Dict) find(key any) int {for i,p:=range d.entries{if equal(p[0],key){return i}};return -1}
-func(d *Dict) set(key,value any) *Dict {pairs:=append([][2]any{},d.entries...);i:=d.find(key);if i<0{pairs=append(pairs,[2]any{key,value})}else{pairs[i]=[2]any{key,value}};return &Dict{pairs}}
-func makeDict(pairs [][2]any) *Dict {d:=&Dict{};for _,p:=range pairs{d=d.set(p[0],p[1])};return d}
+type hashPair struct{key,value any;index int}
+type hashNode struct{zero,one *hashNode;hash uint32;bucket []hashPair}
+type Dict struct{root *hashNode;size int;hash func(any)uint32}
+func newDict(hash func(any)uint32) *Dict{return &Dict{hash:hash}}
+func(d *Dict) hashKey(key any) uint32 {if d.hash!=nil{return d.hash(key)};return hashAny(key)}
+func findHash(n *hashNode,key any,hash uint32,depth uint) *hashPair {
+ if n==nil{return nil};if n.bucket!=nil{if n.hash!=hash{return nil};for i:=range n.bucket{if equal(n.bucket[i].key,key){return &n.bucket[i]}};return nil}
+ if (hash>>depth)&1==0{return findHash(n.zero,key,hash,depth+1)};return findHash(n.one,key,hash,depth+1)
+}
+func mergeHash(a,b *hashNode,depth uint) *hashNode{
+ x,y:=(a.hash>>depth)&1,(b.hash>>depth)&1;if x!=y{if x==0{return &hashNode{zero:a,one:b}};return &hashNode{zero:b,one:a}}
+ child:=mergeHash(a,b,depth+1);if x==0{return &hashNode{zero:child}};return &hashNode{one:child}
+}
+func insertHash(n *hashNode,pair hashPair,hash uint32,depth uint) *hashNode{
+ if n==nil{return &hashNode{hash:hash,bucket:[]hashPair{pair}}}
+ if n.bucket!=nil{if n.hash!=hash{return mergeHash(n,&hashNode{hash:hash,bucket:[]hashPair{pair}},depth)};bucket:=append([]hashPair{},n.bucket...);for i,p:=range bucket{if equal(p.key,pair.key){bucket[i]=pair;return &hashNode{hash:hash,bucket:bucket}}};bucket=append(bucket,pair);return &hashNode{hash:hash,bucket:bucket}}
+ if (hash>>depth)&1==0{return &hashNode{zero:insertHash(n.zero,pair,hash,depth+1),one:n.one}};return &hashNode{zero:n.zero,one:insertHash(n.one,pair,hash,depth+1)}
+}
+func walkHash(n *hashNode,visit func(hashPair)){if n==nil{return};if n.bucket!=nil{for _,p:=range n.bucket{visit(p)};return};walkHash(n.zero,visit);walkHash(n.one,visit)}
+func(d *Dict) walk(visit func(any,any)){walkHash(d.root,func(p hashPair){visit(p.key,p.value)})}
+func(d *Dict) entries() [][2]any{pairs:=[]hashPair{};walkHash(d.root,func(p hashPair){pairs=append(pairs,p)});sort.Slice(pairs,func(i,j int)bool{return pairs[i].index<pairs[j].index});result:=[][2]any{};for _,p:=range pairs{result=append(result,[2]any{p.key,p.value})};return result}
+func(d *Dict) get(key any)(any,bool){p:=findHash(d.root,key,d.hashKey(key),0);if p==nil{return nil,false};return p.value,true}
+func(d *Dict) set(key,value any) *Dict{hash:=d.hashKey(key);old:=findHash(d.root,key,hash,0);index,size:=d.size,d.size;if old!=nil{index=old.index}else{size++};return &Dict{root:insertHash(d.root,hashPair{key,value,index},hash,0),size:size,hash:d.hash}}
+func makeDict(pairs [][2]any,hash func(any)uint32) *Dict{d:=newDict(hash);for _,p:=range pairs{d=d.set(p[0],p[1])};return d}
+func hashMix(hash,value uint32)uint32{return (hash^value)*16777619}
+func hashBytes(data []byte)uint32{hash:=uint32(2166136261);for _,b:=range data{hash=hashMix(hash,uint32(b))};return hash}
+func hashText(text string)uint32{return hashBytes([]byte(text))}
+func hashAny(value any)uint32{
+ switch x:=value.(type){
+ case int64:return uint32(x)^uint32(uint64(x)>>32)
+ case uint8:return uint32(x)
+ case Char:return uint32(x)
+ case bool:if x{return 1};return 0
+ case string:return hashText(x)
+ case float64:if x==0{x=0};bits:=math.Float64bits(x);data:=make([]byte,8);for i:=0;i<8;i++{data[i]=byte(bits>>(uint(i)*8))};return hashBytes(data)
+ case []any:h:=hashText("vector");for _,v:=range x{h=hashMix(h,hashAny(v))};return h
+ case *Tuple:h:=hashText("tuple");for _,v:=range x.items{h=hashMix(h,hashAny(v))};return h
+ case *Record:h:=hashText("record");keys:=[]string{};for k:=range x.fields{keys=append(keys,k)};sort.Strings(keys);for _,k:=range keys{h=hashMix(h,hashText(k));h=hashMix(h,hashAny(x.fields[k]))};return h
+ case *Range:h:=hashText("range");for _,v:=range []any{x.start,x.end,x.inclusive}{h=hashMix(h,hashAny(v))};return h
+ case *ADT:if x.name!="option"&&x.name!="result"{panic("Missing hash instance")};h:=hashText(x.name+":"+x.constructor);for _,v:=range x.fields{h=hashMix(h,hashAny(v))};return h
+ case *Dict:sum:=uint32(0);x.walk(func(k,v any){sum+=hashMix(hashAny(k),hashAny(v))});return hashMix(hashMix(hashText("dict"),uint32(x.size)),sum)
+ };panic("Missing hash instance")
+}
 type Stream struct{walk func(*Machine,func(any))}
 type Quote struct{id int;env *Env}
 type Tuple struct{items []any}
@@ -52,7 +91,7 @@ func text(v any) string {
   s:=strconv.FormatFloat(x,'e',-1,64); s=strings.ReplaceAll(s,"e-0","e-"); return strings.ReplaceAll(s,"e+0","e+")
  case bool: if x { return "True" }; return "False"
  case string: var b bytes.Buffer; enc:=json.NewEncoder(&b); enc.SetEscapeHTML(false); _=enc.Encode(x); return strings.TrimSuffix(b.String(),"\n")
- case *Dict: if len(x.entries)==0{return "[:]"};parts:=[]string{};for _,p:=range x.entries{parts=append(parts,text(p[0])+": "+text(p[1]))};return "["+strings.Join(parts,", ")+"]"
+ case *Dict: if x.size==0{return "[:]"};parts:=[]string{};for _,p:=range x.entries(){parts=append(parts,text(p[0])+": "+text(p[1]))};return "["+strings.Join(parts,", ")+"]"
  case *Stream: return "<stream>"
  case *Range: op:="..";if x.inclusive{op="..="};return "("+text(x.start)+" "+op+" "+text(x.end)+")"
  case []any: parts:=[]string{}; for _,v:=range x { parts=append(parts,text(v)) }; return "["+strings.Join(parts,", ")+"]"
@@ -71,7 +110,7 @@ func equal(a,b any) bool {
  case float64: y,ok:=b.(float64);return ok && x==y
  case bool: y,ok:=b.(bool);return ok && x==y
  case string: y,ok:=b.(string);return ok && x==y
- case *Dict: y,ok:=b.(*Dict);if !ok||len(x.entries)!=len(y.entries){return false};for _,p:=range x.entries{i:=y.find(p[0]);if i<0||!equal(p[1],y.entries[i][1]){return false}};return true
+ case *Dict: y,ok:=b.(*Dict);if !ok||x.size!=y.size{return false};same:=true;x.walk(func(k,v any){w,found:=y.get(k);if !found||!equal(v,w){same=false}});return same
  case *Tuple: y,ok:=b.(*Tuple);return ok && equal(x.items,y.items)
  case *Record: y,ok:=b.(*Record);if !ok || len(x.fields)!=len(y.fields){return false};for k,v:=range x.fields{w,ok:=y.fields[k];if !ok || !equal(v,w){return false}};return true
  case *Continuation: y,ok:=b.(*Continuation);return ok && x==y

@@ -1,3 +1,4 @@
+import {dictEntries} from './hash-map.mjs';
 import {classParameters,instanceHeads,relationKey,superConstraints,lookupInstance,builtinConversion} from './class-relations.mjs';
 import {resolveInheritance} from './class-inheritance.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
@@ -84,7 +85,7 @@ function requireAssociated(c,container,items,token) {
     if(container.tag==='rigid')throw new StaticTypeError(`Missing constraint: ${c.name} ${formatType(container)}`,token);
     container.associated??=new Map();container.associated.set(c.name,items);return;
   }
-  if(c.indexClass&&container.tag==='adt'&&container.name==='dict'){unify(items[0],container.args[0],token);unify(items[1],container.args[1],token);return;}
+  if(c.indexClass&&container.tag==='adt'&&container.name==='dict'){requireClass('hash',container.args[0],token);unify(items[0],container.args[0],token);unify(items[1],container.args[1],token);return;}
   if(c.indexClass&&(container.tag==='list'||container.tag==='atom'&&container.name==='string')){
     unify(items[0],INT,token);unify(items[1],container.tag==='list'?container.item:BYTE,token);return;
   }
@@ -103,7 +104,7 @@ function requireClass(name,type,token) {
   if(c.associated?.length)return requireAssociated(c,type,c.associated.map(()=>variable()),token);
   if(c.operatorClass && !c.supers?.length && !c.instances.size && [...c.methods.keys()].every(op=>operatorSpecs.get(op)?.universal))return;
   if(type.tag==='var') {
-    if(type.sort!=='value')throw new StaticTypeError('Class constraint requires a value type',token);
+    if(type.sort!=='value'&&!(c.hashClass&&['record-row','tuple-row'].includes(type.sort)))throw new StaticTypeError('Class constraint requires a value type',token);
     type.classes ??= new Set();if(hasRelationEvidence(c,[type]))return;for(const n of type.classes)if(inheritedConstraints(c,[type]).some(f=>f.name===n&&f.args.length===1&&sameType(f.args[0],type)))type.classes.delete(n);type.classes.add(name);return;
   }
   if(type.tag==='rigid') {
@@ -113,6 +114,12 @@ function requireClass(name,type,token) {
   requireSuperclasses(c,[type],token);
   const key=instanceKey(type),inst=c.instances.get(key);
   if(inst) { const parameters=new Map();unify(type,syntaxType(inst.head,parameters),token);applyContext(inst.context,parameters,token);return; }
+  if(c.hashClass){
+    if(type.tag==='list')requireClass('hash',type.item,token);
+    else if(['tuple','tuple-tail'].includes(type.tag)){for(const item of type.items)requireClass('hash',item,token);requireClass('hash',type.tail||TEND,token);}
+    else if(['record','record-row'].includes(type.tag)){const {fields,tail}=flattenRecord(type.tag==='record'?type.row:type);for(const item of fields.values())requireClass('hash',item,token);requireClass('hash',tail,token);}
+    else if(type.tag==='adt'&&['option','result','dict'].includes(type.name))for(const item of type.args)requireClass('hash',item,token);
+  }
   if(c.conversion)return;
   if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${name} ${formatType(type)}`,token);
 }
@@ -125,6 +132,7 @@ function requireIterable(container,item,token,latent=null) {
   if(container.tag==='var') {if(container.eachItem)unify(container.eachItem,item,token);else container.eachItem=item;return;}
   if(container.tag==='rigid') {if(!container.eachItem)throw new StaticTypeError('Missing streem constraint',token);unify(container.eachItem,item,token);return;}
   if(container.tag==='list'){unify(container.item,item,token);return;}
+  if(container.tag==='adt'&&container.name==='dict'){unify(item,tuple(container.args),token);return;}
   if(container.tag==='atom' && container.name==='range'){unify(item,INT,token);return;}
   const instance=activeClasses.get('streem')?.instances.get(instanceKey(container));
   if(!instance)throw new StaticTypeError(`No instance: streem ${formatType(container)}`,token);
@@ -613,6 +621,7 @@ function builtinSchemes() {
     out.set('join',generalize(quote(stack(s,c,STRING),push(s,STRING),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));}
   for(const name of ['windows','chunks','chunkBy','groupBy']){
     const s=row(),source=variable(),item=variable(),key=variable(),latent=variable('effect-row'),callback=variable('effect-row');requireIterable(source,item,null,latent);
+    if(name==='groupBy')requireClass('hash',key);
     const keyed=['chunkBy','groupBy'].includes(name),arg=keyed?quote(push(EMPTY,item),push(EMPTY,key),callback):INT;
     const result=name==='groupBy'?adt('dict',[key,list(item)]):{tag:'stream',item:name==='chunkBy'?{tag:'stream',item,effects:effects()}:list(item),effects:effects([],[{row:latent},...(keyed?[{row:callback}]:[])])};
     if(name!=='groupBy')result.effects=effects([],[{row:result.effects,exclude:['cancel','break'],loop:true,breakOutput:EMPTY}]);
@@ -903,7 +912,7 @@ class Inference {
         let result=prune(this.sequence(node.body,EMPTY,new Map(env),bound));const items=[];
         while(result.tag==='push'){items.unshift(result.item);result=prune(result.rest);}
         if(isBottom(result))current=BOTTOM;else {unify(result,EMPTY,node);current=push(current,tuple(items));}
-      } else if(node.kind==='dict'){const key=variable(),value=variable();for(let j=0;j<node.fields.length;j+=2){unify(key,this.single(node.fields[j].body,env,bound,node),node);unify(value,this.single(node.fields[j+1].body,env,bound,node),node);}current=push(current,adt('dict',[key,value]));
+      } else if(node.kind==='dict'){const key=variable(),value=variable();for(let j=0;j<node.fields.length;j+=2){unify(key,this.single(node.fields[j].body,env,bound,node),node);unify(value,this.single(node.fields[j+1].body,env,bound,node),node);}requireClass('hash',key,node);current=push(current,adt('dict',[key,value]));
       } else if(node.kind==='path-update') {
         let original;[current,original]=this.pop(current,node);
         const args=node.fields.slice(0,-1).map(f=>this.single(f.body,env,bound,node));
@@ -1061,7 +1070,7 @@ class Inference {
     }
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
-    if(value?.kind==='dict'){const key=variable(),item=variable();for(const [k,v] of value.entries){unify(key,this.value(k,token),token);unify(item,this.value(v,token),token);}return adt('dict',[key,item]);}
+    if(value?.kind==='dict'){const key=variable(),item=variable();for(const [k,v] of dictEntries(value)){unify(key,this.value(k,token),token);unify(item,this.value(v,token),token);}return adt('dict',[key,item]);}
     if(value?.kind==='record')return record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)]));
     if(value?.kind==='scalar')return atom(value.type);
     if(typeof value==='number') return INT;
@@ -1427,7 +1436,7 @@ function executionTypes(base,definitions) {
     activate();const method=definitions.methods.get(node.value);if(method.specialCast)return castInfo(definitions,node,effect).target;let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
-    if(!result && (method.specialShow||method.specialIndex||method.specialCast||method.specialBits))return node.value;
+    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialCast||method.specialBits))return node.value;
     if(!result && operatorFallback(definitions.classes.get(method.className),type))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;
