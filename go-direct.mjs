@@ -410,6 +410,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else if(arg){const checked=ctx.value(`m.iterationCount(${arg},${str(name)},${at})`);count=`number(${checked},${at})`;}
       v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${rows}:=[]any{};m.loop(func(m *Machine){${walk}(m,func(v any){${rows}=append(${rows},v)})},${at},nil);${extra}m.combinations(${rows},${other},${count},${str(name)},visit,${at})}}`));return;
     }
+    if(name==='values'){const source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){for _,pair:=range ${source}.(*Dict).entries{visit(pair[1])}}}`));return;}
     if(name==='split') {
       const separator=pop(),source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.walkSplit(${source},${separator},visit,${at})}}`));return;
     }

@@ -940,6 +940,7 @@ export class VM {
   *walk(xs,consume,t) {
     const vm=this,callback=consume,consumerTarget=t.loopTarget;
     consume=function*(value){const iterator=callback(value);try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&consumerTarget)request.bypassUntil=request.operation.name==='break'&&t.cancelOnly?t.breakTarget:consumerTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}};
+    if(xs?.kind==='stream'&&xs.mode==='dict-values'){for(const [,value] of xs.source.entries)yield* consume(value);return;}
     if(xs?.kind==='stream'&&xs.mode==='snapshot'){for(const item of xs.items)yield* consume(item);return;}
     if(xs?.kind==='stream') {
       if(xs.mode==='partition'){
@@ -1470,6 +1471,7 @@ for(const name of ['from',...['to','from'].flatMap(prefix=>['Int','Float','Byte'
  }
  s.push(scalar(type,type==='char'?String.fromCodePoint(result):result));
 });
+define('values',1,(vm,s,t)=>{const source=s.pop();if(source?.kind!=='dict')throw new LanguageError('values requires a dictionary',t);s.push({kind:'stream',mode:'dict-values',source});});
 define('bytes',1,(vm,s,t)=>s.push([...new TextEncoder().encode(vm.expect(s.pop(),'string',t))].map(v=>scalar('byte',v))));
 for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];

@@ -603,6 +603,7 @@ function builtinSchemes() {
     const s=row(),a=variable();requireClass('num',a);out.set(name,generalize(quote(push(s,a),push(s,result),effects([{name:'exn',args:[]}]))));
   }
   {const s=row();out.set('toChar',generalize(quote(push(s,INT),push(s,CHAR),effects([{name:'exn',args:[]}]))));}
+  add('values',()=>{const s=row(),k=variable(),v=variable();return quote(push(s,adt('dict',[k,v])),push(s,{tag:'stream',item:v,effects:effects()}));});
   add('bytes',()=>{const s=row();return quote(push(s,STRING),push(s,list(BYTE)));});
   add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
   add('split',()=>{const s=row();return quote(stack(s,STRING,STRING),push(s,{tag:'stream',item:STRING,effects:effects()}));});
@@ -1037,6 +1038,7 @@ class Inference {
     }
     if(value?.kind==='effect-label')return atom('effect-label');
     if(value?.kind==='stream') {
+      if(value.mode==='dict-values'){const k=variable(),v=variable();unify(this.value(value.source,token),adt('dict',[k,v]),token);return {tag:'stream',item:v,effects:effects()};}
       if(value.mode==='snapshot'){const item=variable();for(const v of value.items)unify(item,this.value(v,token),token);return {tag:'stream',item,effects:effects()};}
       if(value.mode==='partition'){
         const item=variable(),latent=variable('effect-row'),deps=[{row:latent}];requireIterable(this.value(value.source,token),item,token,latent);
