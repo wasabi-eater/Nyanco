@@ -18,7 +18,7 @@ export function highlight(source) {
       if(char){out+=paint('string',char[0]);i+=char[0].length;continue;}
       if(c==='"'){out+=string();continue;}
       if(c==='{'){out+=paint('operator',c);i++;out+=code(true);continue;}
-      const match=rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\$+\d*|_+\d*(?![a-zA-Z0-9_'])|'[a-z][a-zA-Z0-9_']*|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[a-zA-Z_][a-zA-Z0-9_']*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\.\.=|\.\.|=>|->|<-|::|==|\/=|<=|>=|\+\+|\?\?=|\?\?|&&|\|\||[~?:|!+*/%\^<>=-])/);
+      const match=rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\$+\d*|_+\d*(?![a-zA-Z0-9_'])|'[a-z][a-zA-Z0-9_']*|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[a-zA-Z_][a-zA-Z0-9_']*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\.\.=|\.\.|=>|->|<-|::|==|\/=|<=|>=|\+\+|\?\?<-|\?\?=|\?\?|&&|\|\||[~?:|!+*/%\^<>=-])/);
       if(!match){out+=c;i++;continue;}
       const text=match[0];i+=text.length;
       const kind=keywords.has(text)?'keyword':types.has(text)||text.startsWith("'")?'type':/^[A-Z]/.test(text)?'constructor':/^\d/.test(text)?'number':/^[_$~]/.test(text)&&/^[_$~]+\d*$/.test(text)?'stack':text.startsWith('@')?'label':/^[a-zA-Z_]/.test(text)?null:'operator';

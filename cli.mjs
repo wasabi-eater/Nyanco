@@ -9,7 +9,7 @@ import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression, formatWarning } from './language.mjs';
 import { checkExpression } from './types.mjs';
 
-const help = `Nyanco 0.72.0 — statically typed stack language
+const help = `Nyanco 0.72.1 — statically typed stack language
 Usage:
   nyanco                       Interactive REPL
   nyanco program.nyan           Execute main
@@ -47,7 +47,7 @@ async function repl() {
     vm.definitions = program.definitions;
     try { await vm.executeAsync([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('Nyanco 0.72.0 — static types; :type EXPR for inference\n');
+  stdout.write('Nyanco 0.72.1 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
     const input = line.trim();

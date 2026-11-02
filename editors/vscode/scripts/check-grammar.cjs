@@ -44,7 +44,7 @@ async function main() {
   check('f = 1.25e-3', '1.25', 'constant.numeric.nyanco');
   check('dict int string', 'dict', 'storage.type.nyanco');
   check('r.x <- 1', '.x', 'variable.other.property.nyanco');
-  for (const op of ['<-', '->', '??=', '??', '::', '.<<.', '.>>.', '.&.', '.|.', '..=', '&&', '||'])
+  for (const op of ['<-', '->', '??<-', '??=', '??', '::', '.<<.', '.>>.', '.&.', '.|.', '..=', '&&', '||'])
     check('x '+op+' y', op, 'keyword.operator.nyanco');
   check('f = "value {1 + 2}"', '+', 'keyword.operator.nyanco');
   check('f = "value {1 + 2}"', '1', 'meta.embedded.inline.nyanco');

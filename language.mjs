@@ -67,7 +67,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       const rest = source.slice(i);
       const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?=|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
+      const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?<-|\?\?=|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
       for (let j = 0; j < match[0].length; j++) token.value += advance();
       if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(token.value)) {
@@ -131,12 +131,12 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         while(tokens[j]?.kind==='word' && tokens[j].value.startsWith('.')) {
           const part=tokens[j++];if(['.','.?'].includes(part.value)) {if(tokens[j++]?.kind!=='[')return -1;let depth=1;while(j<tokens.length&&depth){if(tokens[j].kind==='[')depth++;if(tokens[j].kind===']')depth--;j++;}}
         }
-        return ['<-','!'].includes(tokens[j]?.value)?j:-1;
+        return ['<-','!','??<-'].includes(tokens[j]?.value)?j:-1;
       }
       while(tokens[j]?.kind===',' && target(tokens[j+1])){j+=2;}
-      return tokens[j]?.kind==='word' && ['<-','!'].includes(tokens[j].value)?j:-1;
+      return tokens[j]?.kind==='word' && ['<-','!','??<-'].includes(tokens[j].value)?j:-1;
     };
-    const statement = () => updateAt(i)>=0 || definitionAt(i)>=0 || tokens[i]?.kind === 'word' && (tokens[i].value === 'mut' || tokens[i+1]?.kind === 'word' && ['<-', '!'].includes(tokens[i+1].value));
+    const statement = () => updateAt(i)>=0 || definitionAt(i)>=0 || tokens[i]?.kind === 'word' && (tokens[i].value === 'mut' || identifier.test(tokens[i].value) && tokens[i+1]?.kind === 'word' && ['<-', '!', '??<-'].includes(tokens[i+1].value));
     const boundary = () => done() || [';',';;',','].includes(tokens[i].kind) || statement() || (tokens[i].kind === 'word' && tokens[i].value === '->');
     function slot(t) {
       const match=t.value.match(/^(_+|\$+)(\d*)$/),depth=match[1].length-1,index=Number(match[2]||0),peek=t.value[0]==='$';
@@ -417,7 +417,8 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         }
         if(start===i)throw new LanguageError('Initializer requires a value',operator);
         let rhs=tokens.slice(start,i);
-        if(access)rhs=[targets[0],{...operator,kind:'word',value:'with'},{...operator,kind:'{',value:'{'},...access,{...operator,kind:'word',value:operator.value==='!'?'!':'='},...rhs,{...operator,kind:'}',value:'}'}];
+        if(operator.value==='??<-'&&!access)throw new LanguageError('??<- requires an indexed mutable variable',operator);
+        if(access)rhs=[targets[0],{...operator,kind:'word',value:'with'},{...operator,kind:'{',value:'{'},...access,{...operator,kind:'word',value:operator.value==='!'?'!':operator.value==='??<-'?'??=':'='},...rhs,{...operator,kind:'}',value:'}'}];
         if(operator.value==='!'&&!access) {
           const prefix=targets.flatMap((t,j)=>j?[{...operator,kind:',',value:','},t]:[t]);
           rhs.unshift(...prefix,{...operator,kind:';',value:';'});
@@ -445,7 +446,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(names.some(n=>BUILTINS.has(n)))throw new LanguageError('Assignment cannot bind built-ins',arrow);
         nodes.push({...arrow,kind:'bind',patterns,names,mutable:names.map(n=>mutableNames.has(n))},...patternStack(patterns,true));
         if(!done() && ![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);
-      } else nodes.push(...expression());
+      } else {const start=i,parsed=expression();if(i===start)throw new LanguageError('Unexpected token: '+tokens[i].value,tokens[i]);nodes.push(...parsed);}
     }
     if (end) {
       if (i >= tokens.length) throw new LanguageError(`Missing ${end}`, opener);
