@@ -831,7 +831,7 @@ class Inference {
     unify(current,push(rest,item),token); return [rest,item];
   }
   traceVariable(token,type) {
-    if(!this.trace||!token||token.value.startsWith('@'))return;
+    if(!this.trace||!token||(token.sourceName||token.value).startsWith('@'))return;
     (this.trace.variableTypes??=new Map()).set(token,type);
   }
   apply(effect,current,token) { effect=prune(effect);checkNeverPromises(current,effect.input,token);checkEffectPromises(current,effect.input,token); const output=row(); unify(effect,quote(current,output),token);this.effectSink.dependencies.push({row:effect.effects});return isBottom(output)?BOTTOM:output; }
@@ -866,7 +866,9 @@ class Inference {
         }
       } else if(node.kind==='reference') {
         if(!bound.references.has(node))throw new StaticTypeError('Stack reference binding may be skipped by a comparison chain',node);
-        current=push(current,bound.references.get(node));
+        const type=bound.references.get(node);
+        this.traceVariable(node,type);
+        current=push(current,type);
       }
       else if(node.kind==='label') {
         const parent=this.effectSink,local=effects(),scope=new Map(env);scope.set(node.key,mono(atom('effect-label')));this.effectSink=local;

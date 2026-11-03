@@ -143,6 +143,37 @@ test('variable hover follows bindings, including assignment targets and nested s
   assert.match(hover(5,10),/x : int/);
 });
 
+test('stack reference hover shows the selected slot and preserves its spelling',()=>{
+  const service=new LanguageService();
+  const lines=[
+    "keep : 'a -> 'a",
+    'keep = _',
+    'pick : string int -> string',
+    'pick = _1; swap; drop',
+    'peek : string int -> string int string int',
+    'peek = $1, $',
+    'captured = "cat", True; {$$1, $$, $$1}; call',
+    'moved = "dog", 1.5; {__1, __}; call',
+  ];
+  const doc=service.update(uri,lines.join('\n'),1);
+  assert.deepEqual(doc.diagnostics,[]);
+  const expectHover=(line,reference,type,start=lines[line].indexOf(reference))=>{
+    const character=start+reference.length-1;
+    const hover=service.request('textDocument/hover',{textDocument:{uri},position:{line,character}});
+    assert.equal(hover?.contents.value,'```nyanco\n'+reference+' : '+type+'\n```');
+    assert.deepEqual(hover.range,{start:{line,character:start},end:{line,character:character+1}});
+  };
+  expectHover(1,'_',"'a");
+  expectHover(3,'_1','string');
+  expectHover(5,'$1','string');
+  expectHover(5,'$','int',lines[5].lastIndexOf('$'));
+  expectHover(6,'$$1','string');
+  expectHover(6,'$$','bool',lines[6].indexOf(', $$,')+2);
+  expectHover(6,'$$1','string',lines[6].lastIndexOf('$$1'));
+  expectHover(7,'__1','string');
+  expectHover(7,'__','float',lines[7].lastIndexOf('__'));
+});
+
 test('signature lenses show one inferred type per unannotated function',()=>{
   const service=new LanguageService();
   const source="pick : 'a -> 'a\npick x = x\nflag True = False\nflag False = True\nmain =\n    local x = x\n    print (local \"hi\")";

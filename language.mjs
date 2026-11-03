@@ -201,7 +201,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       if(depth){
         let binding=target.capture.slots.find(s=>s.index===index&&s.capturedName);
         if(!binding){node.capturedName=`@stack${nextStackCapture++}`;target.capture.slots.push(node);binding=node;}
-        return {...t,kind:'word',value:binding.capturedName};
+        return {...t,kind:'word',value:binding.capturedName,sourceName:t.value};
       }
       target.capture.slots.push(node);return node;
     }
