@@ -34,6 +34,11 @@ export function applyChanges(text,changes){
 }
 const contains=(r,p)=>offsetCompare(r.start,p)<=0&&offsetCompare(p,r.end)<0;
 const offsetCompare=(a,b)=>a.line-b.line||a.character-b.character;
+const typeLabel=(token,type,display)=>`${token.sourceName||token.value} : ${display(type)}`;
+const signatureLens=(token,type,display)=>({
+  range:range(token),
+  command:{title:typeLabel(token,type,display),command:''}
+});
 
 function stackInlayHints(doc){
   const closes=new Map(),open=[],ends=new WeakMap(),lines=doc.text.split(/\r?\n/);
@@ -81,7 +86,7 @@ export class LanguageService {
   constructor(){this.documents=new Map();this.standard=compile('','<lsp-builtins>');this.builtinTypes=new Map();}
   update(uri,text,version,refresh=true){
     sourceIDs.clear();
-    const doc={uri,text,version,tokens:[],diagnostics:[],externalDiagnostics:new Map(),symbols:[],program:null,inlayHints:[]};
+    const doc={uri,text,version,tokens:[],diagnostics:[],externalDiagnostics:new Map(),symbols:[],program:null,inlayHints:[],codeLenses:[]};
     try{doc.tokens=lex(text,uri);}catch{} // Incomplete syntax must not kill the editor session.
     const overlays=new Map([...this.documents].map(([u,d])=>[u,d.text]));overlays.set(uri,text);
     const modular=(()=>{try{return uri.startsWith('file:')&&existsSync(dirname(fileURLToPath(uri)));}catch{return false;}})();
@@ -102,6 +107,10 @@ export class LanguageService {
       try{const source=[...doc.program.modules?.sources.keys()||[]].find(file=>sameSource(file,uri))||uri;doc.occurrences=occurrenceTypes(doc.program.definitions,source);}catch{}
     }
     doc.inlayHints=stackInlayHints(doc);
+    const display=doc.program?.modules?.display||String;
+    for(const {token,type} of doc.occurrences.localSignatures||[]){
+      doc.codeLenses.push(signatureLens(token,type,display));
+    }
     const definitions=doc.program?.definitions;
     if(definitions)for(const [name,clauses] of definitions){
       const own=clauses.filter(c=>sameSource(c.token?.file,uri)&&!c.token.internal);
@@ -110,8 +119,11 @@ export class LanguageService {
       let end=range(last.token).end;
       const visit=n=>{if(!n||typeof n!=='object')return;if(sameSource(n.file,uri)&&n.endLine&&offsetCompare(end,range(n).end)<0)end=range(n).end;
         for(const v of Object.values(n))if(Array.isArray(v))v.forEach(visit);};nodes.forEach(visit);
-      doc.symbols.push({name,kind:12,range:{start:range(first).start,end},selectionRange:range(first),detail:doc.program.types.get(name)});
+      const detail=doc.program.types.get(name);
+      doc.symbols.push({name,kind:12,range:{start:range(first).start,end},selectionRange:range(first),detail});
+      if(detail&&!clauses.signature)doc.codeLenses.push(signatureLens(first,detail,display));
     }
+    doc.codeLenses.sort((a,b)=>offsetCompare(a.range.start,b.range.start));
     this.documents.set(uri,doc);if(refresh)for(const other of [...this.documents.values()])if(other.uri!==uri)this.update(other.uri,other.text,other.version,false);return doc;
   }
   token(doc,p){const ref=doc.program?.modules?.references.find(t=>sameSource(t.file,doc.uri)&&t.sourceName&&contains(range(t),p));if(ref)return ref;return doc.tokens.find(t=>t.kind==='word'&&contains(range(t),p));}
@@ -141,8 +153,9 @@ export class LanguageService {
     return this.builtinTypes.get(name);
   }
   request(method,params){
-    const doc=this.documents.get(params?.textDocument?.uri);if(!doc)return ['textDocument/completion','textDocument/inlayHint'].includes(method)?[]:null;
+    const doc=this.documents.get(params?.textDocument?.uri);if(!doc)return ['textDocument/completion','textDocument/inlayHint','textDocument/codeLens'].includes(method)?[]:null;
     if(method==='textDocument/inlayHint')return doc.inlayHints.filter(h=>offsetCompare(params.range.start,h.position)<=0&&offsetCompare(h.position,params.range.end)<=0);
+    if(method==='textDocument/codeLens')return doc.codeLenses;
     if(method==='textDocument/documentSymbol')return doc.symbols;
     if(method==='textDocument/completion'){
       const defs=doc.program?.definitions||this.standard.definitions;
@@ -150,6 +163,14 @@ export class LanguageService {
       const standard=standardModuleNames().flatMap(module=>[module,...[...standardModule(module).exports.keys()].map(name=>module+'.'+name)]);
       const names=new Set([...imported,...standard,...builtinNames(),...defs.keys(),...defs.constructors.keys(),...defs.methods.keys(),...defs.effects.keys(),...keywords]);
       return [...names].filter(n=>!n.startsWith('__tc_')&&!n.startsWith('@')&&!/^nyancoModule/i.test(n)).sort().map(label=>({label,kind:keywords.includes(label)?14:3,...(doc.program?.types.has(label)?{detail:doc.program.types.get(label)}:{})}));
+    }
+    if(method==='textDocument/hover'){
+      for(const {token,type} of doc.occurrences.variables?.values()||[]){
+        const span=range(token);
+        if(!contains(span,params.position))continue;
+        const label=typeLabel(token,type,doc.program?.modules?.display||String);
+        return {contents:{kind:'markdown',value:'```nyanco\n'+label+'\n```'},range:span};
+      }
     }
     const token=this.token(doc,params.position);if(!token||this.local(doc,token))return null;
     if(method==='textDocument/definition'){
@@ -188,7 +209,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
   function dispatch(message){
     const {id,method,params={}}=message,request=id!==undefined;
     if(method==='exit'){exit(shutdown?0:1);return;}
-    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true,inlayHintProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.84.0'}});return;}
+    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true,inlayHintProvider:true,codeLensProvider:{resolveProvider:false}},serverInfo:{name:'Nyanco Language Server',version:'0.84.0'}});return;}
     if(!initialized){if(request)fail(id,-32002,'Server not initialized');return;}
     if(shutdown){if(request)fail(id,-32600,'Server has shut down');return;}
     if(method==='shutdown'){shutdown=true;reply(id,null);return;}
@@ -201,7 +222,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
         service.update(d.uri,applyChanges(old.text,params.contentChanges),d.version);publishAll();return;
       }
       if(method==='textDocument/didClose'){const uri=params.textDocument.uri;service.documents.delete(uri);for(const doc of [...service.documents.values()])service.update(doc.uri,doc.text,doc.version,false);publishAll();return;}
-      if(['textDocument/hover','textDocument/completion','textDocument/definition','textDocument/documentSymbol','textDocument/inlayHint'].includes(method)){reply(id,service.request(method,params));return;}
+      if(['textDocument/hover','textDocument/completion','textDocument/definition','textDocument/documentSymbol','textDocument/inlayHint','textDocument/codeLens'].includes(method)){reply(id,service.request(method,params));return;}
       if(request)fail(id,-32601,`Method not found: ${method}`);
     }catch(error){if(request)fail(id,-32603,error.message);else send({jsonrpc:'2.0',method:'window/logMessage',params:{type:1,message:error.message}});}
   }

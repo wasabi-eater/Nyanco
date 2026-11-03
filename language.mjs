@@ -272,7 +272,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(tokens[i++]?.value!=='mut')throw new LanguageError('Expected borrow mut variable as reference { body }',t);
         const owner=tokens[i++],as=tokens[i++],reference=tokens[i++],opener=tokens[i++];
         if(owner?.kind!=='word'||!identifier.test(owner.value)||as?.value!=='as'||reference?.kind!=='word'||!identifier.test(reference.value)||opener?.kind!=='{')throw new LanguageError('Expected borrow mut variable as reference { body }',t);
-        return [{...t,kind:'borrow',owner:owner.value,reference:reference.value,body:scope('}',opener,{parents:context.parents})}];
+        return [{...t,kind:'borrow',owner:owner.value,reference:reference.value,ownerToken:owner,referenceToken:reference,body:scope('}',opener,{parents:context.parents})}];
       }
       if(t.kind==='word' && t.value==='mask') {
         const operation=tokens[i++];if(operation?.kind!=='word'||operation.value.startsWith('@'))throw new LanguageError('mask requires an effect operation',t);
@@ -510,7 +510,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           const prefix=targets.flatMap((t,j)=>j?[{...operator,kind:',',value:','},t]:[t]);
           rhs.unshift(...prefix,{...operator,kind:';',value:';'});
         }
-        nodes.push({...targets[0],kind:'update',name:names[0],names,body:parseTokens(rhs,operator.value==='!'&&!access?{parents:context.parents}:context,constructors)});
+        nodes.push({...targets[0],kind:'update',name:names[0],names,targetTokens:targets,body:parseTokens(rhs,operator.value==='!'&&!access?{parents:context.parents}:context,constructors)});
         if(i<tokens.length && ![';',';;',','].includes(tokens[i].kind) && tokens[i].line>operator.line)startClause(tokens[i]);
         continue;
       }
@@ -523,7 +523,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(!targets.length||targets.some(t=>t.kind!=='word'||!identifier.test(t.value)||['_','mut'].includes(t.value)||BUILTINS.has(t.value))||access?.some(t=>t.kind===','))throw new LanguageError('->> requires variable names or one field/index target',arrow);
         const names=targets.map(t=>t.value);if(new Set(names).size!==names.length)throw new LanguageError('Duplicate assignment target',arrow);
         const body=access?parseTokens([targets[0],{...arrow,value:'with'},{...arrow,kind:'{',value:'{'},...access,{...arrow,value:'='},{...arrow,value:'_'},{...arrow,kind:'}',value:'}'}],null,constructors):[];
-        nodes.push({...arrow,kind:'update',names,name:names[0],body,fromStack:true});
+        nodes.push({...arrow,kind:'update',names,name:names[0],targetTokens:targets,body,fromStack:true});
         if(!done()&&![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);continue;
       }
       if (tokens[i].kind === 'word' && tokens[i].value === '->') {

@@ -120,7 +120,41 @@ test('UTF-16 edits, syntax recovery, and shadowed names',()=>{
   assert.deepEqual(service.update(uri,'main = "😀"; unknownName',2).diagnostics[0].range.start,{line:0,character:13});
   service.update(uri,'foo = 1\nf foo = foo',2);
   assert.equal(service.request('textDocument/definition',{textDocument:{uri},position:{line:1,character:9}}),null);
-  assert.equal(service.request('textDocument/hover',{textDocument:{uri},position:{line:1,character:9}}),null);
+  assert.match(service.request('textDocument/hover',{textDocument:{uri},position:{line:1,character:9}}).contents.value,/foo : 'a/);
+});
+
+test('variable hover follows bindings, including assignment targets and nested scopes',()=>{
+  const service=new LanguageService();
+  const doc=service.update(uri,[
+    'message <- "hi"',
+    'main =',
+    '    mut x <- 1',
+    '    2 ->> x',
+    '    call { x <- message; print x }',
+    '    print x',
+  ].join('\n'),1);
+  assert.deepEqual(doc.diagnostics,[]);
+  const hover=(line,character)=>service.request('textDocument/hover',{textDocument:{uri},position:{line,character}}).contents.value;
+  assert.match(hover(0,0),/message : string/);
+  assert.match(hover(2,8),/x : int/);
+  assert.match(hover(3,10),/x : int/);
+  assert.match(hover(4,11),/x : string/);
+  assert.match(hover(4,31),/x : string/);
+  assert.match(hover(5,10),/x : int/);
+});
+
+test('signature lenses show one inferred type per unannotated function',()=>{
+  const service=new LanguageService();
+  const source="pick : 'a -> 'a\npick x = x\nflag True = False\nflag False = True\nmain =\n    local x = x\n    print (local \"hi\")";
+  const doc=service.update(uri,source,1);assert.deepEqual(doc.diagnostics,[]);
+  const lenses=()=>service.request('textDocument/codeLens',{textDocument:{uri}});
+  assert.deepEqual(lenses().map(lens=>[lens.range.start.line,lens.command.title,lens.command.command]),[
+    [2,'flag : ..s bool -> ..s bool',''],
+    [4,'main : ..s -> ..s / {io}',''],
+    [5,"local : ..s 'a -> ..s 'a",''],
+  ]);
+  service.update(uri,'main = missing',2);
+  assert.deepEqual(lenses(),[]);
 });
 
 test('stdio lifecycle, fragmented Unicode frames, updates, and shutdown',{timeout:20000},async t=>{
@@ -146,11 +180,14 @@ test('stdio lifecycle, fragmented Unicode frames, updates, and shutdown',{timeou
   child.stdin.write('Content-Length: 1\r\n\r\n{');assert.equal((await next()).error.code,-32700);
   send('textDocument/hover',{},0);assert.equal((await next()).error.code,-32002);
   send('initialize',{},1);const capabilities=(await next()).result.capabilities;assert.equal(capabilities.positionEncoding,'utf-16');assert.equal(capabilities.inlayHintProvider,true);
+  assert.deepEqual(capabilities.codeLensProvider,{resolveProvider:false});
   send('initialized');
   send('textDocument/didOpen',{textDocument:{uri,version:1,languageId:'nyanco',text:'main = "猫😀"'}});
   assert.deepEqual((await next()).params.diagnostics,[]);
   send('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:0,character:0},end:{line:1,character:0}}},10);
   assert.deepEqual((await next()).result.map(h=>[h.position,h.label]),[[{line:0,character:'main = "猫😀"'.length},': ..s string']]);
+  send('textDocument/codeLens',{textDocument:{uri}},11);
+  assert.deepEqual((await next()).result.map(lens=>lens.command.title),['main : ..s -> ..s string']);
   send('textDocument/didChange',{textDocument:{uri,version:2},contentChanges:[{text:'main = unknownName'}]});
   assert.equal((await next()).params.diagnostics[0].severity,1);
   send('textDocument/didChange',{textDocument:{uri,version:3},contentChanges:[{range:{start:{line:0,character:7},end:{line:0,character:18}},text:'1'}]});

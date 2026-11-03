@@ -830,6 +830,10 @@ class Inference {
     if(prune(current).tag==='empty') throw new StaticTypeError('Stack underflow: value required on empty stack',token);
     unify(current,push(rest,item),token); return [rest,item];
   }
+  traceVariable(token,type) {
+    if(!this.trace||!token||token.value.startsWith('@'))return;
+    (this.trace.variableTypes??=new Map()).set(token,type);
+  }
   apply(effect,current,token) { effect=prune(effect);checkNeverPromises(current,effect.input,token);checkEffectPromises(current,effect.input,token); const output=row(); unify(effect,quote(current,output),token);this.effectSink.dependencies.push({row:effect.effects});return isBottom(output)?BOTTOM:output; }
   single(nodes,env,bound,token) {
     const result=this.sequence(nodes,EMPTY,new Map(env),bound),value=variable();
@@ -919,6 +923,7 @@ class Inference {
           if(!env.has(name))throw new StaticTypeError(`Unknown variable: ${name}`,node);
           const binding=env.get(name);if(this.activeLoans.has(binding.cellKey))throw new StaticTypeError('Mutable variable is exclusively borrowed: '+name,node);if(binding.cellKey)(this.effectSink.accesses??=new Set()).add(binding.cellKey);if(!binding.mutable)throw new StaticTypeError(`Cannot assign to immutable variable: ${name}`,node);return binding;
         });
+        node.targetTokens?.forEach((token,i)=>this.traceVariable(token,bindings[i].type));
         const initial=[];if(node.fromStack)for(const name of names){let value;[current,value]=this.pop(current,node);initial.unshift(value);}
         const output=this.sequence(node.body,stack(EMPTY,...initial),new Map(env),bound);
         if(isBottom(output))current=BOTTOM;
@@ -934,6 +939,8 @@ class Inference {
         if(this.activeLoans.has(binding.cellKey)||reborrow&&this.suspendedLoans.has(prune(source.args[0])))throw new StaticTypeError('Borrow target is already exclusively borrowed: '+node.owner,node);
         const region=loanRegion(),scope=new Map(env),parent=this.effectSink;scope.locals=new Set(env.locals);
         scope.set(node.reference,mono(adt('mutref',[region,reborrow?source.args[1]:binding.type])));
+        this.traceVariable(node.ownerToken,binding.type);
+        this.traceVariable(node.referenceToken,scope.get(node.reference).type);
         const local=effects();this.effectSink=local;if(binding.cellKey)this.activeLoans.set(binding.cellKey,region);if(reborrow)this.suspendedLoans.add(prune(source.args[0]));
         try {
           current=this.sequence(node.body,current,scope,bound);
@@ -1070,7 +1077,10 @@ class Inference {
         if(scheme.cellKey)(this.effectSink.accesses??=new Set()).add(scheme.cellKey);
         this.effectSink.dependencies.push({borrowType:type});
         if(scheme.callable){if(trace)trace.effect=type;current=this.apply(type,current,node);}
-        else current=push(current,type);
+        else {
+          this.traceVariable(node,type);
+          current=push(current,type);
+        }
         if(node.ephemeral){env.delete(node.value);env.locals?.delete(node.value);}
       }
       else if(node.value==='fromYield') {
@@ -1225,7 +1235,11 @@ class Inference {
       const {fields,result}=constructorTypes(this.constructors.get(pattern.value));
       unify(type,result,pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,fields[i],env));
-    } else if(pattern.value!=='_'){if(pattern.mutable)weakEffects(type);env.set(pattern.value,{...mono(type),...(pattern.mutable?{mutable:true,cellKey:ownerIdentity(pattern,pattern.value)}:{})});}
+    } else if(pattern.value!=='_'){
+      if(pattern.mutable)weakEffects(type);
+      env.set(pattern.value,{...mono(type),...(pattern.mutable?{mutable:true,cellKey:ownerIdentity(pattern,pattern.value)}:{})});
+      this.traceVariable(pattern,type);
+    }
   }
   scheme(value,token) {
     const type=this.value(value,token),excluded=new Set();
@@ -1645,14 +1659,19 @@ export function loweringTypes(definitions) {
 export function occurrenceTypes(definitions,file) {
   const info=loweringTypes(definitions),result=new Map();
   result.substitutions=new Map();
+  result.variables=new Map();
+  result.localSignatures=[];
   result.stacks=[];
   let nextStackSequence=0;
   const collect=(trace,nodes)=>{
     const escaping=trace.enclosingType?free(trace.enclosingType,new Set(),new Set(),true):new Set();
     // Default only literals local to the body; inputs/outputs of the enclosing
     // polymorphic function must stay polymorphic in occurrence displays.
-    for(const t of trace.values())for(const effect of [t.effect,...t.operatorEffects||[]])if(effect)
-      for(const v of free(effect))if(v.numericLiterals&&!v.polymorphicNumber&&!escaping.has(v))unify(v,INT);
+    const defaultLocalNumbers=type=>{
+      for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&!escaping.has(v))unify(v,INT);
+    };
+    for(const t of trace.values())for(const effect of [t.effect,...t.operatorEffects||[]])if(effect)defaultLocalNumbers(effect);
+    for(const type of trace.variableTypes?.values()||[])defaultLocalNumbers(type);
     for(const [node,t] of trace){
       const save=(token,effect)=>{
         if(effect&&token.file===file){
@@ -1684,6 +1703,17 @@ export function occurrenceTypes(definitions,file) {
     // used to check infix expressions or the arguments of a prefix call.
     const names=new Map();
     if(trace.enclosingType)formatType(trace.enclosingType,{names,defaultNumbers:false});
+    for(const [token,type] of trace.variableTypes||[]){
+      if(token.file!==file)continue;
+      result.variables.set(`${token.line}:${token.col}`,{
+        token,type:formatType(push(EMPTY,type),{variableNames:names,defaultNumbers:false})
+      });
+    }
+    for(const [token,t] of trace){
+      if(token.file!==file||token.kind!=='local-function')continue;
+      const scheme=t.localEnv?.get(token.name);
+      if(scheme)result.localSignatures.push({token,type:formatType(scheme.type,{defaultNumbers:false})});
+    }
     const sequence=nodes=>{const id=nextStackSequence++;for(const node of nodes||[])visit(node,true,id);};
     const visit=(node,emit,sequenceID)=>{
       if(node.kind==='application')for(const child of node.body)visit(child,false);
