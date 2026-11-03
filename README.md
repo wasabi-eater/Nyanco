@@ -1,4 +1,4 @@
-# Nyanco 0.79 — 公開関数の型注釈とstack row
+# Nyanco 0.80 — 標準ライブラリのmodule化
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1687,3 +1687,28 @@ failNow = exn "failed"
 handlerを返す関数なども明示的に注釈できるよう、`continuation {int -> int}`のような継続の値型にも対応しています。継続の入出力には、その継続をresumeするときに渡す値と戻る値を書きます。
 
 既存の公開関数に注釈がなければ、コンパイルとLSPで`Exported function ... requires an explicit type annotation (:)`と表示します。実行例は`node cli.mjs examples/explicit-stack-rows`です。
+
+## 標準ライブラリのmodule（0.80）
+
+標準ライブラリは`std`配下のmoduleとして公開します。`std.prelude`はすべてのソースに暗黙的にimportされるため、これまでの標準関数、型、クラス、effectの名前はそのまま使えます。公開一覧は[std/prelude.nyan](std/prelude.nyan)に`pub import`として記述しています。標準moduleの関数・型・クラス・effectは修飾名でも参照できます。
+
+```nyanco
+main = std.vector.map [1, 2, 3] {+ 1}; print
+
+pub increment : std.vector int -> std.vector int
+increment xs = std.vector.map xs {+ 1}
+
+pub equal : std.classes.eq 'a => 'a 'a -> bool
+equal = ==
+```
+
+`std.vector.map`は従来の`vmap`、`std.stream.map`は従来の`map`です。optionとresultの同様の関数は`std.option.map`／`std.result.map`で、preludeでは`omap`／`rmap`として公開します。`std.vector`のようにmodule名と同じ型は型注釈でそのまま書けます。
+
+通常のmoduleと同じように明示的なimportもできます。
+
+```nyanco
+import "std.vector" as vec
+main = vec.map [1, 2] {+ 1}
+```
+
+`pub import`は別moduleの公開名を再公開します。`{map as vmap, vector}`のように公開する名前を選んで改名でき、名前の選択を省くと公開名をすべて再公開します。`import "std.vector" {map as transform}`と`pub`を省略した場合、選んだ名前はそのmodule内部だけで使えます。

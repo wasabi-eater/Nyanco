@@ -3,6 +3,7 @@ import {resolve,dirname,basename,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {compile,lex,recordShorthands,leftDeclarationAt,declarationGroups,LanguageError} from './language.mjs';
+import {standardModule,standardModuleNames} from './std-modules.mjs';
 
 const space=kind=>['data','type','class'].includes(kind)?'type':kind==='effect'?'both':'value';
 const identifier=/^[a-zA-Z_][a-zA-Z0-9_']*$/;
@@ -13,7 +14,7 @@ const pathOf=file=>file.startsWith('file:')?fileURLToPath(file):resolve(file);
 
 // A renamed import still refers to the type named after the directory itself.
 export function moduleTypeSymbol(imp){
- const symbol=imp.module.exports.get(basename(imp.module.dir));
+ const symbol=imp.module.exports.get(imp.module.standard?imp.module.dir.split('.').at(-1):basename(imp.module.dir));
  return symbol?.access.has('type')&&(symbol.kinds.has('data')||symbol.kinds.has('type'))?symbol:null;
 }
 function typePosition(group,index){
@@ -26,6 +27,27 @@ function typePosition(group,index){
  return group[member+1]?.value===':';
 }
 
+// In-memory sources (REPL, --eval, --single-file) have no directory imports,
+// but the standard library's absolute module names are still available.
+export function standardTokens(source,file='<input>'){
+ const rewrite=group=>{
+  const out=[];
+  for(let i=0;i<group.length;i++){
+   const t=group[i];
+   if(t.parts)out.push({...t,parts:t.parts.map(rewrite)});
+   else if(t.value==='std'&&group[i+1]?.value?.startsWith('.')){
+    const module=standardModule('std.'+group[i+1].value.slice(1));
+    const member=group[i+2]?.value?.startsWith('.')?group[i+2]:null;
+    const symbol=member?module?.exports.get(member.value.slice(1)):typePosition(group,i)&&module?moduleTypeSymbol({module}):null;
+    if(!symbol)fail('Unknown standard module member: std'+group[i+1].value+(member?.value||''),member||group[i+1]);
+    out.push({...t,value:symbol.internal,sourceName:'std'+group[i+1].value+(member?.value||''),endLine:(member||group[i+1]).endLine,endCol:(member||group[i+1]).endCol});i+=member?2:1;
+   }else out.push(t);
+  }
+  return out;
+ };
+ return declarationGroups(recordShorthands(lex(source,file))).flatMap(rewrite);
+}
+
 // Modules are linked as one checked program. Each dependency's declarations get
 // unique identifiers before parsing, so private helpers retain lexical access
 // without becoming names that an importing source can resolve.
@@ -34,6 +56,7 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
   const edits=new Map([...overlays].map(([file,text])=>[key(pathOf(file)),text]));
   if(!statDirectory(entry)&&!existsSync(entry)&&!edits.has(key(entry)))throw new Error('Source file does not exist: '+entry);
   const modules=new Map(),ordered=[],loading=[],references=[],sources=new Map(),names=new Map();
+  const prelude=standardModule('std.prelude');
   const fileName=file=>uriFiles?pathToFileURL(file).href:file;
   const read=file=>edits.get(key(file))??readFileSync(file,'utf8');
   const canonical=dir=>{try{return realpathSync(dir);}catch{throw new Error('Module directory does not exist: '+dir);}};
@@ -54,18 +77,24 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
         let visibility='private';if(['pub','open'].includes(group[0]?.value)){visibility=group[0].value;group=group.slice(1);if(!group.length)fail('Visibility requires a declaration',tokens[0]);group[0]={...group[0],declarationStart:true,declarationCol:1,visibility};}
         const first=group[0];
         if(first?.value==='import'){
-          if(visibility!=='private')fail('Imports cannot have a visibility modifier',first);
           const path=group[1],alias=group[2]?.value==='as'?group[3]:null;
-          if(path?.kind!=='literal'||typeof path.value!=='string'||![2,4].includes(group.length)||group.length===4&&!alias)fail('Expected import "directory" [as name]',first);
-          const name=alias?.value||basename(resolve(dir,path.value));
+          const selectorStart=group.findIndex(t=>t.kind==='{'),end=group.findIndex(t=>t.kind==='}');
+          if(path?.kind!=='literal'||typeof path.value!=='string'||group[2]&&group[2].value!=='as'&&group[2].kind!=='{'||group[2]?.value==='as'&&!alias||selectorStart>=0&&(end!==group.length-1||selectorStart!==(alias?4:2))||selectorStart<0&&group.length!==(alias?4:2))fail('Expected import "directory" [as name] [{member as alias, ...}]',first);
+          const name=alias?.value||(path.value.startsWith('std.')?path.value.split('.').at(-1):basename(resolve(dir,path.value)));
           if(!/^[a-z][A-Za-z0-9_]*$/.test(name)||unit.imports.has(name))fail('Invalid or duplicate module alias: '+name,alias||path);
-          unit.imports.set(name,{path:resolve(dir,path.value),token:alias||path});continue;
+          let selected=null;
+          if(selectorStart>=0){selected=new Map();let i=selectorStart+1;while(i<end){const member=group[i++];if(!member||member.kind===',')continue;const hasAlias=group[i]?.value==='as',renamed=hasAlias?(i++,group[i++]):member;if(!renamed||hasAlias&&!identifier.test(renamed.value)||selected.has(renamed.value))fail('Invalid import member alias',renamed||member);selected.set(renamed.value,member.value);if(i<end&&group[i++].kind!==',')fail('Expected comma between imported members',group[i-1]);}}
+          unit.imports.set(name,{path:path.value.startsWith('std.')||path.value.startsWith('std/')?path.value:resolve(dir,path.value),token:alias||path,visibility,selected});continue;
         }
         unit.groups.push(group);collect(mod,group,visibility);
       }
     }
+    for(const unit of mod.files)for(const [alias,imp] of unit.imports){if(mod.symbols.has(alias))fail('Module alias conflicts with declaration: '+alias,imp.token);imp.module=standardModule(imp.path)||load(imp.path,imp.token);}
+    for(const unit of mod.files)for(const imp of unit.imports.values())if(imp.visibility==='pub'||imp.selected){
+      const entries=imp.selected||new Map([...imp.module.exports.keys()].map(name=>[name,name]));
+      for(const [name,source] of entries){const original=imp.module.exports.get(source);if(!original)fail('Module '+imp.module.dir+' does not export '+source,imp.token);const old=mod.symbols.get(name);if(old&&old.internal!==original.internal)fail('Duplicate module export: '+name,imp.token);const symbol=old?{...old,kinds:new Set([...old.kinds,...original.kinds]),access:new Map([...old.access,...original.access]),visibility:imp.visibility==='pub'?'pub':old.visibility}:{...original,name,visibility:imp.visibility,module:mod};mod.symbols.set(name,symbol);}
+    }
     for(const symbol of mod.symbols.values())if(symbol.visibility!=='private')mod.exports.set(symbol.name,symbol);
-    for(const unit of mod.files)for(const [alias,imp] of unit.imports){if(mod.symbols.has(alias))fail('Module alias conflicts with declaration: '+alias,imp.token);imp.module=load(imp.path,imp.token);}
     loading.pop();ordered.push(mod);return mod;
   }
   function declare(mod,token,kind,visibility='private'){
@@ -122,6 +151,17 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
       if(t.kind==='word'&&reserved.test(t.value))fail('Reserved module identifier',t);
       if(t.parts)t.parts=t.parts.map(part=>rewrite(part,mod,unit));
       if(group[i-1]?.value==='..'&&typePosition(group,i)){references.push(t);out.push(t);continue;}
+      if(!fields.has(original)&&t.value==='std'&&group[i+1]?.value?.startsWith('.')&&group[i+2]?.value?.startsWith('.')){
+        const module=standardModule('std.'+group[i+1].value.slice(1)),name=group[i+2].value.slice(1),symbol=module?.exports.get(name);
+        const ns=typePosition(group,i)?'type':'value';
+        if(!symbol||!symbol.access.has(ns))fail('Module std.'+group[i+1].value.slice(1)+' does not export '+name+' in the '+ns+' namespace',group[i+2]);
+        const ref={...t,value:symbol.internal,endLine:group[i+2].endLine,endCol:group[i+2].endCol,sourceName:'std'+group[i+1].value+group[i+2].value};references.push(ref);out.push(ref);i+=2;continue;
+      }
+      if(!fields.has(original)&&t.value==='std'&&group[i+1]?.value?.startsWith('.')&&typePosition(group,i)){
+        const module=standardModule('std.'+group[i+1].value.slice(1)),symbol=module&&moduleTypeSymbol({module});
+        if(!symbol)fail('Standard module has no same-named type: std'+group[i+1].value,group[i+1]);
+        const ref={...t,value:symbol.internal,endLine:group[i+1].endLine,endCol:group[i+1].endCol,sourceName:'std'+group[i+1].value};references.push(ref);out.push(ref);i++;continue;
+      }
       const imp=!fields.has(original)&&unit.imports.get(t.value),member=group[i+1];
       if(imp&&member?.kind==='word'&&/^\.[A-Za-z_]/.test(member.value)){
         if(i===0&&(group[2]?.value===':'||group.some(t=>t.value==='=')&&!group.some(t=>t.value==='with')))fail('Cannot declare an imported name',t);
@@ -150,7 +190,7 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
   const moduleEffects=new Map(ordered.map(mod=>[mod.id,new Map([...mod.symbols.values()].filter(s=>s.kinds.has('effect')||s.kinds.has('operation')).map(s=>[s.name,s.internal]))]));
   let program;try{program=compile('',fileName(entry),previous,{tokens,globals,checkTypes,moduleEffects});}catch(error){error.message=display(error.message);throw error;}
   program.definitions.moduleTokens=moduleTokens;program.definitions.moduleDisplay=display;program.definitions.modulePublicNames=[...rootUnit.imports].flatMap(([alias,imp])=>[...(moduleTypeSymbol(imp)?[alias]:[]),...[...imp.module.exports.keys()].map(name=>alias+'.'+name)]);
-  program.modules={root,ordered,references,sources,names,display};program.types=new Map([...program.types].map(([name,type])=>[name,display(type)]));
+  program.modules={root,ordered,references,sources,names,display,prelude,standardModules:standardModuleNames()};program.types=new Map([...program.types].map(([name,type])=>[name,display(type)]));
   return program;
 }
 function statDirectory(path){try{return statSync(path).isDirectory();}catch{return false;}}

@@ -2,7 +2,8 @@
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {existsSync,realpathSync} from 'node:fs';
 import {dirname,resolve} from 'node:path';
-import {compileModule,moduleTypeSymbol} from './modules.mjs';
+import {compileModule,moduleTypeSymbol,standardTokens} from './modules.mjs';
+import {standardModule,standardModuleNames} from './std-modules.mjs';
 import {syntaxSource} from './class-relations.mjs';
 import {compile, lex, builtinNames, parseExpression} from './language.mjs';
 import {inferExpression,occurrenceTypes} from './types.mjs';
@@ -43,7 +44,7 @@ export class LanguageService {
     try{doc.tokens=lex(text,uri);}catch{} // Incomplete syntax must not kill the editor session.
     const overlays=new Map([...this.documents].map(([u,d])=>[u,d.text]));overlays.set(uri,text);
     const modular=(()=>{try{return uri.startsWith('file:')&&existsSync(dirname(fileURLToPath(uri)));}catch{return false;}})();
-    const build=checkTypes=>modular?compileModule(uri,{overlays,uriFiles:true,checkTypes}):compile(text,uri,new Map(),{checkTypes});
+    const build=checkTypes=>{const previous=new Map();previous.moduleTokens=standardTokens;return modular?compileModule(uri,{overlays,uriFiles:true,checkTypes}):compile(text,uri,previous,{checkTypes});};
     try{
       doc.program=build(true);
       doc.diagnostics=(doc.program.warnings||[]).filter(w=>sameSource(w.file,uri)).map(w=>({range:range(w),severity:2,code:w.code,source:'nyanco',message:w.message}));
@@ -102,7 +103,8 @@ export class LanguageService {
     if(method==='textDocument/completion'){
       const defs=doc.program?.definitions||this.standard.definitions;
       const imported=[];for(const unit of doc.program?.modules?.root.files||[])if(sameSource(unit.file,doc.uri))for(const [alias,imp] of unit.imports){if(moduleTypeSymbol(imp))imported.push(alias);for(const name of imp.module.exports.keys())imported.push(alias+'.'+name);}
-      const names=new Set([...imported,...builtinNames(),...defs.keys(),...defs.constructors.keys(),...defs.methods.keys(),...defs.effects.keys(),...keywords]);
+      const standard=standardModuleNames().flatMap(module=>[module,...[...standardModule(module).exports.keys()].map(name=>module+'.'+name)]);
+      const names=new Set([...imported,...standard,...builtinNames(),...defs.keys(),...defs.constructors.keys(),...defs.methods.keys(),...defs.effects.keys(),...keywords]);
       return [...names].filter(n=>!n.startsWith('__tc_')&&!n.startsWith('@')&&!/^nyancoModule/i.test(n)).sort().map(label=>({label,kind:keywords.includes(label)?14:3,...(doc.program?.types.has(label)?{detail:doc.program.types.get(label)}:{})}));
     }
     const token=this.token(doc,params.position);if(!token||this.local(doc,token))return null;
@@ -142,7 +144,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
   function dispatch(message){
     const {id,method,params={}}=message,request=id!==undefined;
     if(method==='exit'){exit(shutdown?0:1);return;}
-    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.79.0'}});return;}
+    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.80.0'}});return;}
     if(!initialized){if(request)fail(id,-32002,'Server not initialized');return;}
     if(shutdown){if(request)fail(id,-32600,'Server has shut down');return;}
     if(method==='shutdown'){shutdown=true;reply(id,null);return;}

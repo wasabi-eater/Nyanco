@@ -258,3 +258,5 @@ unwrapはassociated type itemを持つ標準クラスです。optionのSomeとre
 
 
 0.79: 公開する通常の関数をdefinitions.publicFunctionsで追跡し、型検査・実行計画作成時に明示的なsignatureの存在を要求します。クラスなどの宣言から生成された関数は既存のメソッドsignatureを使います。typeSyntaxは..sと..'sを同じrow変数として扱い、入出力先頭の同名row（各1個）を検査します。bottom出力は例外です。継続値はcontinuation {入力 -> 出力}で注釈できます。
+
+0.80: 標準名はstd-modules.mjsの型・値namespace付きsymbolとして公開し、std/prelude.nyanのpub importを解釈して全標準名を暗黙に導入します。標準関数の実装・型スキームは既存のintrinsic/標準定義を共有します。std.vector.mapなどの修飾名および通常moduleのpub import選択・改名は、module解決時に同じ内部symbolへ変換します。

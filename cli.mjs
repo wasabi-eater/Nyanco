@@ -8,9 +8,10 @@ import {createReplInterface,highlight} from './repl-highlight.mjs';
 import { stdin, stdout } from 'node:process';
 import { VM, compile, format, builtinNames, lex, parseExpression, formatWarning } from './language.mjs';
 import { checkExpression } from './types.mjs';
-import {compileModule} from './modules.mjs';
+import {compileModule,standardTokens} from './modules.mjs';
+import {standardModule,standardModuleNames} from './std-modules.mjs';
 
-const help = `Nyanco 0.79.0 — statically typed stack language
+const help = `Nyanco 0.80.0 — statically typed stack language
 Usage:
   nyanco                       Interactive REPL
   nyanco program.nyan           Execute main (all .nyan files in its directory)
@@ -43,6 +44,7 @@ async function repl() {
   const color=Boolean(stdin.isTTY&&stdout.isTTY)&&!('NO_COLOR' in process.env)&&process.env.TERM!=='dumb';
   const lines = rl[Symbol.asyncIterator]();
   const vm = new VM({input:async()=>{const line=await lines.next();return line.done?'':line.value;}}); let stack = [], block = null;
+  vm.definitions.moduleTokens=standardTokens;
   const install = async (source, file, module = false) => {
     const previous = vm.definitions;
     const program = module?compileModule(file,{previous,globals:vm.globals}):compile(source, file, previous, {globals: vm.globals});
@@ -50,7 +52,7 @@ async function repl() {
     vm.definitions = program.definitions;
     try { await vm.executeAsync([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('Nyanco 0.79.0 — static types; :type EXPR for inference\n');
+  stdout.write('Nyanco 0.80.0 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
     const input = line.trim();
@@ -67,7 +69,7 @@ async function repl() {
       else if (input === ':stack') stdout.write(format(stack) + '\n');
       else if (input.startsWith(':type ')) {const type=vm.infer(input.slice(6),'<repl-type>');stdout.write((color?highlight(type):type)+'\n');}
       else if (input === ':clear') { stack = []; stdout.write('[]\n'); }
-      else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys(),...vm.definitions.modulePublicNames||[]])].filter(n=>!/^nyancoModule/i.test(n)&&!n.startsWith('__tc_')).join(' ') + '\n');
+      else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys(),...vm.definitions.modulePublicNames||[],...standardModuleNames().flatMap(module=>[module,...[...standardModule(module).exports.keys()].map(name=>module+'.'+name)])])].filter(n=>!/^nyancoModule/i.test(n)&&!n.startsWith('__tc_')).join(' ') + '\n');
       else if (input.startsWith(':load ')) {
         const path = input.slice(6).trim();
         await install(null,path,true);
@@ -119,7 +121,8 @@ async function main() {
   if((emitGo || build) && (check || showTypes || typeExpression!==undefined))throw new Error('Go output cannot be combined with --check, --types or --type');
   if((emitGo && emitGo===build) || (file && [emitGo,build].includes(resolve(file))))throw new Error('Input, Go source and executable paths must be different');
   if (!file && expression === undefined && typeExpression === undefined) throw new Error('Specify a file, --eval or --type');
-  const program = file ? (singleFile?compile(await readFile(file, 'utf8'), file):compileModule(file)) : { definitions: new Map() };
+  const standalone=new Map();standalone.moduleTokens=standardTokens;
+  const program = file ? (singleFile?compile(await readFile(file, 'utf8'), file,standalone):compileModule(file)) : { definitions: standalone };
   const vm = new VM(program);
   if (typeExpression !== undefined) {stdout.write(vm.infer(typeExpression) + '\n');return;}
   if (showTypes) {for(const [name,type] of program.types)if(!/^nyancoModule/i.test(name)&&!name.startsWith('__tc_'))stdout.write(`${name} : ${type}\n`);return;}
