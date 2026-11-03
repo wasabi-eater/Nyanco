@@ -1,11 +1,13 @@
+import {summarizeRetention} from './retention.mjs';
+import {instanceKey} from './type-names.mjs';
 import {loweringTypes,typeIR as T,formatType} from './types.mjs';
 import {analyzeOwnership} from './ir-ownership.mjs';
 
 // Types are snapshots, not references into the mutable unification graph.
 // Value numbers describe data flow; structured instructions retain child
 // regions for patterns, handlers, quotations and other control constructs.
-export function createTypedIR(definitions,{ownership=true}={}){
- const inference=loweringTypes(definitions),types=[],regions=[];let typeIDs=new Map();
+export function createTypedIR(definitions,{ownership=true,inference:provided=null}={}){
+ const inference=provided||loweringTypes(definitions),types=[],regions=[];let typeIDs=new Map();
  let nextValue=0;
  function type(t){
   if(!t)return null;t=T.prune(t);const representation=T.aliasRepresentation(t);if(representation!==t)return type(representation);
@@ -29,9 +31,43 @@ export function createTypedIR(definitions,{ownership=true}={}){
  function effectTails(e){return e?T.effectDescription(e).tails.map(type):[];}
  function row(t){const values=[];t=T.prune(t);while(t.tag==='push'){values.unshift(t.item);t=T.prune(t.rest);}return {values,tail:t,never:T.isBottom(t)};}
  const value=t=>({id:nextValue++,type:type(t)});
- function region(nodes,trace,initial=null,local=true){
-  const instructions=[],result={id:regions.length,instructions,inputs:[],outputs:[]};regions.push(result);
-  let stack=initial||null;const env=new Map(),references=new Map();
+ function retentionContract(source,info,children){
+  const primitive=t=>{t=T.prune(t);return t.tag==='atom'||t.tag==='var'&&!!t.numericLiterals;};
+  const standardShow=(t,seen=new Set())=>{t=T.prune(t);if(seen.has(t))return true;seen.add(t);if(definitions.classes?.get('show')?.instances.get(instanceKey(t)))return false;if(primitive(t))return true;if(t.tag==='list')return standardShow(t.item,seen);return false;};
+  if(source.kind==='interpolation'&&(info.formatTypes||[]).every(t=>standardShow(t)))return 'borrow';
+  if(['binary','comparison-chain'].includes(source.kind)&&(info.operatorEffects||[]).every(e=>row(e.input).values.every(primitive)))return 'borrow';
+  if(source.kind==='list-index'&&info.indexGet){const container=T.prune(row(info.indexGet.input).values.at(-2));if(container.tag==='list'||container.tag==='atom'&&container.name==='string')return 'borrow';}
+  if(source.kind==='field'||source.kind==='tuple-index')return 'borrow';
+  if(source.kind!=='word'||info.env?.has(source.value))return null;
+  if(['when','if','call','dip','fold','while'].includes(source.value)&&!definitions.methods?.has(source.value))return 'callback';
+  if(source.value==='each'&&definitions.methods?.get('each')?.specialEach){const sourceType=T.prune(row(info.input).values.at(-2));if(sourceType.tag==='list'||sourceType.tag==='adt'&&['heap','deque','dict'].includes(sourceType.name)||sourceType.tag==='atom'&&sourceType.name==='range')return 'callback';}
+  if(['length','head','tail','print','put','not','hlength','hpeek','hisEmpty','qlength','qpeek','qpeekBack','qisEmpty'].includes(source.value)&&!definitions.methods?.has(source.value))return 'borrow';
+  if(source.value==='at'&&info.effect){const container=T.prune(row(info.effect.input).values.at(-2));if(container.tag==='list'||container.tag==='atom'&&container.name==='string')return 'borrow';}
+  if(source.value==='show'&&row(info.input).values.every(t=>standardShow(t)))return 'borrow';
+  return null;
+ }
+ function freeCaptures(nodes,trace,inherited){
+  const used=new Set();
+  const names=(patterns,out=new Set())=>{for(const p of patterns||[]){if(p.kind==='word'&&p.value!=='_')out.add(p.value);if(p.fields)names(p.fields,out);}return out;};
+  const walk=(nodes,locals)=>{for(const n of nodes){
+   if(n.kind==='application'){walk(trace.get(n)?.application||[...n.body.slice(1),n.body[0]],locals);continue;}
+   if(n.kind==='word'&&inherited.has(n.value)&&!locals.has(n.value))used.add(n.value);
+   if(n.kind==='update')for(const name of n.names||[n.name])if(inherited.has(name)&&!locals.has(name))used.add(name);
+   if(n.kind==='borrow'&&inherited.has(n.owner)&&!locals.has(n.owner))used.add(n.owner);
+   if(n.kind==='case')for(const branch of n.branches){const nested=new Set([...locals,...names(branch.patterns)]);if(branch.guard)walk(branch.guard,new Set(nested));walk(branch.body,nested);}
+   if(n.body){const nested=new Set(locals);if(n.kind==='borrow')nested.add(n.reference);if(n.kind==='local-function')nested.add(n.name);walk(n.body,nested);}
+   if(n.guard)walk(n.guard,new Set(locals));
+   for(const field of n.fields||[])if(field.body)walk(field.body,new Set(locals));
+   for(const operand of n.operands||[])walk(operand,new Set(locals));
+   if(n.left)walk(n.left,new Set(locals));if(n.right)walk(n.right,new Set(locals));
+   if(n.kind==='bind')n.names.forEach(name=>locals.add(name));if(n.kind==='local-function')locals.add(n.name);
+  }};
+  walk(nodes,new Set());return used;
+ }
+ function region(nodes,trace,initial=null,local=true,inherited=new Map()){
+  const instructions=[],result={id:regions.length,instructions,inputs:[],outputs:[],captures:[]};regions.push(result);
+  let stack=initial||null;const env=new Map(),references=new Map(),freeNames=freeCaptures(nodes,trace,inherited);
+  for(const [name,external] of inherited){if(!freeNames.has(name))continue;const parameter={id:nextValue++,type:external.type};env.set(name,parameter);result.captures.push({name,external:external.id,value:parameter.id,type:parameter.type});}
   const add=(nodes,scope=env)=>{
    for(const source of nodes){
     const info=trace.get(source);if(!info)break;
@@ -74,16 +110,20 @@ export function createTypedIR(definitions,{ownership=true}={}){
     Object.defineProperties(instruction,{source:{value:source},typing:{value:info}});
     // Child control regions get independent unknown inputs. No ownership fact
     // crosses a branch, a closure or an effect boundary without a proof.
-    const child=(body,role,index=0)=>{if(Array.isArray(body)&&body.some(n=>trace.has(n))){const r=region(body,trace);instruction.regions.push(r);instruction.children.push({role,index,region:r.id});}};
-    if(source.body)child(source.body,'body');if(source.guard)child(source.guard,'guard');
+    const child=(body,role,index=0,hidden=new Set())=>{if(Array.isArray(body)&&body.some(n=>trace.has(n))){const inherited=new Map([...scope].filter(([name])=>!hidden.has(name)));const r=region(body,trace,null,true,inherited);instruction.regions.push(r);instruction.children.push({role,index,region:r.id});}};
+    if(source.body)child(source.body,'body',0,new Set(source.kind==='borrow'?[source.reference]:source.kind==='local-function'?[source.name]:[]));if(source.guard)child(source.guard,'guard');
     (source.fields||[]).forEach((f,i)=>child(f.body,'field',i));
-    (source.branches||[]).forEach((b,i)=>{child(b.guard,'branch-guard',i);child(b.body,'branch-body',i);});
+    (source.branches||[]).forEach((b,i)=>{const hidden=new Set();const collect=ps=>{for(const p of ps||[]){if(p.kind==='word')hidden.add(p.value);if(p.fields)collect(p.fields);}};collect(b.patterns);child(b.guard,'branch-guard',i,hidden);child(b.body,'branch-body',i,hidden);});
     if(source.operands)source.operands.forEach((b,i)=>child(b,'operand',i));if(source.left)child(source.left,'left');if(source.right)child(source.right,'right');
+    const captured=[...new Set(instruction.regions.flatMap(r=>r.captures.map(c=>c.external)))];
+    instruction.captureArguments=captured;instruction.arguments=[...instruction.arguments,...captured.filter(id=>!instruction.arguments.includes(id))];
+    instruction.retention=retentionContract(source,info,instruction.regions);
     instructions.push(instruction);result.never=after.never;result.outputRow=type(after.tail);
    }
   };
   add(nodes);result.outputs=(stack||[]).map(v=>v.id);result.outputTypes=(stack||[]).map(v=>v.type);
   result.inputTypes=result.inputs.map(v=>v.type);result.inputs=result.inputs.map(v=>v.id);
+  summarizeRetention(result,types);
   if(ownership)analyzeOwnership(result,types);
   return result;
  }
@@ -109,7 +149,7 @@ export function verifyTypedIR(program){
  const ids=new Set(program.regions.map(r=>r.id));
  for(const r of program.regions){
   if(r.inputs.length!==r.inputTypes.length||r.outputs.length!==r.outputTypes.length)throw new Error('IR region/type arity mismatch');
-  const defined=new Set(r.inputs);
+  const defined=new Set([...r.inputs,...(r.captures||[]).map(c=>c.value)]);
   for(const i of r.instructions){
    for(const id of i.arguments)if(!defined.has(id))throw new Error(`IR region ${r.id}: undefined value %${id} at ${i.op}`);
    if(i.results.length!==i.resultTypes.length)throw new Error('IR result/type arity mismatch');

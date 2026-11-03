@@ -1,4 +1,4 @@
-# Nyanco 0.83 — effect全称量化とスコープ付き可変借用
+# Nyanco 0.84 — 一時的な読み取り後の直接更新
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1800,3 +1800,24 @@ main =
 `borrowMut`は通常のユーザーeffectではなく、`handle`・`mask`・直接のperformで制約を消すことはできません。再借用中は親の参照が使えません。同じcapabilityの別名は同じ借用を指し、独立した借用を重ねることはできません。現在はスコープ単位のcapability検査で、Rustの非字句的ライフタイムや参照のaffineな移動までは実装していません。
 
 VMとGoの両方で対応し、例外や`cancel`でスコープを抜けた場合も参照を失効させます。型付きIRにはregion IDと借用effectを記録します。借用は変数のセルに対するもので、共有されたvectorのbufferまで占有できると仮定する最適化は行いません。実行例は`node cli.mjs examples/borrow`です。
+
+## 一時的な読み取り後の直接更新（0.84）
+
+quotationが値を捕捉しただけでは、直ちに永続的なescapeとは扱わなくなりました。IRに実際に参照する自由変数とcapture用の値IDを記録し、読み取りが参照を保持しないこと、同期的なcallbackの実行が完了すること、その後に別名が使われないことを確認します。
+
+```nyanco
+main =
+    v <- [0, 1, 2]
+    when (length v >= 2) {
+        print "{v.[0]}, {v.[1]}"
+    }
+    v; vpush 3; print
+```
+
+この例では`length`・indexアクセス・文字列補間・`print`による一時的な利用が終わっているため、最後の`vpush`は`move`になり、VMとGoの両方で直接更新を利用します。Goのappendで容量が不足した場合の通常の再確保は発生し得ますが、別名の値を保護するためのコピーは不要になります。
+
+IRには`retention`による読み取りの要約、`captureArguments`による捕捉値への依存、`borrowing: {mode: "temporary"}`による一時利用の判定も出力します。captureを保持するquotationが後で再び使われる場合、そのquotationの生存期間も考慮するため、元の値の更新はコピーになります。
+
+`when`・`if`・`call`などの既知の同期的な呼び出し、および組み込みコンテナの`each`などが対象です。callbackの内部も参照を保持しないと証明する必要があります。遅延stream、外部への代入、未知の関数、独自の`show`などを介して参照が残り得る場合はコピーします。effectがescapeしないという型情報だけで直接更新を許可するものではありません。REPLの永続変数やmoduleのglobal変数も引き続き共有扱いです。
+
+実行例は`node cli.mjs examples/temporary-read`です。

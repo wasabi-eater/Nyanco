@@ -1,0 +1,6 @@
+main =
+    v <- [0, 1, 2]
+    when (length v >= 2) {
+        print "{v.[0]}, {v.[1]}"
+    }
+    v; vpush 3; print

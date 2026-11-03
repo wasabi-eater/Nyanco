@@ -1,3 +1,4 @@
+import {createTypedIR} from './typed-ir.mjs';
 import {emptyDeque,queuePush,queuePop,collectionItems,heapPush,heapPop,collectionOperations} from './collections.mjs';
 import {derivingSources} from './deriving.mjs';
 import {emptyDict,dictGet,dictSet,dictEntries,dictHashedEntries,hashMix,hashText,scalarHash} from './hash-map.mjs';
@@ -923,6 +924,7 @@ export class VM {
     const pending = this.initialized === this.definitions ? [] : this.definitions.initializers || [];
     this.typePlan = {};
     this.vectorReuse=this.optimizeVectors?vectorOwnership(this.definitions,nodes):new WeakSet();
+    this.irOwnership=this.optimizeVectors&&this.checkTypes?createTypedIR(this.definitions,{inference:{}}):null;this.irReusePlans=new WeakMap();
     this.vectorUpdates={inPlace:0,copied:0};
     if (this.checkTypes) checkExpression(nodes,this.definitions,this.globals,stack,this.typePlan, !pending.length);
     const warnings=expressionWarnings(nodes,new Set([...this.globals].filter(([,v])=>v?.kind!=='local-function').map(([n])=>n)));this.warnings=warnings;for(const w of warnings)this.warning(w);
@@ -946,6 +948,7 @@ export class VM {
     const pending = this.initialized === this.definitions ? [] : this.definitions.initializers || [];
     this.typePlan = {};
     this.vectorReuse=this.optimizeVectors?vectorOwnership(this.definitions,nodes):new WeakSet();
+    this.irOwnership=this.optimizeVectors&&this.checkTypes?createTypedIR(this.definitions,{inference:{}}):null;this.irReusePlans=new WeakMap();
     this.vectorUpdates={inPlace:0,copied:0};
     if (this.checkTypes) checkExpression(nodes,this.definitions,this.globals,stack,this.typePlan, !pending.length);
     const warnings=expressionWarnings(nodes,new Set([...this.globals].filter(([,v])=>v?.kind!=='local-function').map(([n])=>n)));this.warnings=warnings;for(const w of warnings)this.warning(w);
@@ -1200,6 +1203,8 @@ export class VM {
   }
   *run(nodes, stack, env, missing = new Map(), trace = this.currentTrace) {
     const previousTrace=this.currentTrace;
+    let ownershipPlan=this.irReusePlans?.get(trace);
+    if(this.irOwnership&&trace&&!ownershipPlan&&nodes.every(n=>!trace.has(n)||(trace.get(n).input&&trace.get(n).output))){ownershipPlan=this.irOwnership.lower(nodes,trace,{local:env!==this.globals});this.irReusePlans.set(trace,ownershipPlan);}
     env.locals ??= new Set();
     missing.references ??= new Map();
     if (++this.depth > this.maxDepth) { this.depth--; throw new LanguageError('Call depth limit exceeded', nodes[0]); }
@@ -1410,7 +1415,7 @@ export class VM {
           stack.push(...returned);
         }
         else if (BUILTINS.has(t.value)) {
-          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t),...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
+          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t)||ownershipPlan?.lookup.get(t)?.ownership?.mode==='move',...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
           if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxiBy','miniBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
         }
