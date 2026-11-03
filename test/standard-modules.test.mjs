@@ -83,6 +83,7 @@ test('standalone compilation, CLI token rewriting, LSP and Go backend understand
  assert.deepEqual(new VM(compile('main = std.vector.map [1] {+ 1}','<single>',previous)).evaluate('main'),[[2]]);
  const service=new LanguageService(),uri=pathToFileURL(entry).href;service.update(uri,'main = std.vector.map [1, 2] {+ 1}',1);
  assert.equal(service.documents.get(uri).diagnostics.filter(d=>d.severity===1).length,0);
+ assert.deepEqual(service.request('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:0,character:0},end:{line:1,character:0}}}).map(h=>h.label),[": ..s ['a]"]);
  assert.ok(service.request('textDocument/completion',{textDocument:{uri},position:{line:0,character:0}}).some(x=>x.label==='std.vector.map'));
  const go=join(dir,'main.go');writeFileSync(go,transpileGo(p));
  const run=spawnSync('go',['run',go],{encoding:'utf8',timeout:120000});assert.equal(run.status,0,run.stderr);assert.equal(run.stdout.trim(),output.join('\n'));

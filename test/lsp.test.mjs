@@ -4,6 +4,55 @@ import {spawn} from 'node:child_process';
 import {LanguageService,applyChanges} from '../lsp.mjs';
 
 const uri='file:///example.nyan';
+const hints=(service,start=0,end=1000)=>service.request('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:start,character:0},end:{line:end,character:1000}}});
+
+test('line-end hints show solved stacks in evaluation order and omit empty results',()=>{
+  const service=new LanguageService(),source='main =\n    1\n    dup\n    +\n    print\n    2; print\n    -- comment\n';
+  const doc=service.update(uri,source,1);assert.deepEqual(doc.diagnostics,[]);
+  assert.deepEqual(hints(service).map(h=>[h.position,h.label]),[
+    [{line:1,character:5},': ..s int'],
+    [{line:2,character:7},': ..s int int'],
+    [{line:3,character:5},': ..s int'],
+  ]);
+  for(const hint of hints(service)){assert.equal(hint.kind,1);assert.equal(hint.paddingLeft,true);assert.match(hint.tooltip.value,/左が底、右がトップ/);}
+  assert.deepEqual(hints(service,2,2).map(h=>h.label),[': ..s int int']);
+  // Prefix arguments are evaluated before the head; their temporary stacks
+  // must not become the final line hint (nor leave one after print).
+  service.update(uri,'main = print "Hello"',2);assert.deepEqual(hints(service),[]);
+  service.update(uri,'main = length [1,2]',3);assert.deepEqual(hints(service).map(h=>h.label),[': ..s int']);
+});
+
+test('multiline calls show quotation-local stacks and the completed outer stack',()=>{
+  const service=new LanguageService();
+  const doc=service.update(uri,'main =\n    x <- 1\n    x\n    when True {\n        + 2\n        print $\n    }\n    print',1);
+  assert.deepEqual(doc.diagnostics,[]);
+  assert.deepEqual(hints(service).map(h=>[h.position.line,h.label]),[
+    [2,': ..s int'],[4,': ..s int'],[5,': ..s int'],[6,': ..s int'],
+  ]);
+  service.update(uri,'main =\n    call {\n        1\n    }\n    print',2);
+  assert.deepEqual(hints(service).map(h=>[h.position.line,h.label]),[[2,': ..s int'],[3,': ..s int']]);
+  service.update(uri,'main =\n    x <- (\n        1\n    )\n    print x',3);
+  assert.deepEqual(hints(service).map(h=>[h.position.line,h.label]),[[2,': ..s int']]);
+});
+
+test('stack hints retain polymorphic types and later constraints and survive edits',()=>{
+  const service=new LanguageService();
+  service.update(uri,"keep : 'a -> 'a\nkeep =\n    dup\n    drop\nmain = print (keep 1.5)",1);
+  assert.deepEqual(hints(service).map(h=>h.label),[": ..s 'a 'a",": ..s 'a"]);
+  service.update(uri,'main =\n    1\n    + 2.5\n    print',2);
+  assert.deepEqual(hints(service).map(h=>h.label),[': ..s float',': ..s float']);
+  service.update(uri,'main = unknownName',3);assert.deepEqual(hints(service),[]);
+  service.update(uri,'main = "unfinished',4);assert.deepEqual(hints(service),[]);
+  service.update(uri,'',5);assert.deepEqual(hints(service),[]);
+  assert.deepEqual(service.request('textDocument/inlayHint',{textDocument:{uri:'file:///missing.nyan'},range:{start:{line:0,character:0},end:{line:1,character:0}}}),[]);
+});
+
+test('stack hint positions use UTF-16 line ends including comments and CRLF',()=>{
+  const service=new LanguageService(),source='main =\r\n    "猫😀" -- text\r\n    print';
+  const doc=service.update(uri,source,1);assert.deepEqual(doc.diagnostics,[]);
+  assert.deepEqual(hints(service).map(h=>[h.position,h.label]),[[{line:1,character:source.split('\r\n')[1].length},': ..s string']]);
+  assert.equal(service.documents.get(uri).text,source);
+});
 test('hover preserves annotated numeric parameters inside a function while specializing calls',()=>{
   const service=new LanguageService();
   const source="abs : num 'a, ord 'a => 'a -> 'a\nabs = when ($ < 0) {0 -}\nmain =\n    print -5.3 abs";
@@ -96,10 +145,12 @@ test('stdio lifecycle, fragmented Unicode frames, updates, and shutdown',{timeou
   };
   child.stdin.write('Content-Length: 1\r\n\r\n{');assert.equal((await next()).error.code,-32700);
   send('textDocument/hover',{},0);assert.equal((await next()).error.code,-32002);
-  send('initialize',{},1);assert.equal((await next()).result.capabilities.positionEncoding,'utf-16');
+  send('initialize',{},1);const capabilities=(await next()).result.capabilities;assert.equal(capabilities.positionEncoding,'utf-16');assert.equal(capabilities.inlayHintProvider,true);
   send('initialized');
   send('textDocument/didOpen',{textDocument:{uri,version:1,languageId:'nyanco',text:'main = "猫😀"'}});
   assert.deepEqual((await next()).params.diagnostics,[]);
+  send('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:0,character:0},end:{line:1,character:0}}},10);
+  assert.deepEqual((await next()).result.map(h=>[h.position,h.label]),[[{line:0,character:'main = "猫😀"'.length},': ..s string']]);
   send('textDocument/didChange',{textDocument:{uri,version:2},contentChanges:[{text:'main = unknownName'}]});
   assert.equal((await next()).params.diagnostics[0].severity,1);
   send('textDocument/didChange',{textDocument:{uri,version:3},contentChanges:[{range:{start:{line:0,character:7},end:{line:0,character:18}},text:'1'}]});

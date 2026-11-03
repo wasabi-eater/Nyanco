@@ -134,6 +134,18 @@ test('LSP uses unsaved module files and exposes only public imported names',()=>
  assert.match(service.documents.get(uri).diagnostics[0].message,/does not export/);
 }));
 
+test('stack inlay hints display imported type names and clear after dependency errors',()=>fixture({
+ 'lib/api.nyan':'open data token = Token int\npub make : -> token\nmake = Token 1',
+ 'main.nyan':'import "./lib"\nmain = lib.make',
+},dir=>{
+ const service=new LanguageService(),uri=pathToFileURL(join(dir,'main.nyan')).href,libURI=pathToFileURL(join(dir,'lib/api.nyan')).href;
+ const doc=service.update(uri,'import "./lib"\nmain = lib.make',1);assert.deepEqual(doc.diagnostics,[]);
+ const params={textDocument:{uri},range:{start:{line:0,character:0},end:{line:2,character:0}}};
+ assert.deepEqual(service.request('textDocument/inlayHint',params).map(h=>h.label),[': ..s lib.token']);
+ service.update(libURI,'open data token = Token int\npub make : -> token\nmake = missing',2);
+ assert.deepEqual(service.request('textDocument/inlayHint',params),[]);
+}));
+
 test('type and value namespaces preserve visibility separately and classes may share method names',()=>fixture({
  'lib/a.nyan':`pub class zero 'a where
   zero : -> 'a

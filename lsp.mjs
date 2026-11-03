@@ -35,12 +35,53 @@ export function applyChanges(text,changes){
 const contains=(r,p)=>offsetCompare(r.start,p)<=0&&offsetCompare(p,r.end)<0;
 const offsetCompare=(a,b)=>a.line-b.line||a.character-b.character;
 
+function stackInlayHints(doc){
+  const closes=new Map(),open=[],ends=new WeakMap(),lines=doc.text.split(/\r?\n/);
+  const key=t=>`${t.line}:${t.col}`;
+  for(const token of doc.tokens){
+    if(['(','[','{'].includes(token.kind))open.push(token);
+    else if([')',']','}'].includes(token.kind)){
+      const start=open.pop();if(start)closes.set(key(start),range(token).end);
+    }
+  }
+  const tokens=new Map(doc.tokens.map((t,i)=>[key(t),i]));
+  const endOf=node=>{
+    if(ends.has(node))return ends.get(node);
+    let end=range(node).end;
+    const consider=child=>{const candidate=endOf(child);if(offsetCompare(end,candidate)<0)end=candidate;};
+    for(const child of [...node.body||[],...node.guard||[],...node.left||[],...node.right||[],...(node.operands||[]).flat()])consider(child);
+    for(const field of node.fields||[])for(const child of field.body||[])consider(child);
+    for(const branch of node.branches||[])for(const child of [...branch.guard||[],...branch.body])consider(child);
+    let index=tokens.get(key(node)),closing=closes.get(key(node));
+    // Labelled quotations and tuple literals start just before their opener.
+    if(!closing&&['quote','tuple'].includes(node.kind))closing=closes.get(key(doc.tokens[(index??-2)+1]||{}));
+    if(!closing&&['borrow','mask'].includes(node.kind)&&index!==undefined){
+      const opener=doc.tokens.slice(index+1).find(t=>t.kind==='{');if(opener)closing=closes.get(key(opener));
+    }
+    if(closing&&offsetCompare(end,closing)<0)end=closing;
+    ends.set(node,end);return end;
+  };
+  const afterLines=new Map(),sequenceEnds=new Map();
+  for(const {node,type,sequence} of doc.occurrences.stacks||[]){
+    let end=endOf(node);const previous=sequenceEnds.get(sequence);
+    // A left-hand declaration's bind node points before its RHS in source,
+    // although it executes after that RHS (which can span several lines).
+    if(previous&&offsetCompare(end,previous)<0)end=previous;
+    sequenceEnds.set(sequence,end);afterLines.set(end.line,type);
+  }
+  const display=doc.program?.modules?.display||String;
+  return [...afterLines].filter(([line,type])=>type&&line<lines.length).sort(([a],[b])=>a-b).map(([line,type])=>({
+    position:{line,character:lines[line].length},label:': '+display(type),kind:1,paddingLeft:true,
+    tooltip:{kind:'markdown',value:'この行の実行後のstack（左が底、右がトップ）\n\n```nyanco\n'+display(type)+'\n```'}
+  }));
+}
+
 // The server never instantiates a VM: even top-level initializers are only checked.
 export class LanguageService {
   constructor(){this.documents=new Map();this.standard=compile('','<lsp-builtins>');this.builtinTypes=new Map();}
   update(uri,text,version,refresh=true){
     sourceIDs.clear();
-    const doc={uri,text,version,tokens:[],diagnostics:[],externalDiagnostics:new Map(),symbols:[],program:null};
+    const doc={uri,text,version,tokens:[],diagnostics:[],externalDiagnostics:new Map(),symbols:[],program:null,inlayHints:[]};
     try{doc.tokens=lex(text,uri);}catch{} // Incomplete syntax must not kill the editor session.
     const overlays=new Map([...this.documents].map(([u,d])=>[u,d.text]));overlays.set(uri,text);
     const modular=(()=>{try{return uri.startsWith('file:')&&existsSync(dirname(fileURLToPath(uri)));}catch{return false;}})();
@@ -60,6 +101,7 @@ export class LanguageService {
     if(doc.program&&!doc.externalDiagnostics.size&&!doc.diagnostics.some(d=>d.severity===1)){
       try{const source=[...doc.program.modules?.sources.keys()||[]].find(file=>sameSource(file,uri))||uri;doc.occurrences=occurrenceTypes(doc.program.definitions,source);}catch{}
     }
+    doc.inlayHints=stackInlayHints(doc);
     const definitions=doc.program?.definitions;
     if(definitions)for(const [name,clauses] of definitions){
       const own=clauses.filter(c=>sameSource(c.token?.file,uri)&&!c.token.internal);
@@ -99,7 +141,8 @@ export class LanguageService {
     return this.builtinTypes.get(name);
   }
   request(method,params){
-    const doc=this.documents.get(params?.textDocument?.uri);if(!doc)return method==='textDocument/completion'?[]:null;
+    const doc=this.documents.get(params?.textDocument?.uri);if(!doc)return ['textDocument/completion','textDocument/inlayHint'].includes(method)?[]:null;
+    if(method==='textDocument/inlayHint')return doc.inlayHints.filter(h=>offsetCompare(params.range.start,h.position)<=0&&offsetCompare(h.position,params.range.end)<=0);
     if(method==='textDocument/documentSymbol')return doc.symbols;
     if(method==='textDocument/completion'){
       const defs=doc.program?.definitions||this.standard.definitions;
@@ -145,7 +188,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
   function dispatch(message){
     const {id,method,params={}}=message,request=id!==undefined;
     if(method==='exit'){exit(shutdown?0:1);return;}
-    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.84.0'}});return;}
+    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true,inlayHintProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.84.0'}});return;}
     if(!initialized){if(request)fail(id,-32002,'Server not initialized');return;}
     if(shutdown){if(request)fail(id,-32600,'Server has shut down');return;}
     if(method==='shutdown'){shutdown=true;reply(id,null);return;}
@@ -158,7 +201,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
         service.update(d.uri,applyChanges(old.text,params.contentChanges),d.version);publishAll();return;
       }
       if(method==='textDocument/didClose'){const uri=params.textDocument.uri;service.documents.delete(uri);for(const doc of [...service.documents.values()])service.update(doc.uri,doc.text,doc.version,false);publishAll();return;}
-      if(['textDocument/hover','textDocument/completion','textDocument/definition','textDocument/documentSymbol'].includes(method)){reply(id,service.request(method,params));return;}
+      if(['textDocument/hover','textDocument/completion','textDocument/definition','textDocument/documentSymbol','textDocument/inlayHint'].includes(method)){reply(id,service.request(method,params));return;}
       if(request)fail(id,-32601,`Method not found: ${method}`);
     }catch(error){if(request)fail(id,-32603,error.message);else send({jsonrpc:'2.0',method:'window/logMessage',params:{type:1,message:error.message}});}
   }

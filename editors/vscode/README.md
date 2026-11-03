@@ -21,6 +21,18 @@ code --extensionDevelopmentPath="$PWD"
 
 実装は[VS Codeの公式Syntax Highlight Guide](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide)のTextMate方式を使用しています。
 
+## 行末のstack型
+
+LSPが各行の実行後のstack型をinlay hintとして表示します。たとえば`dup`の後に`: ..s int int`が表示され、右端がstackのトップです。空のstackや既知の値がないstack rowだけの場合は非表示になります。同じ行に複数の式があれば最後の結果を表示します。表示はテーマのinlay hint用の色に従います。
+
+LSP更新後はウィンドウを再読み込みしてください。ヒントを無効にしている場合は、VS Codeの設定で`editor.inlayHints.enabled`を`on`にします。Nyancoだけで有効にする場合は次のように設定できます。
+
+```json
+"[nyanco]": {
+  "editor.inlayHints.enabled": "on"
+}
+```
+
 ## 検証
 
 ```powershell

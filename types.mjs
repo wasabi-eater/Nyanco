@@ -1645,7 +1645,9 @@ export function loweringTypes(definitions) {
 export function occurrenceTypes(definitions,file) {
   const info=loweringTypes(definitions),result=new Map();
   result.substitutions=new Map();
-  const collect=trace=>{
+  result.stacks=[];
+  let nextStackSequence=0;
+  const collect=(trace,nodes)=>{
     const escaping=trace.enclosingType?free(trace.enclosingType,new Set(),new Set(),true):new Set();
     // Default only literals local to the body; inputs/outputs of the enclosing
     // polymorphic function must stay polymorphic in occurrence displays.
@@ -1678,12 +1680,33 @@ export function occurrenceTypes(definitions,file) {
       if(node.kind==='comparison-chain')node.operators.forEach((op,i)=>save(op,t.operatorEffects?.[i]));
       else if(t.operatorEffects?.length)save(node,t.operatorEffects[0]);
     }
+    // Emit complete sequence terms, rather than the isolated operand stacks
+    // used to check infix expressions or the arguments of a prefix call.
+    const names=new Map();
+    if(trace.enclosingType)formatType(trace.enclosingType,{names,defaultNumbers:false});
+    const sequence=nodes=>{const id=nextStackSequence++;for(const node of nodes||[])visit(node,true,id);};
+    const visit=(node,emit,sequenceID)=>{
+      if(node.kind==='application')for(const child of node.body)visit(child,false);
+      else if(node.body)sequence(node.body);
+      if(node.guard)sequence(node.guard);
+      for(const field of node.fields||[])sequence(field.body);
+      for(const branch of node.branches||[]){sequence(branch.guard);sequence(branch.body);}
+      for(const operand of node.operands||[])for(const child of operand)visit(child,false);
+      for(const side of [node.left,node.right])for(const child of side||[])visit(child,false);
+      const output=trace.get(node)?.output;
+      if(emit&&output&&node.file===file&&!['capture','missing'].includes(node.kind)){
+        const type=prune(output);
+        // An unconstrained row alone has no known stack elements to display.
+        result.stacks.push({node,sequence:sequenceID,type:['empty','var','rigid'].includes(type.tag)||isBottom(type)?null:formatType(output,{variableNames:names,showConstraints:false,defaultNumbers:false})});
+      }
+    };
+    sequence(nodes);
   };
-  collect(info.trace||new Map());
+  collect(info.trace||new Map(),definitions.initializers);
   for(const [name,clauses] of definitions){
     if(!clauses.some(c=>c.token?.file===file))continue;
     const scheme=info.functions.get(name);if(!scheme)continue;
-    for(const c of clauses)if(c.token?.file===file)collect(info.clause(c,instantiate(scheme)));
+    for(const c of clauses)if(c.token?.file===file)collect(info.clause(c,instantiate(scheme)),[...c.guard||[],...c.body]);
   }
   return result;
 }
