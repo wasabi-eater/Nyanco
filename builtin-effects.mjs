@@ -2,6 +2,7 @@
 export function ioEffects(existing=new Map()) {
   const base={parameters:[],group:'io',grouped:true,builtin:true,never:false};
   return new Map([
+    ['borrowMut',{name:'borrowMut',parameters:["'r"],builtin:true,protected:true,never:false,syntax:{tag:'quote',input:[],output:[]},inputCount:0,outputCount:0}],
     ['read',{...base,name:'read',syntax:{tag:'quote',input:[],output:[{tag:'atom',name:'string'}]},inputCount:0,outputCount:1}],
     ['put',{...base,name:'put',syntax:{tag:'quote',input:[{tag:'atom',name:'string'}],output:[]},inputCount:1,outputCount:0}],
     ['exn',{name:'exn',parameters:[],builtin:true,never:true,syntax:{tag:'quote',input:[{tag:'atom',name:'string'}],output:[],never:true},inputCount:1,outputCount:0}],

@@ -1,0 +1,10 @@
+pub bump : mutref 'r int -> / {borrowMut 'r}
+bump r = writeRef r (readRef r + 1)
+
+main =
+    mut count <- 10
+    borrow mut count as r {
+        when True {bump r}
+        borrow mut r as inner {bump inner}
+    }
+    print count

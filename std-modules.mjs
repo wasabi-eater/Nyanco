@@ -35,6 +35,8 @@ assign('bits','testBit setBit clearBit xor');
 assign('io','read put print');
 assign('control','if when while loop iterate handle resume call compose dip');
 assign('stack','nop dup drop swap over rot');
+assign('borrow','readRef writeRef');
+put('borrow','mutref','mutref','data');
 for(const name of builtinNames())if(!assigned.has(name))put('core',name);
 for(const name of definitions.keys())if(!name.startsWith('__')&&!assigned.has(name))put('core',name);
 for(const name of ['vector','deque','heap','stream','dict','range','option','result','int','float','byte','char','bool','string'])

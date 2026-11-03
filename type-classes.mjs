@@ -52,7 +52,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     for(const part of associatedParts){
       const label=part[1]?.value;
       if(part.length!==2 || !/^[a-z][A-Za-z0-9_]*$/.test(label||''))fail('Associated type declaration requires type name',part[0]);
-      if(c.associated.some(a=>a.name===label) || definitions.dataTypes.has(label) || ['int','float','byte','char','bool','string','range','stream','deque','heap','continuation'].includes(label))fail('Duplicate or reserved associated type: '+label,part[0]);
+      if(c.associated.some(a=>a.name===label) || definitions.dataTypes.has(label) || ['int','float','byte','char','bool','string','range','stream','deque','heap','mutref','continuation'].includes(label))fail('Duplicate or reserved associated type: '+label,part[0]);
       let param="'associated_"+label;while(used.has(param))param+='_';used.add(param);c.associated.push({name:label,param,owner:name});
     }
     for(const part of classMembers.filter(p=>p[0]?.value!=='type')) {

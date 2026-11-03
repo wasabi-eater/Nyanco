@@ -91,6 +91,7 @@ func text(v any) string {
   s:=strconv.FormatFloat(x,'e',-1,64); s=strings.ReplaceAll(s,"e-0","e-"); return strings.ReplaceAll(s,"e+0","e+")
  case bool: if x { return "True" }; return "False"
  case string: var b bytes.Buffer; enc:=json.NewEncoder(&b); enc.SetEscapeHTML(false); _=enc.Encode(x); return strings.TrimSuffix(b.String(),"\n")
+ case *BorrowRef:return "<mutref>"
  case *Collection:return x.kind+" "+text(x.values())
  case *Dict: if x.size==0{return "[:]"};parts:=[]string{};for _,p:=range x.entries(){parts=append(parts,text(p[0])+": "+text(p[1]))};return "["+strings.Join(parts,", ")+"]"
  case *Stream: return "<stream>"
@@ -286,3 +287,9 @@ func(m *Machine) collectionOp(name string,source,value any,less func(any,any)boo
  if name=="hpush"{c.items=append(c.items,value);c.size++;for i:=c.size-1;i>0;{p:=(i-1)/2;if !less(c.items[p],c.items[i]){break};c.items[p],c.items[i]=c.items[i],c.items[p];i=p};return &c,nil}
  if c.size==0{return &c,optionValue(nil,false)};item:=c.items[0];c.size--;last:=c.items[c.size];c.items=c.items[:c.size];if c.size>0{c.items[0]=last};for i:=0;2*i+1<c.size;{child:=2*i+1;if child+1<c.size&&less(c.items[child],c.items[child+1]){child++};if !less(c.items[i],c.items[child]){break};c.items[i],c.items[child]=c.items[child],c.items[i];i=child};return &c,optionValue(item,true)
 }
+
+type BorrowRef struct{cell *Cell;parent *BorrowRef;live bool}
+func beginBorrow(owner any,loc string)*BorrowRef{switch x:=owner.(type){case *Cell:return &BorrowRef{cell:x,live:true};case *BorrowRef:if !x.live{fail(loc,"Borrow target is not live")};x.live=false;return &BorrowRef{cell:x.cell,parent:x,live:true}};fail(loc,"borrow mut requires a mutable variable or reference");return nil}
+func(r *BorrowRef)close(){r.live=false;if r.parent!=nil{r.parent.live=true}}
+func readBorrow(value any,loc string)any{r,ok:=value.(*BorrowRef);if !ok||!r.live{fail(loc,"Borrowed reference is outside its lifetime")};return r.cell.value}
+func writeBorrow(value,item any,loc string){r,ok:=value.(*BorrowRef);if !ok||!r.live{fail(loc,"Borrowed reference is outside its lifetime")};r.cell.value=item}

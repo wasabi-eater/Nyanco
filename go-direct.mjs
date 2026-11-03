@@ -205,6 +205,13 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       }
       else if(n.kind==='missing'){if(holes.has(n))values.push(holes.get(n));}
       else if(n.kind==='label') {const local=`labelEnv${next++}`;ctx.lines.push(`${local}:=${env}.clone();${local}.declare(${str(n.key)},&EffectLabel{},false,${at})`);values=emit(n.body,values,local,holes,trace,ctx);}
+      else if(n.kind==='borrow'){
+        const inner=context(),e=`loanEnv${next++}`,ref=`loanRef${next++}`,returned=`loanResult${next++}`;
+        inner.lines.push(`${e}:=${env}.clone();${ref}:=beginBorrow(${env}.values[${str(n.owner)}],${at});defer ${ref}.close();${e}.declare(${str(n.reference)},${ref},false,${at})`);
+        const output=emit(n.body,[...values],e,holes,trace,inner);
+        ctx.lines.push(`${returned}:=func() []any{${inner.lines.join(';')};${output.never?'panic("Non-returning borrow returned")':`return []any{${output}}`}}();_=${returned}`);
+        values=items(info.output).map((_,i)=>ctx.value(`${returned}[${i}]`));
+      }
       else if(n.kind==='mask') {
         const inner=context(),result=emit(n.body,[...values],env,holes,trace,inner),returned=`masked${next++}`;
         ctx.lines.push(`${returned}:=m.mask(func(m *Machine) []any {${inner.lines.join(';')};return []any{${result.never?'':result}}},${str(n.operation)},${n.target?`labelTarget(${env}.read(${str(n.target)}),${at})`:'nil'},${at});_=${returned}`);
@@ -446,6 +453,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const cases=[...fields].map(([k,v])=>`case ${str(k)}:shown=${showFunction(v)}(m,r.fields[k])`).join(';');
       ctx.lines.push(`r:=value.(*Record);if len(r.fields)==0{return "{:}"};parts,keys:=[]string{},[]string{};for k:=range r.fields{keys=append(keys,k)};sort.Strings(keys);for _,k:=range keys{shown:="";switch k{${cases?cases+';':''}default:shown=text(r.fields[k])};parts=append(parts,k+": "+shown)};return "{"+strings.Join(parts,", ")+"}"`);
     }else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`d:=value.(*Dict);if d.size==0{return "[:]"};parts:=[]string{};for _,p:=range d.entries(){parts=append(parts,${showFunction(type.args[0])}(m,p[0])+": "+${showFunction(type.args[1])}(m,p[1]))};return "["+strings.Join(parts,", ")+"]"`);
+    else if(type.tag==='adt'&&type.name==='mutref')ctx.lines.push('return "<mutref>"');
     else if(type.tag==='adt'&&['deque','heap'].includes(type.name))ctx.lines.push(`c:=value.(*Collection);parts:=[]string{};for _,item:=range c.values(){parts=append(parts,${showFunction(type.args[0])}(m,item))};return c.kind+" ["+strings.Join(parts,", ")+"]"`);
     else if(type.tag==='adt'){
       const constructors=[...definitions.constructors.values()].filter(c=>c.typeName===type.name);
@@ -506,6 +514,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       let less='nil';if(name==='hpush'||name==='hpop'){const item=pushing?topTypes.at(-1):T.prune(topTypes.at(-1)).args[0],cmp=comparisonFunction(item,true);less=`func(a,b any)bool{return ${cmp}(m,a,b)<0}`;}
       const outputs=ctx.call('m.collectionOp',[str(name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);v.push(outputs[0]);if(['qpop','qpopBack','hpop'].includes(name))v.push(outputs[1]);return;
     }
+    if(name==='readRef'){const ref=pop();v.push(ctx.value(`readBorrow(${ref},${at})`));return;}
+    if(name==='writeRef'){const value=pop(),ref=pop();ctx.lines.push(`writeBorrow(${ref},${value},${at})`);return;}
     if(name==='values'){const source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${source}.(*Dict).walk(func(_ any,value any){visit(value)})}}`));return;}
     if(name==='split') {
       const separator=pop(),source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.walkSplit(${source},${separator},visit,${at})}}`));return;

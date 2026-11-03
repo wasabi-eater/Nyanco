@@ -1,3 +1,4 @@
+import {ownerIdentity,loanRegion,referencedRegions,containsRegion} from './borrow-safety.mjs';
 import {collectionItems} from './collections.mjs';
 import {dictEntries} from './hash-map.mjs';
 import {classParameters,instanceHeads,relationKey,superConstraints,lookupInstance,builtinConversion} from './class-relations.mjs';
@@ -25,9 +26,11 @@ let activeClasses=new Map();
 let activeDataTypes=new Map();
 let activeModuleEffects=new Map();
 const handlerOperation=(record,name)=>activeModuleEffects.get(record.moduleID)?.get(name)||name;
+const revealingBorrowAliases=new WeakSet();
 function aliasRepresentation(type,dataTypes=activeDataTypes){
  type=prune(type);const declaration=type.tag==='adt'&&dataTypes.get(type.name);
- return declaration?.aliasSyntax?syntaxType(declaration.aliasSyntax,new Map(declaration.parameters.map((p,i)=>[p,type.args[i]]))):type;
+ if(!declaration?.aliasSyntax)return type;const representation=syntaxType(declaration.aliasSyntax,new Map(declaration.parameters.map((p,i)=>[p,type.args[i]])));if(type.borrowCaptures&&!revealingBorrowAliases.has(type)){revealingBorrowAliases.add(type);try{for(const captured of type.borrowCaptures)if(prune(captured).tag===representation.tag)unify(representation,captured);}finally{revealingBorrowAliases.delete(type);}}
+ return type.borrowCaptures?{...representation,borrowCaptures:type.borrowCaptures}:representation;
 }
 function visibleAlias(type,token){
  type=prune(type);const declaration=type.tag==='adt'&&activeDataTypes.get(type.name);
@@ -162,6 +165,7 @@ function requireHandlers(handlers,answer,token,residual=null) {
   residual ??= handlers.handlerResidual;
   if(handlers.tag==='var'){if(handlers.handlerAnswer)unify(handlers.handlerAnswer,answer,token);else handlers.handlerAnswer=answer;return;}
   if(handlers.tag==='rigid'){if(!handlers.handlerAnswer)throw new StaticTypeError('Missing handles constraint',token);unify(handlers.handlerAnswer,answer,token);return;}
+  if(handlers.tag==='record'&&[...flattenRecord(handlers.row).fields.keys()].some(name=>handlerOperation(handlers,name)==='borrowMut'))throw new StaticTypeError('Borrow effects cannot be handled',token);
   if(handlers.tag!=='record')throw new StaticTypeError('handle requires a handler record',token);
   const fields=flattenRecord(handlers.row);if(prune(fields.tail).tag!=='record-empty')throw new StaticTypeError('Handler record must have known fields',token);
   const expected=new Map(),groupParameters=new Map();
@@ -283,6 +287,7 @@ const sortOf = t => t.tag === 'var' || t.tag === 'rigid' ? t.sort : ['tuple-tail
 const effects = (entries=[], dependencies=[]) => ({tag:'effects',entries,dependencies});
 function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new Set()}) {
   t=prune(t);
+  result.accesses??=new Set();for(const owner of t.accesses||[])result.accesses.add(owner);
   const key=JSON.stringify(excluded);
   if(seen.get(t)?.has(key))return result;
   if(!seen.has(t))seen.set(t,new Set());seen.get(t).add(key);
@@ -300,6 +305,8 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
     result.entries.push(entry);
   }
   for(const d of t.dependencies||[]) {
+    if(d.borrowType){for(const region of referencedRegions(d.borrowType,prune).values())effectView(effects([{name:'borrowMut',args:[region]}]),excluded,seen,result);continue;}
+    if(d.safetyOnly){const safety=effectView(d.row,[],new Map(seen));for(const owner of safety.accesses||[])result.accesses.add(owner);effectView(effects(safety.entries.filter(e=>e.name==='borrowMut'||e.loans?.length||e.suspendedLoans?.length)),excluded,seen,result);continue;}
     // Keep conversion effects dependent on the literal type until specialization.
     if(d.literalType){const type=prune(d.literalType);if(!(type.tag==='atom'&&['int','float','byte'].includes(type.name))&&!(type.tag==='var'&&!type.polymorphicNumber)){effectView(effects([{name:'exn',args:[]}]),excluded,seen,result);}continue;}
     const h=d.handlers?prune(d.handlers):null,fields=h?.tag==='record'?new Map([...flattenRecord(h.row).fields].map(([name,q])=>[handlerOperation(h,name),q])):null;
@@ -307,6 +314,9 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
       if(fields)for(const [name,q] of fields){
         const handler=prune(q);if(!handler.effects)continue;
         const used=d.body?effectView(d.body):{entries:[],tails:new Set()},calls=used.entries.filter(e=>((e.operation||e.name)===name || !e.operation&&activeEffects.get(name)?.group===e.name) && (e.target?e.target===d.label:!e.skip));
+        const handlerView=effectView(handler.effects,[],new Map(seen)),accesses=handlerView.accesses||new Set();
+        if(calls.some(call=>(call.suspendedLoans||[]).some(region=>handlerView.entries.some(e=>e.name==='borrowMut'&&prune(e.args[0])===region))))throw new StaticTypeError('Effect handler accesses a parent reference during reborrow',calls.find(call=>call.suspendedLoans?.length)?.token);
+        if(calls.some(call=>(call.loans||[]).some(owner=>accesses.has(owner))))throw new StaticTypeError('Effect handler accesses a variable while it is exclusively borrowed',calls.find(call=>call.loans?.length)?.token);
         if(!handler.handledArgs?.length || !calls.length || used.tails.size)effectView(handler.effects,excluded,seen,result);
         else for(const call of calls){if(activeEffects.get(name)?.grouped)handler.handledArgs.forEach((t,i)=>unify(t,call.args[i]));const replacements=new Map(handler.handledArgs.map((t,i)=>[prune(t),call.args[i]]));effectView(clone(handler.effects,replacements),excluded,seen,result);}
       }
@@ -318,6 +328,11 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
       const inner=effectView(d.row,[],new Map(seen));
       const entries=inner.entries.map(e=>{if(e.target!==d.blockLabel)return e;const {target,...plain}=e;return plain;});
       effectView(effects(entries),excluded,seen,result);for(const tail of inner.tails)result.tails.add(tail);
+    } else if(d.excludeLoan){
+      const inner=effectView(d.row,[],new Map(seen));
+      if(d.loanOwner&&inner.accesses?.has(d.loanOwner))throw new StaticTypeError('A callback accesses an exclusively borrowed variable',d.token);
+      for(const owner of inner.accesses||[])if(!d.loanOwner||owner!==d.loanOwner)result.accesses.add(owner);
+      effectView(effects(inner.entries.filter(e=>!(e.name==='borrowMut'&&prune(e.args[0])===d.excludeLoan)).map(e=>({...e,...(d.loanOwner?{loans:[...e.loans||[],d.loanOwner]}:{}),...(d.suspendedLoan?{suspendedLoans:[...e.suspendedLoans||[],d.suspendedLoan]}:{}),token:d.token}))),excluded,seen,result);for(const tail of inner.tails)result.tails.add(tail);
     } else if(d.mask){
       const inner=effectView(d.row,[],new Map(seen));
       const entries=inner.entries.map(e=>{const matches=(e.operation||e.name)===d.mask || !e.operation&&activeEffects.get(d.mask)?.group===e.name;return matches&&!e.target?{...e,...(d.target?{target:d.target}:{skip:(e.skip||0)+1})}:e;});
@@ -331,19 +346,36 @@ function mentionsLabel(type,label,seen=new Set()) {
   if(type.effects && effectView(type.effects).entries.some(e=>e.target===label))return true;
   return children(type).some(t=>mentionsLabel(t,label,seen));
 }
+function mentionsAccess(t,owner,seen=new Set()){
+ t=prune(t);if(seen.has(t))return false;seen.add(t);
+ if(t.effects&&effectView(t.effects).accesses?.has(owner))return true;
+ return [...children(t),...t.captures||[]].some(t=>mentionsAccess(t,owner,seen));
+}
 function mergeEffects(a,b,token) {
   a=prune(a);b=prune(b);if(a===b)return;
   if(a.tag==='var'){a.link=b;return;}
   if(b.tag==='var'){b.link=a;return;}
   const av=effectView(a),bv=effectView(b);
+  const rigidA=[...av.tails].filter(t=>t.tag==='rigid'),rigidB=[...bv.tails].filter(t=>t.tag==='rigid');
+  if(rigidA.length||rigidB.length){
+    const key=e=>e.name+'@'+(e.target||'')+'^'+(e.skip||0)+(e.operation||'');
+    const onlyA=av.entries.filter(e=>!bv.entries.some(f=>key(e)===key(f))),onlyB=bv.entries.filter(e=>!av.entries.some(f=>key(e)===key(f)));
+    const missingA=rigidA.filter(t=>!bv.tails.has(t)),missingB=rigidB.filter(t=>!av.tails.has(t));
+    const flexA=[...av.tails].filter(t=>t.tag==='var'&&!bv.tails.has(t)),flexB=[...bv.tails].filter(t=>t.tag==='var'&&!av.tails.has(t));
+    if((onlyA.length||missingA.length)&&!flexB.length||(onlyB.length||missingB.length)&&!flexA.length)
+      throw new StaticTypeError('Universally quantified effect row cannot be specialized to a concrete or different effect row',token);
+    for(const e of av.entries)for(const f of bv.entries)if(key(e)===key(f))e.args.forEach((t,i)=>unify(t,f.args[i],token));
+    if(flexA.length&&(onlyB.length||missingB.length))flexA[0].link=effects(onlyB,missingB.map(row=>({row})));
+    if(flexB.length&&(onlyA.length||missingA.length))flexB[0].link=effects(onlyA,missingA.map(row=>({row})));
+    return;
+  }
   if(!av.tails.size)for(const tail of bv.tails)if(tail.tag==='var')tail.link=effects([...av.entries]);
   if(!bv.tails.size)for(const tail of av.tails)if(tail.tag==='var')tail.link=effects([...bv.entries]);
-  // Union rather than equality: branches may perform different operations.
   const combined=effects([], [{row:{...a}},{row:{...b}}]);if(a.weak||b.weak)combined.weak=true;
   Object.assign(a,combined);Object.assign(b,combined);
 }
 function effectChildren(t,skipLiteral=false) {
-  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(d.breakOutput?[d.breakOutput]:[]),...(!skipLiteral&&d.literalType?[d.literalType]:[])])] : [];
+  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(d.breakOutput?[d.breakOutput]:[]),...(d.borrowType?[d.borrowType]:[]),...(!skipLiteral&&d.literalType?[d.literalType]:[])])] : [];
 }
 function checkEffectPromises(actual,expected,token,seen=new Set()) {
   actual=prune(actual);expected=prune(expected);
@@ -351,10 +383,11 @@ function checkEffectPromises(actual,expected,token,seen=new Set()) {
   if(actual.tag==='quote' && expected.tag==='quote'){unify(actual.input,expected.input,token);if(!isBottom(actual.output)&&!isBottom(expected.output))unify(actual.output,expected.output,token);}
   if(expected.effectBound && actual.effects) {
     const allowed=effectView(expected.effectBound),used=effectView(actual.effects);
+    if([...used.tails].some(t=>t.tag==='rigid'&&!allowed.tails.has(t))&&![...allowed.tails].some(t=>t.tag==='var'))throw new StaticTypeError('Universally quantified effect row is not allowed by annotation',token);
     if(used.tails.size && !allowed.tails.size)throw new StaticTypeError('Open effect row cannot satisfy a closed effect annotation',token);
     for(const e of used.entries) {
       const candidates=allowed.entries.filter(x=>x.name===e.name && x.target===e.target && (x.skip||0)===(e.skip||0));
-      if(!candidates.length && allowed.tails.size)continue;
+      if(!candidates.length && [...allowed.tails].some(t=>t.tag==='var'))continue;
       if(!candidates.length)throw new StaticTypeError(`Effect ${e.name} is not allowed by annotation`,token);
       const candidate=candidates.length===1?candidates[0]:candidates.find(c=>{
         const vars=new Set([...e.args,...c.args].flatMap(t=>[...free(t)])),replacements=new Map([...vars].map(v=>[v,variable(v.sort)]));
@@ -371,7 +404,7 @@ function checkEffectPromises(actual,expected,token,seen=new Set()) {
 function free(t, found = new Set(), seen=new Set(),skipLiteral=false) {
   t = prune(t);if(seen.has(t))return found;seen.add(t);
   if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.relations)for(const r of t.relations)for(const x of r.args)free(x,found,seen,skipLiteral);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen,skipLiteral);if(t.eachItem)free(t.eachItem,found,seen,skipLiteral);if(t.eachEffects)free(t.eachEffects,found,seen,skipLiteral);if(t.handlerAnswer)free(t.handlerAnswer,found,seen,skipLiteral);if(t.handlerResidual)free(t.handlerResidual,found,seen,skipLiteral);}}
-  else for (const child of [...children(t),...effectChildren(t,skipLiteral),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen,skipLiteral);
+  else for (const child of [...children(t),...t.borrowCaptures||[],...[...t.borrowFields?.values()||[]].flat(),...effectChildren(t,skipLiteral),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen,skipLiteral);
   return found;
 }
 function keepNativePrefix(t) {t=prune(t);if(t.tag==='var'||t.tag==='push'){t.keepNativePrefix=true;if(t.tag==='push')keepNativePrefix(t.rest);}}
@@ -393,8 +426,11 @@ function weakEffects(t,seen=new Set()) {
 function occurs(v,t,seen=new Set()){t=prune(t);if(v===t)return true;if(seen.has(t))return false;seen.add(t);return children(t).some(x=>occurs(v,x,seen));}
 function unify(a, b, token) {
   a = prune(a); b = prune(b);
-  if(!(a.tag==='adt'&&b.tag==='adt'&&a.name===b.name)){a=visibleAlias(a,token);b=visibleAlias(b,token);}
+  if(!(a.tag==='adt'&&b.tag==='adt'&&a.name===b.name)){
+    for(const [alias,other] of [[a,b],[b,a]])if(alias.tag==='adt'&&activeDataTypes.get(alias.name)?.aliasSyntax&&['quote','record','tuple','list','stream','adt'].includes(other.tag))alias.borrowCaptures=[...new Set([...alias.borrowCaptures||[],other])];
+    a=visibleAlias(a,token);b=visibleAlias(b,token);}
   if (a === b) return;
+  if((a.tag==='region'||b.tag==='region')&&a.tag!=='var'&&b.tag!=='var'){if(a.tag===b.tag&&a.id===b.id)return;throw new StaticTypeError('Borrow region cannot be specialized or escape its scope',token);}
   if(a.tag==='concat-row' && prune(a.base)===b)return unify(a.suffix,EMPTY,token);
   if(b.tag==='concat-row' && prune(b.base)===a)return unify(b.suffix,EMPTY,token);
   if(a.tag==='concat-row' && b.tag==='push') {
@@ -425,6 +461,7 @@ function unify(a, b, token) {
     for(const r of a.relations||[])requireConstraint(r.name,r.args,token);return;
   }
   if (b.tag === 'var') return unify(b,a,token);
+  mergeBorrowMetadata(a,b,token);
   if(a.tag==='bottom'||b.tag==='bottom') {
     if(sortOf(a)!=='row'||sortOf(b)!=='row')throw new StaticTypeError('Bottom is a return stack type',token);
     if(a.tag==='bottom' && a.flexible && b.tag!=='bottom')a.link=b;
@@ -445,6 +482,15 @@ function unify(a, b, token) {
   const aa=children(a), bb=children(b);
   aa.forEach((child,i)=>unify(child,bb[i],token));
 }
+const mergingBorrow=new WeakMap();
+function mergeBorrowMetadata(a,b,token){
+ if(a.borrowCaptures||b.borrowCaptures){const captures=[...new Set([...a.borrowCaptures||[],...b.borrowCaptures||[]])];a.borrowCaptures=captures;b.borrowCaptures=captures;}
+ if(!a.borrowFields&&!b.borrowFields)return;
+ if(mergingBorrow.get(a)?.has(b))return;
+ if(!mergingBorrow.has(a))mergingBorrow.set(a,new Set());mergingBorrow.get(a).add(b);
+ try{const fields=new Map(a.borrowFields);for(const [name,values] of b.borrowFields||[]){if(fields.has(name))values.forEach((t,i)=>unify(t,fields.get(name)[i],token));else fields.set(name,values);}a.borrowFields=fields;b.borrowFields=fields;}finally{mergingBorrow.get(a).delete(b);}
+}
+function cloneBorrow(t,replacements){return {...(t.borrowCaptures?{borrowCaptures:t.borrowCaptures.map(v=>clone(v,replacements))}:{}),...(t.borrowFields?{borrowFields:new Map([...t.borrowFields].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]))}:{})};}
 function clone(t, replacements) {
   t=prune(t);
   if (replacements.has(t)) return replacements.get(t);
@@ -452,21 +498,22 @@ function clone(t, replacements) {
   if(t.tag==='bottom')return BOTTOM;
   if(t.tag==='effects') {
     if(t.weak && replacements.preserveWeak)return t;
-    const result=effects();if(t.weak)result.weak=true;replacements.set(t,result);
+    const result=effects();if(t.accesses)result.accesses=new Set(t.accesses);if(t.weak)result.weak=true;replacements.set(t,result);
     result.entries=t.entries.map(e=>({...e,args:e.args.map(x=>clone(x,replacements))}));
-    result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{}),...(d.literalType?{literalType:clone(d.literalType,replacements)}:{}),...(d.breakOutput?{breakOutput:clone(d.breakOutput,replacements)}:{})}));return result;
+    result.dependencies=t.dependencies.map(d=>({...d,...(d.row?{row:clone(d.row,replacements)}:{}),...(d.handlers?{handlers:clone(d.handlers,replacements)}:{}),...(d.body?{body:clone(d.body,replacements)}:{}),...(d.yieldItem?{yieldItem:clone(d.yieldItem,replacements)}:{}),...(d.literalType?{literalType:clone(d.literalType,replacements)}:{}),...(d.breakOutput?{breakOutput:clone(d.breakOutput,replacements)}:{}),...(d.borrowType?{borrowType:clone(d.borrowType,replacements)}:{})}));return result;
   }
   if(['tuple','tuple-tail'].includes(t.tag))return {...t,items:t.items.map(x=>clone(x,replacements)),tail:clone(t.tail,replacements)};
   if(t.tag==='record')return {...t,row:clone(t.row,replacements)};
   if(t.tag==='record-row')return recordRow([...t.fields].map(([k,v])=>[k,clone(v,replacements)]),clone(t.tail,replacements));
   if(t.tag==='stream')return {tag:'stream',item:clone(t.item,replacements),effects:clone(t.effects,replacements),...(t.effectBound?{effectBound:clone(t.effectBound,replacements)}:{})};
   if(t.tag==='list') return list(clone(t.item,replacements));
-  if(t.tag==='adt') return adt(t.name,t.args.map(a=>clone(a,replacements)));
+  if(t.tag==='adt'){const result=adt(t.name,[]);replacements.set(t,result);result.args=t.args.map(a=>clone(a,replacements));Object.assign(result,cloneBorrow(t,replacements));return result;}
   if(['quote','continuation'].includes(t.tag)) {
     const result={tag:t.tag};replacements.set(t,result);
     const input=clone(t.input,replacements),output=clone(t.output,replacements);Object.assign(result,quote(input,output),{tag:t.tag});
     result.effects=clone(t.effects||effects(),replacements);if(t.effectBound)result.effectBound=clone(t.effectBound,replacements);
     if(t.bottomBase){let source=prune(t.input),target=prune(input),base=prune(t.bottomBase);while(source!==base && source.tag==='push' && target.tag==='push'){source=prune(source.rest);target=prune(target.rest);}if(source===base)result.bottomBase=target;}
+    Object.assign(result,cloneBorrow(t,replacements));
     if(t.originalNever)result.originalNever=true;
     if(t.dispatchTypes)result.dispatchTypes=t.dispatchTypes.map(t=>clone(t,replacements));
     if(t.dispatchType)result.dispatchType=clone(t.dispatchType,replacements);
@@ -502,7 +549,7 @@ function generalizeNumbers(scheme,token){
 function instantiate(scheme, rigid = false, bindings = null, preserveWeak = true) {
   const top=prune(scheme.type),fixedRows=new Set(top.tag==='quote'?[stackTail(top.input),stackTail(top.output)]:[]);
   const vars=new Set([...scheme.vars].map(prune).filter(v=>v.tag==='var'));
-  const replacements=new Map([...vars].map(v=>[v, {...(rigid && v.sort!=='effect-row' && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.polymorphicNumber?{polymorphicNumber:true}:{}),...(v.numericPattern?{numericPattern:true}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
+  const replacements=new Map([...vars].map(v=>[v, {...(rigid && (v.sort!=='effect-row'||v.explicitEffect) && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.explicitEffect?{explicitEffect:true}:{}),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.polymorphicNumber?{polymorphicNumber:true}:{}),...(v.numericPattern?{numericPattern:true}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
   replacements.preserveWeak=preserveWeak;
   if(bindings)for(const [v,fresh] of replacements)bindings.set(v,fresh);
@@ -577,6 +624,7 @@ export function formatType(type,{names=null,variableNames=new Map(),showConstrai
     }
     if(t.tag==='concat-row')return `${renderStack(t.base)} ++ ${renderStack(t.suffix)}`;
     if(t.tag==='bottom')return '!';
+    if(t.tag==='region')return "'"+t.name;
     if(t.tag==='atom') return t.name;
     if(t.tag==='adt') return t.args.length ? `(${t.name} ${t.args.map(render).join(' ')})` : t.name;
     if(t.tag==='stream')return `(stream ${render(t.item)} { ->${renderEffects(t)} })`;
@@ -639,6 +687,7 @@ function builtinSchemes() {
       return quote(suffix.startsWith('push')?stack(s,c,a):push(s,c),suffix.startsWith('push')?push(s,c):suffix.startsWith('pop')?stack(s,c,adt('option',[a])):push(s,suffix.startsWith('peek')?adt('option',[a]):suffix==='length'?INT:BOOL));
     });
   }
+  for(const name of ['readRef','writeRef']){const s=row(),r=variable(),a=variable(),ref=adt('mutref',[r,a]);out.set(name,generalize(quote(name==='readRef'?push(s,ref):stack(s,ref,a),name==='readRef'?push(s,a):s,effects([{name:'borrowMut',args:[r]}]))));}
   add('vpush',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
   add('values',()=>{const s=row(),k=variable(),v=variable();return quote(push(s,adt('dict',[k,v])),push(s,{tag:'stream',item:v,effects:effects()}));});
   add('bytes',()=>{const s=row();return quote(push(s,STRING),push(s,list(BYTE)));});
@@ -740,7 +789,7 @@ export function missingOperands(nodes, found = []) {
 }
 
 class Inference {
-  constructor() { this.effectSink=effects();this.functions=builtinSchemes(); this.globals=new Map(); this.cells=new Map(); this.bindings=new Map(); this.replacements=new Map();this.localFunctions=new Map(); }
+  constructor() { this.effectSink=effects();this.functions=builtinSchemes(); this.globals=new Map(); this.cells=new Map(); this.bindings=new Map(); this.replacements=new Map();this.localFunctions=new Map();this.activeLoans=new Map();this.suspendedLoans=new Set(); }
   block(nodes,input,env,bound) {
     const parent=this.effectSink;this.effectSink=effects();
     try {const output=this.sequence(nodes,input,env,bound);return quote(input,output,this.effectSink);} finally {this.effectSink=parent;}
@@ -773,7 +822,7 @@ class Inference {
     for(const v of this.excluded || []) excluded.add(v);
     if(mutable)weakEffects(type);
     for(const v of free(type))if(v.numericLiterals||hasRelationEvidence(activeClasses.get('num'),[v]))excluded.add(v);
-    env.set(name,mutable ? {...mono(type),mutable:true} : generalize(type,excluded));
+    env.set(name,mutable ? {...mono(type),mutable:true,cellKey:ownerIdentity(node,name)} : generalize(type,excluded));
   }
   pop(current, token) {
     if(isBottom(current))return [BOTTOM,variable()];
@@ -801,6 +850,7 @@ class Inference {
       if(isBottom(current))break;
       activeProtected=envFree(env);
       const trace=this.trace ? {input:current,env:new Map(env)} : null;
+      if(node.kind==='word'&&node.value==='borrowMut')throw new StaticTypeError('borrowMut is a protected capability effect and cannot be performed directly',node);
       if(node.kind==='word' && node.target && (!this.effects.has(node.value)||env.has(node.value)))throw new StaticTypeError('Only effect operations can have a target label; shadowed operations cannot be targeted',node);
       if(node.kind==='capture') {
         if(node.slots.length) {
@@ -822,6 +872,7 @@ class Inference {
         parent.dependencies.push({row:local});if(trace)trace.labelEnv=scope;
       }
       else if(node.kind==='mask') {
+        if(node.operation==='borrowMut')throw new StaticTypeError('Borrow effects cannot be masked',node);
         if(!this.effects.has(node.operation))throw new StaticTypeError('Unknown effect operation: '+node.operation,node);
         const parent=this.effectSink,local=effects();this.effectSink=local;
         try {current=this.sequence(node.body,current,new Map(env),bound);}finally{this.effectSink=parent;}
@@ -866,7 +917,7 @@ class Inference {
       } else if(node.kind==='update') {
         const names=node.names||[node.name],bindings=names.map(name=>{
           if(!env.has(name))throw new StaticTypeError(`Unknown variable: ${name}`,node);
-          const binding=env.get(name);if(!binding.mutable)throw new StaticTypeError(`Cannot assign to immutable variable: ${name}`,node);return binding;
+          const binding=env.get(name);if(this.activeLoans.has(binding.cellKey))throw new StaticTypeError('Mutable variable is exclusively borrowed: '+name,node);if(binding.cellKey)(this.effectSink.accesses??=new Set()).add(binding.cellKey);if(!binding.mutable)throw new StaticTypeError(`Cannot assign to immutable variable: ${name}`,node);return binding;
         });
         const initial=[];if(node.fromStack)for(const name of names){let value;[current,value]=this.pop(current,node);initial.unshift(value);}
         const output=this.sequence(node.body,stack(EMPTY,...initial),new Map(env),bound);
@@ -876,6 +927,23 @@ class Inference {
           try{unify(output,stack(EMPTY,...values),node);}catch(error){throw new StaticTypeError(`Assignment operand must consume 0 and produce ${names.length} value(s). ${error.message}`,node);}
           values.forEach((value,i)=>{checkNeverPromises(value,bindings[i].type,node);checkEffectPromises(value,bindings[i].type,node);unify(bindings[i].type,value,node);});
         }
+      } else if(node.kind==='borrow') {
+        const binding=env.get(node.owner);if(!binding)throw new StaticTypeError('Unknown borrow target: '+node.owner,node);
+        const source=prune(binding.type),reborrow=!binding.mutable&&source.tag==='adt'&&source.name==='mutref';
+        if(!binding.mutable&&!reborrow)throw new StaticTypeError('borrow mut requires a mutable variable or mutable reference',node);
+        if(this.activeLoans.has(binding.cellKey)||reborrow&&this.suspendedLoans.has(prune(source.args[0])))throw new StaticTypeError('Borrow target is already exclusively borrowed: '+node.owner,node);
+        const region=loanRegion(),scope=new Map(env),parent=this.effectSink;scope.locals=new Set(env.locals);
+        scope.set(node.reference,mono(adt('mutref',[region,reborrow?source.args[1]:binding.type])));
+        const local=effects();this.effectSink=local;if(binding.cellKey)this.activeLoans.set(binding.cellKey,region);if(reborrow)this.suspendedLoans.add(prune(source.args[0]));
+        try {
+          current=this.sequence(node.body,current,scope,bound);
+          const escapes=t=>containsRegion(t,region,prune);
+          if(escapes(current)||[...env.values()].some(s=>escapes(s.type))||[...this.cells.values()].some(escapes))throw new StaticTypeError('Borrowed capability escapes its region',node);
+          const payload=effectView(local).entries.some(e=>e.name!=='borrowMut'&&e.args.some(t=>escapes(t)||binding.cellKey&&mentionsAccess(t,binding.cellKey)));
+          if(payload)throw new StaticTypeError('Borrowed capability escapes through an effect payload',node);
+          if(trace){trace.borrowRegion=region;trace.borrowOwner=binding.cellKey;trace.borrowEnv=scope;}
+        } finally {this.effectSink=parent;if(binding.cellKey)this.activeLoans.delete(binding.cellKey);if(reborrow)this.suspendedLoans.delete(prune(source.args[0]));}
+        parent.dependencies.push({row:local,excludeLoan:region,loanOwner:binding.cellKey,suspendedLoan:reborrow?prune(source.args[0]):null,token:node});
       } else if(node.kind==='scope') current=this.sequence(node.body,current,new Map(env),bound);
       else if(node.kind==='case') {
         const output=row();
@@ -998,6 +1066,9 @@ class Inference {
         current=push(current,type);
       } else if(env.has(node.value)) {
         const scheme=env.get(node.value),type=instantiate(scheme);
+        if(this.activeLoans.has(scheme.cellKey))throw new StaticTypeError('Mutable variable is exclusively borrowed: '+node.value,node);
+        if(scheme.cellKey)(this.effectSink.accesses??=new Set()).add(scheme.cellKey);
+        this.effectSink.dependencies.push({borrowType:type});
         if(scheme.callable){if(trace)trace.effect=type;current=this.apply(type,current,node);}
         else current=push(current,type);
         if(node.ephemeral){env.delete(node.value);env.locals?.delete(node.value);}
@@ -1056,6 +1127,9 @@ class Inference {
         }
       }
       else throw new StaticTypeError(`Unknown word: ${node.value}`,node);
+      const observed=effectView(this.effectSink);
+      if([...observed.accesses||[]].some(owner=>this.activeLoans.has(owner)))throw new StaticTypeError('A call accesses an exclusively borrowed variable',node);
+      if(observed.entries.some(e=>e.name==='borrowMut'&&this.suspendedLoans.has(prune(e.args[0]))))throw new StaticTypeError('Parent mutable reference is suspended during reborrow',node);
       if(trace) { trace.output=current;this.trace.set(node,trace); }
     }
     return current;
@@ -1098,6 +1172,7 @@ class Inference {
       if(mode==='flatten'){result=variable();requireIterable(item,result,token,nested);deps.push({row:nested});}
       return {tag:'stream',item:result,effects:effects([],[{row:effects([],deps),exclude:['cancel','break'],breakOutput:EMPTY,label:value.label?.key}])};
     }
+    if(value?.kind==='mutref')return adt('mutref',[value.region||loanRegion(),this.value(value.cell.value,token)]);
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
     if(['deque','heap'].includes(value?.kind)){const item=variable();for(const v of collectionItems(value))unify(item,this.value(v,token),token);return adt(value.kind,[item]);}
@@ -1150,12 +1225,12 @@ class Inference {
       const {fields,result}=constructorTypes(this.constructors.get(pattern.value));
       unify(type,result,pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,fields[i],env));
-    } else if(pattern.value!=='_'){if(pattern.mutable)weakEffects(type);env.set(pattern.value,{...mono(type),...(pattern.mutable?{mutable:true}:{})});}
+    } else if(pattern.value!=='_'){if(pattern.mutable)weakEffects(type);env.set(pattern.value,{...mono(type),...(pattern.mutable?{mutable:true,cellKey:ownerIdentity(pattern,pattern.value)}:{})});}
   }
   scheme(value,token) {
     const type=this.value(value,token),excluded=new Set();
     for(const t of this.cells.values()) for(const v of free(t)) excluded.add(v);
-    return value?.kind==='cell' ? {...mono(type),mutable:true} : {...generalize(type,excluded),...(value?.kind==='local-function'?{callable:true}:{})};
+    return value?.kind==='cell' ? {...mono(type),mutable:true,cellKey:value} : {...generalize(type,excluded),...(value?.kind==='local-function'?{callable:true}:{})};
   }
 }
 
@@ -1191,7 +1266,7 @@ function syntaxType(syntax,parameters) {
       const args=e.args.map(t=>syntaxType(t,parameters));args.forEach((t,i)=>{if(sortOf(prune(t))!==(op.rowParameters?.includes(op.parameters[i])?'row':'value'))throw new StaticTypeError(`Wrong kind of argument for effect ${e.name}`);});return {name:e.name,args};
     }));
     if(syntax.effectTail){
-      if(!parameters.has(syntax.effectTail))parameters.set(syntax.effectTail,variable('effect-row'));
+      if(!parameters.has(syntax.effectTail))parameters.set(syntax.effectTail,{...variable('effect-row'),explicitEffect:true});
       const tail=parameters.get(syntax.effectTail);if(sortOf(prune(tail))!=='effect-row')throw new StaticTypeError('Effect row parameter used as another kind of type');
       result.effects.dependencies.push({row:tail});
     }
@@ -1201,7 +1276,9 @@ function syntaxType(syntax,parameters) {
 }
 function constructorTypes(constructor) {
   const parameters=new Map(constructor.parameters.map(name=>[name,variable()]));
-  return {fields:constructor.fields.map(t=>syntaxValue(t,parameters)),result:adt(constructor.typeName,[...parameters.values()])};
+  const fields=constructor.fields.map(t=>syntaxValue(t,parameters)),result=adt(constructor.typeName,[...parameters.values()]);
+  const visible=new Set(result.args.flatMap(t=>[...free(t)]));if(fields.some(t=>[...free(t)].some(v=>!visible.has(v))))result.borrowFields=new Map([[constructor.name,fields]]);
+  return {fields,result};
 }
 
 // Declarations use : syntax. A single arrow separates input
@@ -1299,7 +1376,7 @@ function prepare(definitions,globalValues,initialized=false) {
   const inference=new Inference();
   inference.classes=activeClasses;
   inference.effects=ioEffects(definitions.effects);activeEffects=inference.effects;activeFamilies=effectFamilies(activeEffects);
-  for(const [name,op] of inference.effects){const params=new Map((op.rowParameters||[]).map(p=>[p,row()]));if(op.grouped)for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,params);const type=syntaxType(op.syntax,params);type.effects=effects([{name:op.group||name,...(op.grouped?{operation:name}:{}),args:(op.parameters||[]).map(n=>params.get(n))}]);inference.functions.set(name,generalize(type));}
+  for(const [name,op] of inference.effects){const params=new Map((op.rowParameters||[]).map(p=>[p,row()]));if(op.protected)for(const p of op.parameters||[])params.set(p,variable());if(op.grouped)for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,params);const type=syntaxType(op.syntax,params);type.effects=effects([{name:op.group||name,...(op.grouped?{operation:name}:{}),args:(op.parameters||[]).map(n=>params.get(n))}]);inference.functions.set(name,generalize(type));}
   for(const [name,m] of operators.methods) {
     if(m.specialEach){inference.functions.set(name,eachEffect());continue;}
     const associated=activeClasses.get(m.className).associated||[],scheme=annotation(`${m.className} ${[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)].join(' ')} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)]);
@@ -1385,7 +1462,13 @@ function prepare(definitions,globalValues,initialized=false) {
         checkNeverPromises(inferred.type,declared.type,clauses[0].token);
         if(isBottom(declared.type.output) && !isBottom(inferred.type.output))throw new StaticTypeError('Function annotated ! may return normally',clauses[0].token);
         const bindings=new Map(),checked=instantiate(declared,true,bindings);
-        const actual=instantiate(inferred);checkEffectPromises(actual,checked,clauses[0].token);unify(actual,checked,clauses[0].token);
+        const actual=instantiate(inferred);unify(actual.input,checked.input,clauses[0].token);unify(actual.output,checked.output,clauses[0].token);
+        if(!checked.effectBound)checked.effects=actual.effects;
+        checkEffectPromises(actual,checked,clauses[0].token);
+        if(checked.effects!==actual.effects){checked.effects.dependencies??=[];checked.effects.dependencies.push({row:actual.effects,safetyOnly:true});}
+        const skolems=new Set([...bindings.values()].filter(t=>t.tag==='rigid'));
+        const escaped=(t,seen=new Set())=>{t=prune(t);if(skolems.has(t))return true;if(seen.has(t))return false;seen.add(t);return [...children(t),...effectChildren(t),...t.borrowCaptures||[],...[...t.borrowFields?.values()||[]].flat(),...(t.effects?[t.effects]:[])].some(t=>escaped(t,seen));};
+        if([...inference.globals.values()].some(s=>escaped(s.type)))throw new StaticTypeError('Universally quantified parameter escapes into global state',clauses[0].token);
         const restore=new Map([...bindings].map(([v,fresh])=>[fresh,v]));
         published.set(name,{...declared,type:clone(checked,restore)});
       } else published.set(name,generalizeNumbers(inferred,clauses[0].token));

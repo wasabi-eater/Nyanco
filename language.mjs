@@ -267,6 +267,12 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(tokens[i]?.kind==='{'){const opener=tokens[i++];return [{...t,kind:'quote',labelName:t.value.slice(1),body:scope('}',opener,{parents:[context,...context.parents||[]]})}];}
         return [{...t,kind:'label',name:t.value.slice(1),body:expression()}];
       }
+      if(t.kind==='word' && t.value==='borrow') {
+        if(tokens[i++]?.value!=='mut')throw new LanguageError('Expected borrow mut variable as reference { body }',t);
+        const owner=tokens[i++],as=tokens[i++],reference=tokens[i++],opener=tokens[i++];
+        if(owner?.kind!=='word'||!identifier.test(owner.value)||as?.value!=='as'||reference?.kind!=='word'||!identifier.test(reference.value)||opener?.kind!=='{')throw new LanguageError('Expected borrow mut variable as reference { body }',t);
+        return [{...t,kind:'borrow',owner:owner.value,reference:reference.value,body:scope('}',opener,{parents:context.parents})}];
+      }
       if(t.kind==='word' && t.value==='mask') {
         const operation=tokens[i++];if(operation?.kind!=='word'||operation.value.startsWith('@'))throw new LanguageError('mask requires an effect operation',t);
         let targetLabel=null;if(tokens[i]?.value?.startsWith?.('@'))targetLabel=tokens[i++].value.slice(1);
@@ -584,7 +590,7 @@ function dataDeclarations(groups, definitions, globals) {
     const name=originalName && {...originalName,value:typeName(originalName.value)};
     if (!name || name.kind!=='word' || !/^[a-z][a-zA-Z0-9_']*$/.test(name.value) || ['data','mut'].includes(name.value) || eq<2)
       throw new LanguageError('Expected data Type parameters = Constructors',group[0]);
-    if (['num','float','byte','char','bool','string','int','range','stream','vector','deque','heap','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
+    if (['num','float','byte','char','bool','string','int','range','stream','vector','deque','heap','mutref','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
       throw new LanguageError(`Type already declared: ${name.value}`,name);
     const parameters=group.slice(postfix ? 1 : 2,postfix ? eq-1 : eq).map(t=>{
       if(t.kind!=='word' || !(postfix ? /^'[a-z][a-zA-Z0-9_']*$/ : /^'?[a-z][a-zA-Z0-9_']*$/).test(t.value) || ['mut','data'].includes(t.value))
@@ -882,6 +888,7 @@ const displayConstructor=name=>name.replace(/^NyancoModule[0-9a-f]+_/,'');
 export function format(value) {
   if(value?.kind==='scalar')return value.type==='char'?charText(value.value):String(value.value);
   if(value?.kind==='continuation')return '<continuation>';
+  if(value?.kind==='mutref')return '<mutref>';
   if(value?.kind==='stream')return '<stream>';
   if(value?.kind==='range')return `(${value.start} ${value.inclusive?'..=':'..'} ${value.end})`;
   if(value?.kind==='tuple')return `#(${value.items.map(format).join(' ')})`;
@@ -1313,6 +1320,13 @@ export class VM {
           }
           stack.push(result);
         }
+        else if(t.kind==='borrow'){
+          const owner=env.get(t.owner),parent=owner?.kind==='mutref'?owner:null,cell=parent?parent.cell:owner;
+          if(cell?.kind!=='cell'||parent&&!parent.live)throw new LanguageError('borrow mut requires a live mutable variable or reference',t);
+          const ref={kind:'mutref',cell,live:true,region:info?.borrowRegion},local=new Map(env);local.set(t.reference,ref);
+          if(parent)parent.live=false;
+          try{yield* this.run(t.body,stack,local,missing);}finally{ref.live=false;if(parent)parent.live=true;}
+        }
         else if(t.kind==='record') {
           const holes=missingOperands([t]).filter(h=>!missing.has(h));
           this.need(stack,holes.length,t);
@@ -1633,6 +1647,8 @@ for(const [name,count] of Object.entries(collectionOperations))define(name,count
  s.push({kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[item]:[]});
 });
 
+define('readRef',1,(vm,s,t)=>{const ref=s.pop();if(ref?.kind!=='mutref'||!ref.live)throw new LanguageError('Borrowed reference is outside its lifetime',t);s.push(ref.cell.value);});
+define('writeRef',2,(vm,s,t)=>{const value=s.pop(),ref=s.pop();if(ref?.kind!=='mutref'||!ref.live)throw new LanguageError('Borrowed reference is outside its lifetime',t);if(!vm.journal.has(ref.cell))vm.journal.set(ref.cell,ref.cell.value);ref.cell.value=value;});
 export const builtinNames = () => [...BUILTINS.keys()].sort();
 import { checkDefinitions, checkExpression, inferExpression, missingOperands, typeIR } from './types.mjs';
 export { StaticTypeError } from './types.mjs';

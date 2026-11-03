@@ -20,7 +20,7 @@ function sourceID(file){
 }
 const sameSource=(a,b)=>!!a&&!!b&&(a===b||sourceID(a)===sourceID(b));
 
-const keywords=['import','as','pub','open','type','case','otherwise','data','deriving','class','instance','where','effect','mut','with','handle','mask'];
+const keywords=['import','as','pub','open','type','case','otherwise','data','deriving','class','instance','where','effect','mut','borrow','with','handle','mask'];
 const position=(line=1,col=1)=>({line:Math.max(0,line-1),character:Math.max(0,col-1)});
 const range=t=>({start:position(t.line,t.col),end:position(t.endLine??t.line,t.endCol??((t.col||1)+Math.max(1,String(t.value??'').length)))});
 const offset=(text,p)=>{
@@ -82,6 +82,7 @@ export class LanguageService {
       if(n.patterns)patternNames(n.patterns).forEach(x=>names.add(x));
       if(n.kind==='bind')for(const name of n.names||[])names.add(name);
       if(n.kind==='local-function')names.add(n.name);
+      if(n.kind==='borrow')names.add(n.reference);
       for(const v of Object.values(n))if(Array.isArray(v))v.forEach(visit);
     };
     for(const c of doc.program.definitions.get(symbol.name)||[])visit(c);
@@ -144,7 +145,7 @@ export function startServer(input=process.stdin,output=process.stdout,{exit=code
   function dispatch(message){
     const {id,method,params={}}=message,request=id!==undefined;
     if(method==='exit'){exit(shutdown?0:1);return;}
-    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.82.0'}});return;}
+    if(method==='initialize'&&!initialized){initialized=true;reply(id,{capabilities:{positionEncoding:'utf-16',textDocumentSync:{openClose:true,change:2},hoverProvider:true,completionProvider:{},definitionProvider:true,documentSymbolProvider:true},serverInfo:{name:'Nyanco Language Server',version:'0.83.0'}});return;}
     if(!initialized){if(request)fail(id,-32002,'Server not initialized');return;}
     if(shutdown){if(request)fail(id,-32600,'Server has shut down');return;}
     if(method==='shutdown'){shutdown=true;reply(id,null);return;}

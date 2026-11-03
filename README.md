@@ -1,4 +1,4 @@
-# Nyanco 0.82 — 型付きIRと所有権解析
+# Nyanco 0.83 — effect全称量化とスコープ付き可変借用
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1754,3 +1754,49 @@ node cli.mjs examples/collections --emit-ir collections.ir.json
 Go生成はこのIRの型情報・所有権判定を利用し、heapの`hpush`／`hpop`にも直接更新を適用します。所有権を証明できたheapでは配列全体のコピーがなくなり、追加は償却O(log n)、取り出しはO(log n)です。APIの`transpileGo(program, {optimizeVectors:false})`で従来のvector最適化と今回の所有権最適化を両方無効化して比較できます。
 
 関数の入力、mutableな変数、捕捉した値、制御やeffectの境界は保守的に扱います。関数間の所有権移譲やループの借用解析までは行っていないため、すべての更新が直接更新になるわけではありません。現行Go出力の`any`表現は維持しており、C++コード生成・型ごとの保存形式・release専用の最適化パイプラインは今後このIRを使って実装できます。
+
+## effectの全称量化と可変借用（0.83）
+
+明示したeffect変数は、定義の型検査では任意のrowとして扱います。次の`f`を定義するときに`'e`を`io`や別のrowへ固定することはできません。呼び出しごとに`'e`を具体化することは引き続き可能です。`/ {'e}`は`/ {| 'e}`の略記です。effect注釈そのものを省略した部分は、従来どおり推論します。
+
+```nyanco
+f : {-> / {'e}} -> / {'e}
+f q = call q
+
+-- エラー：任意の'eに対応できない
+-- f q = call q; print "io"
+```
+
+可変変数の借用は`borrow mut x as r { ... }`と書きます。スコープ内では元の`x`にアクセスできず、参照capability `r`を通して読み書きします。
+
+```nyanco
+pub bump : mutref 'r int -> / {borrowMut 'r}
+bump r = writeRef r (readRef r + 1)
+
+main =
+    mut x <- 10
+    borrow mut x as r {
+        when True {bump r}
+        borrow mut r as inner {bump inner}
+    }
+    print x -- 12
+```
+
+`readRef`は値のsnapshotを返し、`writeRef`は参照・新しい値を消費して書き込みます。値の型は変えられません。`mutref 'r 'a`と保護されたeffect `borrowMut 'r`が借用の識別子を共有し、effect多相な関数にも伝播します。`mutref`・`readRef`・`writeRef`は`std.borrow`に属し、preludeからも使えます。
+
+借用は波括弧の終わりまで有効です。終了後も参照できるquotation・stream・record・vector・ADTなどを返したり、外のmutable変数へ格納したりすると型エラーになります。ADTやaliasに包んでもcapture情報を保持します。既存のquotationや関数を通じた元変数へのアクセス、借用中に外側のhandlerが元変数を触る場合も拒否します。
+
+```nyanco
+-- エラー：元の変数へアクセス
+-- borrow mut x as r {x}
+
+-- エラー：借用を保持する遅延streamが外へ出る
+-- borrow mut x as r {map [1, 2] {drop; readRef r}}
+
+-- OK：借用中に評価し終え、独立した値だけを返す
+-- borrow mut x as r {toVector (map [1, 2] {drop; readRef r})}
+```
+
+`borrowMut`は通常のユーザーeffectではなく、`handle`・`mask`・直接のperformで制約を消すことはできません。再借用中は親の参照が使えません。同じcapabilityの別名は同じ借用を指し、独立した借用を重ねることはできません。現在はスコープ単位のcapability検査で、Rustの非字句的ライフタイムや参照のaffineな移動までは実装していません。
+
+VMとGoの両方で対応し、例外や`cancel`でスコープを抜けた場合も参照を失効させます。型付きIRにはregion IDと借用effectを記録します。借用は変数のセルに対するもので、共有されたvectorのbufferまで占有できると仮定する最適化は行いません。実行例は`node cli.mjs examples/borrow`です。

@@ -9,6 +9,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
     if(name==='continuation'){const block=type();if(block.tag!=='quote')fail('continuation requires a block type');return {...block,tag:'continuation'};}
     if(name==='num')fail('num is a class; use float or int as the value type');
     if(['deque','heap'].includes(name))return {tag:'adt',name,args:[type()]};
+    if(name==='mutref')return {tag:'adt',name,args:[type(),type()]};
     if(name==='dict')return {tag:'adt',name:'dict',args:[type(),type()]};
     if(name==='vector')return {tag:'list',item:type()};
     if(name==='stream'){const item=type(),block=type();if(block.tag!=='quote'||block.input.length||block.output.length||block.never)fail('stream requires item type and { -> / effects }');return {tag:'stream',item,block};}
@@ -75,6 +76,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
 
     if(tokens[i]==='/') {
       i++;expect('{');result.effects=[];
+      if(/^'[a-z][a-zA-Z0-9_']*$/.test(tokens[i]||'')&&tokens[i+1]==='}')result.effectTail=tokens[i++];
       while(tokens[i]!=='}' && tokens[i]!=='|') {
         let j=i,depth=0;
         while(j<tokens.length){const t=tokens[j];if(!depth && [',','}','|'].includes(t))break;if(['(','[','{'].includes(t))depth++;if([')',']','}'].includes(t))depth--;j++;}

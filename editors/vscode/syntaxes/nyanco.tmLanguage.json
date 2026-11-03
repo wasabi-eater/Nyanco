@@ -21,7 +21,7 @@
         },
         {
           "name": "keyword.control.nyanco",
-          "match": "\\b(?:case|otherwise|where|handle|mask|end)\\b(?!')"
+          "match": "\\b(?:case|otherwise|where|handle|borrow|mask|end)\\b(?!')"
         },
         {
           "name": "keyword.declaration.nyanco",
@@ -33,7 +33,7 @@
         },
         {
           "name": "storage.type.nyanco",
-          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict|deque|heap|continuation)\\b(?!')"
+          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict|deque|heap|mutref|continuation)\\b(?!')"
         },
         {
           "name": "entity.name.type.parameter.nyanco",

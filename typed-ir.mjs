@@ -17,6 +17,7 @@ export function createTypedIR(definitions,{ownership=true}={}){
   if(t.name)d.name=t.name;
   if(t.tag==='var'||t.tag==='rigid'){d.sort=t.sort;d.constraints=[...t.classes||[]];}
   if(t.item)d.item=type(t.item);if(t.rest)d.rest=type(t.rest);
+  if(t.borrowCaptures)d.borrowCaptures=t.borrowCaptures.map(type);if(t.borrowFields)d.borrowFields=[...t.borrowFields].map(([name,fields])=>({name,types:fields.map(type)}));
   if(t.args)d.arguments=t.args.map(type);if(t.items)d.items=t.items.map(type);
   if(t.tail)d.tail=type(t.tail);if(t.row)d.row=type(t.row);
   if(t.fields instanceof Map)d.fields=[...t.fields].map(([name,t])=>({name,type:type(t)}));
@@ -24,7 +25,7 @@ export function createTypedIR(definitions,{ownership=true}={}){
   else if(t.effects){d.effects=effects(t.effects);d.effectTails=effectTails(t.effects);}
   return id;
  }
- function effects(e){return e?T.effectSnapshot(e).entries.map(e=>({name:e.name,arguments:e.args.map(type),...(e.target?{target:e.target}:{}),...(e.skip?{skip:e.skip}:{})})):[];}
+ function effects(e){return e?T.effectSnapshot(e).entries.map(e=>({name:e.name,arguments:e.args.map(type),...(e.target?{target:e.target}:{}),...(e.skip?{skip:e.skip}:{}),...(e.loans?.length?{loans:e.loans.map(o=>({id:o.id,name:o.name}))}:{})})):[];}
  function effectTails(e){return e?T.effectDescription(e).tails.map(type):[];}
  function row(t){const values=[];t=T.prune(t);while(t.tag==='push'){values.unshift(t.item);t=T.prune(t.rest);}return {values,tail:t,never:T.isBottom(t)};}
  const value=t=>({id:nextValue++,type:type(t)});
@@ -69,6 +70,7 @@ export function createTypedIR(definitions,{ownership=true}={}){
     if(source.fields)data.fields=source.fields.map(({body,...f})=>f);
     if(source.branches)data.branches=source.branches.map(({body,guard,...b})=>b);
     const instruction={id:instructions.length,op,...(name!==undefined?{name}:{}),arguments:args.map(v=>v.id),results:out.map(v=>v.id),before:prior.map(v=>v.id),after:stack.map(v=>v.id),resultTypes:out.map(v=>v.type),effects:effects(info.effect?.effects),effectTails:effectTails(info.effect?.effects),callType:info.effect?type(info.effect):null,location:{file:source.file,line:source.line,col:source.col},data,regions:[],children:[],...(source.kind==='bind'?{local,mutable:source.mutable.some(Boolean)}:{})};
+    if(info.borrowRegion)instruction.loan={region:type(info.borrowRegion),owner:source.owner,reference:source.reference,mode:'mutable'};
     Object.defineProperties(instruction,{source:{value:source},typing:{value:info}});
     // Child control regions get independent unknown inputs. No ownership fact
     // crosses a branch, a closure or an effect boundary without a proof.
