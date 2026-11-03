@@ -8,7 +8,8 @@ const standard=new Map();
 const put=(module,name,internal=name,kind='function')=>{
   const exports=groups.get(module)||new Map();groups.set(module,exports);
   const access=new Map(kind==='effect'?[['type','pub'],['value','pub']]:[[['data','type','class'].includes(kind)?'type':'value','pub']]);
-  exports.set(name,{name,internal,kind,kinds:new Set([kind]),access,visibility:'pub',token:{file:`<std.${module}>`,line:1,col:1,value:name}});
+  const old=exports.get(name);
+  exports.set(name,{name,internal,kind,kinds:new Set([...(old?.kinds||[]),kind]),access:new Map([...old?.access||[],...access]),visibility:'pub',token:{file:`<std.${module}>`,line:1,col:1,value:name}});
 };
 const add=(module,names,kind='function')=>names.split(/\s+/).filter(Boolean).forEach(name=>put(module,name,name,kind));
 const aliases=(module,prefix,names)=>names.split(/\s+/).filter(Boolean).forEach(name=>{put(module,name,prefix+name);assigned.add(prefix+name);});
@@ -16,7 +17,11 @@ const aliases=(module,prefix,names)=>names.split(/\s+/).filter(Boolean).forEach(
 const definitions=compile('','<std-inventory>').definitions;
 const assigned=new Set();
 const assign=(module,names,kind='function')=>{add(module,names,kind);names.split(/\s+/).filter(Boolean).forEach(n=>assigned.add(n));};
-assign('vector','Push push cons head tail length reverse toVector');
+assign('vector','Push cons head tail length reverse toVector');
+put('vector','push','vpush');assigned.add('push');assigned.add('vpush');
+assign('deque','deque toDeque');
+assign('heap','heap toHeap');
+for(const [module,prefix,names] of [['deque','q','push pushFront pop popBack peek peekBack length isEmpty'],['heap','h','push pop peek length isEmpty']])aliases(module,prefix,names);
 aliases('vector','v','map filter flatMap flatten take takeWhile skip skipWhile zip');
 assign('stream','each map filter flatMap flatten fold zip take takeWhile skip skipWhile max maxi maxiBy min mini miniBy all any nth sort sortBy windows chunks chunkBy groupBy permutations combinations combinationsWithReplacement cartesianProduct powerset fromYield toVector');
 assign('dict','toDict counts values groupBy');
@@ -32,8 +37,8 @@ assign('control','if when while loop iterate handle resume call compose dip');
 assign('stack','nop dup drop swap over rot');
 for(const name of builtinNames())if(!assigned.has(name))put('core',name);
 for(const name of definitions.keys())if(!name.startsWith('__')&&!assigned.has(name))put('core',name);
-for(const name of ['vector','stream','dict','range','option','result','int','float','byte','char','bool','string'])
-  put(({vector:'vector',stream:'stream',dict:'dict',range:'numeric',option:'option',result:'result',string:'text'})[name]||'numeric',name,name,'data');
+for(const name of ['vector','deque','heap','stream','dict','range','option','result','int','float','byte','char','bool','string'])
+  put(({deque:'deque',heap:'heap',vector:'vector',stream:'stream',dict:'dict',range:'numeric',option:'option',result:'result',string:'text'})[name]||'numeric',name,name,'data');
 for(const name of definitions.classes.keys())put(({streem:'stream',indexGet:'vector',indexSet:'vector',bits:'bits',num:'numeric',into:'numeric'})[name]||'classes',name,name,'class');
 for(const name of definitions.effects.keys())put(['read','put'].includes(name)?'io':'effects',name,name,'effect');
 for(const name of definitions.constructors.keys())put(['None','Some'].includes(name)?'option':'result',name,name,'constructor');

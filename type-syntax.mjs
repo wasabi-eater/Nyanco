@@ -8,6 +8,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
     if(name==='..'){const rawParameter=tokens[i++];if(!/^'?[a-z][a-zA-Z0-9_']*$/.test(rawParameter||''))fail('Expected stack row parameter');const parameter=rawParameter.startsWith("'")?rawParameter:"'"+rawParameter;if(parameters&&!parameters.has(parameter))fail('Undeclared stack row parameter: '+rawParameter);return {tag:'stack-row',name:parameter};}
     if(name==='continuation'){const block=type();if(block.tag!=='quote')fail('continuation requires a block type');return {...block,tag:'continuation'};}
     if(name==='num')fail('num is a class; use float or int as the value type');
+    if(['deque','heap'].includes(name))return {tag:'adt',name,args:[type()]};
     if(name==='dict')return {tag:'adt',name:'dict',args:[type(),type()]};
     if(name==='vector')return {tag:'list',item:type()};
     if(name==='stream'){const item=type(),block=type();if(block.tag!=='quote'||block.input.length||block.output.length||block.never)fail('stream requires item type and { -> / effects }');return {tag:'stream',item,block};}

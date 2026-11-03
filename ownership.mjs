@@ -25,7 +25,7 @@ export function vectorOwnership(definitions,nodes,{local=false}={}) {
    if(n.kind==='word'){
     const name=n.value;
     if(env.has(name)){const v=env.get(name),left=(remaining.get(name)||1)-1;remaining.set(name,left);if(left)escape(v);else env.delete(name);stack.push(v);continue;}
-    if(['push','Push','::','concat','++'].includes(name)){
+    if(['vpush','push','Push','::','concat','++'].includes(name)){
      const b=pop(),a=pop();if(a?.unique&&a!==b)reusable.add(n);escape(b);stack.push(a?.unique?a:{unique:true});continue;
     }
     if(name==='dup'){const v=pop();escape(v);stack.push(v,v);continue;}

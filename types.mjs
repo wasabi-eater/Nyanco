@@ -1,3 +1,4 @@
+import {collectionItems} from './collections.mjs';
 import {dictEntries} from './hash-map.mjs';
 import {classParameters,instanceHeads,relationKey,superConstraints,lookupInstance,builtinConversion} from './class-relations.mjs';
 import {resolveInheritance} from './class-inheritance.mjs';
@@ -145,6 +146,7 @@ function requireIterable(container,item,token,latent=null) {
   if(container.tag==='var') {if(container.eachItem)unify(container.eachItem,item,token);else container.eachItem=item;return;}
   if(container.tag==='rigid') {if(!container.eachItem)throw new StaticTypeError('Missing streem constraint',token);unify(container.eachItem,item,token);return;}
   if(container.tag==='list'){unify(container.item,item,token);return;}
+  if(container.tag==='adt'&&['deque','heap'].includes(container.name)){unify(container.args[0],item,token);return;}
   if(container.tag==='adt'&&container.name==='dict'){unify(item,tuple(container.args),token);return;}
   if(container.tag==='atom' && container.name==='range'){unify(item,INT,token);return;}
   const instance=activeClasses.get('streem')?.instances.get(instanceKey(container));
@@ -629,6 +631,15 @@ function builtinSchemes() {
   {const s=row();out.set('toChar',generalize(quote(push(s,INT),push(s,CHAR),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),k=variable(),latent=variable('effect-row');requireIterable(c,k,null,latent);requireClass('hash',k);const output=push(s,adt('dict',[k,INT]));out.set('counts',generalize(quote(push(s,c),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
   {const s=row(),c=variable(),k=variable(),v=variable(),latent=variable('effect-row');requireIterable(c,tuple([k,v]),null,latent);requireClass('hash',k);const output=push(s,adt('dict',[k,v]));out.set('toDict',generalize(quote(push(s,c),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
+  for(const kind of ['deque','heap']){
+    const prefix=kind==='deque'?'q':'h';
+    add(kind,()=>{const s=row(),a=variable();return quote(s,push(s,adt(kind,[a])));});
+    for(const suffix of (kind==='deque'?['push','pushFront','pop','popBack','peek','peekBack','length','isEmpty']:['push','pop','peek','length','isEmpty']))add(prefix+suffix,()=>{
+      const s=row(),a=variable(),c=adt(kind,[a]);if(kind==='heap'&&['push','pop'].includes(suffix))requireClass('ord',a);
+      return quote(suffix.startsWith('push')?stack(s,c,a):push(s,c),suffix.startsWith('push')?push(s,c):suffix.startsWith('pop')?stack(s,c,adt('option',[a])):push(s,suffix.startsWith('peek')?adt('option',[a]):suffix==='length'?INT:BOOL));
+    });
+  }
+  add('vpush',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
   add('values',()=>{const s=row(),k=variable(),v=variable();return quote(push(s,adt('dict',[k,v])),push(s,{tag:'stream',item:v,effects:effects()}));});
   add('bytes',()=>{const s=row();return quote(push(s,STRING),push(s,list(BYTE)));});
   add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
@@ -1032,11 +1043,11 @@ class Inference {
         if(trace)trace.effect=effect;
         current=this.apply(effect,current,node);
         if(this.effects.has(node.value)&&!this.effects.get(node.value).rowParameters?.length)for(const v of free(effect.input))if(v.numericLiterals)unify(v,INT,node);
-        if(['sort','sortBy','maxi','mini','maxiBy','miniBy','max','min'].includes(node.value)) {
-          const input=prune(before),key=['sortBy','maxiBy','miniBy'].includes(node.value)?prune(prune(input.item).output).item:node.value==='sort'?prune(prune(current).item).item:['max','min'].includes(node.value)?prune(current).item:prune(prune(current).item).args[0];
+        if(['sort','sortBy','maxi','mini','maxiBy','miniBy','max','min','hpush','hpop'].includes(node.value)) {
+          const input=prune(before),key=node.value==='hpush'?input.item:node.value==='hpop'?prune(input.item).args[0]:['sortBy','maxiBy','miniBy'].includes(node.value)?prune(prune(input.item).output).item:node.value==='sort'?prune(prune(current).item).item:['max','min'].includes(node.value)?prune(current).item:prune(prune(current).item).args[0];
           const comparison=instantiate(this.functions.get('<'));
           unify(comparison,quote(stack(EMPTY,key,key),stack(EMPTY,BOOL)),node);
-          this.effectSink.dependencies.push(['max','min'].includes(node.value)?{row:comparison.effects}:{row:comparison.effects,exclude:['cancel','break'],loop:true,breakOutput:effect.output,label:node.handlerLabel});
+          this.effectSink.dependencies.push(['max','min','hpush','hpop'].includes(node.value)?{row:comparison.effects}:{row:comparison.effects,exclude:['cancel','break'],loop:true,breakOutput:effect.output,label:node.handlerLabel});
           if(trace)trace.comparison=comparison;
         }
         if(node.value==='while') {
@@ -1089,6 +1100,7 @@ class Inference {
     }
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
+    if(['deque','heap'].includes(value?.kind)){const item=variable();for(const v of collectionItems(value))unify(item,this.value(v,token),token);return adt(value.kind,[item]);}
     if(value?.kind==='dict'){const key=variable(),item=variable();for(const [k,v] of dictEntries(value)){unify(key,this.value(k,token),token);unify(item,this.value(v,token),token);}return adt('dict',[key,item]);}
     if(value?.kind==='record')return {...record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)])),...(value.moduleID?{moduleID:value.moduleID}:{})};
     if(value?.kind==='scalar')return atom(value.type);
@@ -1230,6 +1242,7 @@ function dependencies(clauses,definitions,globals) {
     if(!value || typeof value!=='object' || seen.has(value))return;
     seen.add(value);
     if(Array.isArray(value))value.forEach(valueDependencies);
+    else if(['deque','heap'].includes(value.kind))collectionItems(value).forEach(valueDependencies);
     else if(value.kind==='tuple')value.items.forEach(valueDependencies);
     else if(value.kind==='adt')value.fields.forEach(valueDependencies);
     else if(value.kind==='cell')valueDependencies(value.value);

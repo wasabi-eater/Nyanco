@@ -1,6 +1,6 @@
 -- Implicitly imported by every Nyanco module.
 -- Native primitives live in std.* modules; these are their public reexports.
-pub import "std.vector" {Push, push, cons, head, tail, length, reverse, toVector, map as vmap, filter as vfilter, flatMap as vflatMap, flatten as vflatten, take as vtake, takeWhile as vtakeWhile, skip as vskip, skipWhile as vskipWhile, zip as vzip, vector, indexGet, indexSet}
+pub import "std.vector" {Push, push as vpush, cons, head, tail, length, reverse, toVector, map as vmap, filter as vfilter, flatMap as vflatMap, flatten as vflatten, take as vtake, takeWhile as vtakeWhile, skip as vskip, skipWhile as vskipWhile, zip as vzip, vector, indexGet, indexSet}
 pub import "std.stream" {each, map, filter, flatMap, flatten, fold, zip, take, takeWhile, skip, skipWhile, max, maxi, maxiBy, min, mini, miniBy, all, any, nth, sort, sortBy, windows, chunks, chunkBy, groupBy, permutations, combinations, combinationsWithReplacement, cartesianProduct, powerset, fromYield, stream, streem}
 pub import "std.dict" {toDict, counts, values, dict}
 pub import "std.option" {map as omap, filter as ofilter, flatMap as oflatMap, flatten as oflatten, zip as ozip, option, None, Some}
@@ -14,3 +14,5 @@ pub import "std.stack" {nop, dup, drop, swap, over, rot}
 pub import "std.core" {%, &&, *, +, ++, -, .&., .., ..=, .<<., .>>., .|., /, /=, ::, <, <=, ==, >, >=, ^, at, concat, exn, hash, not, setAt, show, ||, catch}
 pub import "std.classes" {unwrap, or, orElse, add, sub, mul, div, mod, pow, eq, ord, and, shl, shr, append, hash, show, unwrapOr, unwrapOrElse, hasValue}
 pub import "std.effects" {exn, yield, break, cancel}
+pub import "std.deque" {deque, toDeque, push as qpush, pushFront as qpushFront, pop as qpop, popBack as qpopBack, peek as qpeek, peekBack as qpeekBack, length as qlength, isEmpty as qisEmpty}
+pub import "std.heap" {heap, toHeap, push as hpush, pop as hpop, peek as hpeek, length as hlength, isEmpty as hisEmpty}

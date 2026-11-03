@@ -111,6 +111,7 @@ func(m *Machine) walkUnresolved(value any,visit func(any),loc string) {
  switch xs:=value.(type) {
  case []any: for _,item:=range xs{visit(item)}
  case *Range: for i:=0;i<xs.count();i++{m.tick(loc);visit(xs.start+int64(i)*xs.step())}
+ case *Collection:for _,item:=range xs.values(){visit(item)}
  case *Dict: xs.walk(func(k,v any){visit(&Tuple{[]any{k,v}})})
  case *Stream: xs.walk(m,visit)
  default: fail(loc,"Unresolved native streem container")

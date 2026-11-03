@@ -1,3 +1,4 @@
+import {collectionOperations} from './collections.mjs';
 import {lookupInstance} from './class-relations.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {combinationNames} from './combinatorics.mjs';
@@ -339,6 +340,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const name=`walk${next++}`;
     ctx.lines.push(`${name}:=func(m *Machine,visit func(any)){`);
     if(type.tag==='list')ctx.lines.push(`for _,x:=range list(${value},${at}){visit(x)}`);
+    else if(type.tag==='adt'&&['deque','heap'].includes(type.name))ctx.lines.push(`for _,item:=range ${value}.(*Collection).values(){visit(item)}`);
     else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`${value}.(*Dict).walk(func(k,v any){visit(&Tuple{[]any{k,v}})})`);
     else if(type.tag==='atom' && type.name==='range')ctx.lines.push(`r:=${value}.(*Range);for i:=0;i<r.count();i++{m.tick(${at});visit(r.start+int64(i)*r.step())}`);
     else {
@@ -440,6 +442,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const cases=[...fields].map(([k,v])=>`case ${str(k)}:shown=${showFunction(v)}(m,r.fields[k])`).join(';');
       ctx.lines.push(`r:=value.(*Record);if len(r.fields)==0{return "{:}"};parts,keys:=[]string{},[]string{};for k:=range r.fields{keys=append(keys,k)};sort.Strings(keys);for _,k:=range keys{shown:="";switch k{${cases?cases+';':''}default:shown=text(r.fields[k])};parts=append(parts,k+": "+shown)};return "{"+strings.Join(parts,", ")+"}"`);
     }else if(type.tag==='adt'&&type.name==='dict')ctx.lines.push(`d:=value.(*Dict);if d.size==0{return "[:]"};parts:=[]string{};for _,p:=range d.entries(){parts=append(parts,${showFunction(type.args[0])}(m,p[0])+": "+${showFunction(type.args[1])}(m,p[1]))};return "["+strings.Join(parts,", ")+"]"`);
+    else if(type.tag==='adt'&&['deque','heap'].includes(type.name))ctx.lines.push(`c:=value.(*Collection);parts:=[]string{};for _,item:=range c.values(){parts=append(parts,${showFunction(type.args[0])}(m,item))};return c.kind+" ["+strings.Join(parts,", ")+"]"`);
     else if(type.tag==='adt'){
       const constructors=[...definitions.constructors.values()].filter(c=>c.typeName===type.name);
       const cases=constructors.map(c=>{const display=c.token.sourceName||c.name,bindings=new Map(c.parameters.map((p,i)=>[p,type.args[i]]));return `case ${str(c.name)}:return ${c.fields.length?str('('+display+' ')+'+strings.Join([]string{'+c.fields.map((t,i)=>`${showFunction(T.syntaxType(t,bindings))}(m,a.fields[${i}])`).join(',')+'}," ")+")"':str(display)}`;});
@@ -493,6 +496,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${rows}:=[]any{};m.loop(func(m *Machine){${walk}(m,func(v any){${rows}=append(${rows},v)})},${at},nil);${extra}m.combinations(${rows},${other},${count},${str(name)},visit,${at})}}`));return;
     }
     if(name==='hash'){const value=pop(),type=T.prune(topTypes.at(-1)),target=definitions.classes.get('hash')?.instances.get(instanceKey(type))?.implementations.get('hash');if(target){const effect=T.instantiate(types.functions.get(target));T.unify(effect.input,T.stack(T.EMPTY,type));const spec=named(target,effect);v.push(ctx.call(`m.${spec.fn}`,[value],1)[0]);}else v.push(ctx.value(`int64(${hashFunction(type)}(m,${value}))`));return;}
+    if(Object.hasOwn(collectionOperations,name)){
+      if(name==='deque'||name==='heap'){v.push(ctx.value(`&Collection{kind:${str(name)}}`));return;}
+      const pushing=['qpush','qpushFront','hpush'].includes(name),value=pushing?pop():'nil',source=pop();
+      let less='nil';if(name==='hpush'||name==='hpop'){const item=pushing?topTypes.at(-1):T.prune(topTypes.at(-1)).args[0],cmp=comparisonFunction(item,true);less=`func(a,b any)bool{return ${cmp}(m,a,b)<0}`;}
+      const outputs=ctx.call('m.collectionOp',[str(name),source,value,less],2);v.push(outputs[0]);if(['qpop','qpopBack','hpop'].includes(name))v.push(outputs[1]);return;
+    }
     if(name==='values'){const source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${source}.(*Dict).walk(func(_ any,value any){visit(value)})}}`));return;}
     if(name==='split') {
       const separator=pop(),source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){m.walkSplit(${source},${separator},visit,${at})}}`));return;
@@ -563,8 +572,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`,br=`breakResult${next++}`;
       ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);return;
     }
-    if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','&&','||','.&.','.|.','.<<.','.>>.','cons','push','Push','::','concat','++','range','..','..='].includes(name)) {
-      const b=pop(),a=pop();if(['==','/=','<','<=','>','>='].includes(name)){v.push(binaryCall(n,a,b,info.effect,ctx));return;}v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name)},${a},${b},${at})`));
+    if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','&&','||','.&.','.|.','.<<.','.>>.','cons','vpush','push','Push','::','concat','++','range','..','..='].includes(name)) {
+      const b=pop(),a=pop();if(['==','/=','<','<=','>','>='].includes(name)){v.push(binaryCall(n,a,b,info.effect,ctx));return;}v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['vpush','push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name==='vpush'?'push':name)},${a},${b},${at})`));
     } else if(['not','head','tail','length'].includes(name))v.push(ctx.value(`unary(${str(name)},${pop()},${at})`));
     else if(name==='nop'){}
     else if(name==='dup')v.push(v.at(-1));

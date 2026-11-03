@@ -1,3 +1,4 @@
+import {emptyDeque,queuePush,queuePop,collectionItems,heapPush,heapPop,collectionOperations} from './collections.mjs';
 import {derivingSources} from './deriving.mjs';
 import {emptyDict,dictGet,dictSet,dictEntries,dictHashedEntries,hashMix,hashText,scalarHash} from './hash-map.mjs';
 import {bitOperation,bitOperators,bitFunctions} from './bit-values.mjs';
@@ -583,7 +584,7 @@ function dataDeclarations(groups, definitions, globals) {
     const name=originalName && {...originalName,value:typeName(originalName.value)};
     if (!name || name.kind!=='word' || !/^[a-z][a-zA-Z0-9_']*$/.test(name.value) || ['data','mut'].includes(name.value) || eq<2)
       throw new LanguageError('Expected data Type parameters = Constructors',group[0]);
-    if (['num','float','byte','char','bool','string','int','range','stream','vector','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
+    if (['num','float','byte','char','bool','string','int','range','stream','vector','deque','heap','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
       throw new LanguageError(`Type already declared: ${name.value}`,name);
     const parameters=group.slice(postfix ? 1 : 2,postfix ? eq-1 : eq).map(t=>{
       if(t.kind!=='word' || !(postfix ? /^'[a-z][a-zA-Z0-9_']*$/ : /^'?[a-z][a-zA-Z0-9_']*$/).test(t.value) || ['mut','data'].includes(t.value))
@@ -884,6 +885,7 @@ export function format(value) {
   if(value?.kind==='stream')return '<stream>';
   if(value?.kind==='range')return `(${value.start} ${value.inclusive?'..=':'..'} ${value.end})`;
   if(value?.kind==='tuple')return `#(${value.items.map(format).join(' ')})`;
+  if(['deque','heap'].includes(value?.kind))return value.kind+' '+format(collectionItems(value));
   if(value?.kind==='dict')return value.entries.length?'['+value.entries.map(([k,v])=>format(k)+': '+format(v)).join(', ')+']':'[:]';
   if(value?.kind==='record')return Object.keys(value.fields).length ? `{${Object.keys(value.fields).sort().map(k=>`${k}: ${format(value.fields[k])}`).join(', ')}}` : '{:}';
   if (Array.isArray(value)) return `[${value.map(format).join(', ')}]`;
@@ -1123,6 +1125,7 @@ export class VM {
       }
       return;
     }
+    if(['deque','heap'].includes(xs?.kind)){for(const item of collectionItems(xs))yield* consume(item);return;}
     if(xs?.kind==='dict'){for(const [key,value] of dictEntries(xs))yield* consume({kind:'tuple',items:[key,value]});return;}
     const target=this.definitions.classes?.get('streem')?.instances.get(runtimeTypeKey(xs))?.implementations.get('each');
     if(target){const visitor={kind:'closure',native:function*(local){const iterator=consume(local.pop());try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&t.loopTarget)request.bypassUntil=t.loopTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}}};yield* this.run([{...t,kind:'word',value:target}],[xs,visitor],new Map(this.globals));return;}
@@ -1135,6 +1138,7 @@ export class VM {
     const items=Array.isArray(value)?value:value?.kind==='tuple'?value.items:null;
     if(items){const parts=[];for(const v of items)parts.push(yield* this.showValue(v,t));return Array.isArray(value)?'['+parts.join(', ')+']':'#('+parts.join(' ')+')';}
     if(value?.kind==='record'){const parts=[];for(const k of Object.keys(value.fields).sort())parts.push(k+': '+(yield* this.showValue(value.fields[k],t)));return parts.length?'{'+parts.join(', ')+'}':'{:}';}
+    if(['deque','heap'].includes(value?.kind)){const parts=[];for(const item of collectionItems(value))parts.push(yield* this.showValue(item,t));return value.kind+' ['+parts.join(', ')+']';}
     if(value?.kind==='dict'){const parts=[];for(const [k,v] of value.entries)parts.push((yield* this.showValue(k,t))+': '+(yield* this.showValue(v,t)));return parts.length?'['+parts.join(', ')+']':'[:]';}
     if(value?.kind==='adt'){const parts=[];for(const v of value.fields)parts.push(yield* this.showValue(v,t));return parts.length?'('+displayConstructor(value.constructor)+' '+parts.join(' ')+')':displayConstructor(value.constructor);}
     return format(value);
@@ -1570,6 +1574,7 @@ for(const name of ['maxi','mini','maxiBy','miniBy','all','any'])define(name,['ma
 define('cons',2,(vm,s,t)=>{ const list=vm.expect(s.pop(),'list',t),x=s.pop(); s.push([x,...list]); });
 define('Push',2,(vm,s,t)=>{const x=s.pop(),xs=vm.expect(s.pop(),'list',t);if(t.reuseVector){vm.vectorUpdates.inPlace++;xs.push(x);s.push(xs);}else{vm.vectorUpdates.copied++;s.push([...xs,x]);}});
 BUILTINS.set('push', BUILTINS.get('Push'));
+BUILTINS.set('vpush', BUILTINS.get('Push'));
 BUILTINS.set('::', BUILTINS.get('Push'));
 define('concat',2,(vm,s,t)=>{ const b=vm.expect(s.pop(),'list',t),a=vm.expect(s.pop(),'list',t); if(t.reuseVector){vm.vectorUpdates.inPlace++;for(const x of b)a.push(x);s.push(a);}else{vm.vectorUpdates.copied++;s.push([...a,...b]);} });
 define('++',2,(vm,s,t)=>{
@@ -1613,6 +1618,21 @@ define('parseInt',1,function*(vm,s,t){
   }
   yield {operation:ioEffects().get('exn'),args:['Invalid integer: '+format(source)],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);
 });
+for(const [name,count] of Object.entries(collectionOperations))define(name,count,function*(vm,s,t){
+ if(name==='deque'){s.push(emptyDeque());return;}
+ if(name==='heap'){s.push({kind:'heap',items:[]});return;}
+ const push=name==='qpush'||name==='qpushFront'||name==='hpush',value=push?s.pop():null,c=s.pop(),kind=name[0]==='q'?'deque':'heap';
+ if(c?.kind!==kind)throw new LanguageError(name+' requires '+kind,t);
+ const less=function*(a,b){const pair=[a,b];yield* vm.binary('<',pair,t);return pair[0];};
+ if(push){s.push(kind==='deque'?queuePush(c,value,name==='qpushFront'):yield* heapPush(c,value,less));return;}
+ const size=kind==='deque'?c.size:c.items.length;
+ if(name.endsWith('length')){s.push(size);return;}
+ if(name.endsWith('isEmpty')){s.push(size===0);return;}
+ const [next,item,found]=kind==='deque'?queuePop(c,name==='qpopBack'||name==='qpeekBack'):name==='hpop'?yield* heapPop(c,less):[c,c.items[0],size>0];
+ if(name==='qpop'||name==='qpopBack'||name==='hpop')s.push(next);
+ s.push({kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[item]:[]});
+});
+
 export const builtinNames = () => [...BUILTINS.keys()].sort();
 import { checkDefinitions, checkExpression, inferExpression, missingOperands, typeIR } from './types.mjs';
 export { StaticTypeError } from './types.mjs';

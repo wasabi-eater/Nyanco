@@ -16,10 +16,12 @@ function fixture(files,fn){const dir=mkdtempSync(join(tmpdir(),'nyanco-stdlib-')
 test('std.prelude publicly reexports every existing standard word, class, type and effect',()=>{
  const definitions=compile('').definitions,prelude=standardModule('std.prelude');
  for(const names of [builtinNames(),[...definitions.keys()].filter(n=>!n.startsWith('__')),[...definitions.classes.keys()],[...definitions.methods.keys()],[...definitions.effects.keys()],[...definitions.constructors.keys()]])
-  for(const name of names)assert.ok(prelude.exports.has(name),name);
+  for(const name of names)assert.ok(prelude.exports.has(name==='push'?'vpush':name),name);
  assert.equal(standardModule('std.vector').exports.get('map').internal,'vmap');
  assert.equal(standardModule('std.stream').exports.get('map').internal,'map');
  assert.equal(prelude.exports.get('vmap').internal,'vmap');
+ assert.equal(standardModule('std.vector').exports.get('push').internal,'vpush');
+ assert.ok(prelude.exports.has('vpush'));assert.ok(!prelude.exports.has('push'));
  assert.equal(prelude.exports.get('map').internal,'map');
  assert.doesNotThrow(()=>compileModule(fileURLToPath(new URL('../std/prelude.nyan',import.meta.url))));
 });

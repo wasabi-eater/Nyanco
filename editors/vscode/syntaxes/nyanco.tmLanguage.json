@@ -33,7 +33,7 @@
         },
         {
           "name": "storage.type.nyanco",
-          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict|continuation)\\b(?!')"
+          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict|deque|heap|continuation)\\b(?!')"
         },
         {
           "name": "entity.name.type.parameter.nyanco",

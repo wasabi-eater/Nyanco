@@ -52,7 +52,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     for(const part of associatedParts){
       const label=part[1]?.value;
       if(part.length!==2 || !/^[a-z][A-Za-z0-9_]*$/.test(label||''))fail('Associated type declaration requires type name',part[0]);
-      if(c.associated.some(a=>a.name===label) || definitions.dataTypes.has(label) || ['int','float','byte','char','bool','string','range','stream','continuation'].includes(label))fail('Duplicate or reserved associated type: '+label,part[0]);
+      if(c.associated.some(a=>a.name===label) || definitions.dataTypes.has(label) || ['int','float','byte','char','bool','string','range','stream','deque','heap','continuation'].includes(label))fail('Duplicate or reserved associated type: '+label,part[0]);
       let param="'associated_"+label;while(used.has(param))param+='_';used.add(param);c.associated.push({name:label,param,owner:name});
     }
     for(const part of classMembers.filter(p=>p[0]?.value!=='type')) {
@@ -116,7 +116,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     if((c.castClass||c.numClass)&&head.tag==='atom'&&(['int','float','byte'].includes(head.name)||c.castClass&&head.name==='char'))fail('Built-in numeric instance already exists',token);
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);
     if(c.indexClass&&(head.tag==='adt'&&head.name==='dict'||head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
-    if(name==='streem' && ['vector','range','dict'].includes(target))fail('Built-in streem instance already exists',token);
+    if(name==='streem' && ['vector','range','dict','deque','heap'].includes(target))fail('Built-in streem instance already exists',token);
     if([...c.instances.values()].some(i=>instanceHeads(i).every((t,n)=>t.tag==='param'||heads[n].tag==='param'||instanceKey(t)===instanceKey(heads[n]))))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
     const instance={target,head,heads,context,implementations:new Map(),token};c.instances.set(target,instance);
     const parts=members(body);instance.associated=new Map();instance.associatedSources=new Map();

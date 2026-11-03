@@ -10,6 +10,8 @@ export function withStandardFunctions(definitions){
  installUnwrap(result,add);
  if(!result.classes.has('or')){const classes=new Map(result.classes),methods=new Map(result.methods);installOperatorClasses(classes,methods);result.classes.set('or',classes.get('or'));result.methods.set('.|.',methods.get('.|.'));}
  installOrElse(result,add);installContainerFunctions(result,add);
+ add('toDeque',['xs'],'fold xs deque {qpush}');
+ add('toHeap',['xs'],'fold xs heap {hpush}');
  add('loop',[],'while {True} _');
  // The outer loop also catches break during initialization. The inner loop
  // ends on break/cancel in cont; the final cancel prevents initialization restarting.

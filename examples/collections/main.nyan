@@ -1,0 +1,8 @@
+main =
+    print (vpush [1, 2] 3)
+    toDeque [1, 2]; qpushFront 0; qpush 3
+    qpop; print; print
+    toHeap [3, 1, 4, 2]
+    hpop; print
+    hpop; print
+    print

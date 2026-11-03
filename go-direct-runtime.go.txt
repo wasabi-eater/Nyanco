@@ -91,6 +91,7 @@ func text(v any) string {
   s:=strconv.FormatFloat(x,'e',-1,64); s=strings.ReplaceAll(s,"e-0","e-"); return strings.ReplaceAll(s,"e+0","e+")
  case bool: if x { return "True" }; return "False"
  case string: var b bytes.Buffer; enc:=json.NewEncoder(&b); enc.SetEscapeHTML(false); _=enc.Encode(x); return strings.TrimSuffix(b.String(),"\n")
+ case *Collection:return x.kind+" "+text(x.values())
  case *Dict: if x.size==0{return "[:]"};parts:=[]string{};for _,p:=range x.entries(){parts=append(parts,text(p[0])+": "+text(p[1]))};return "["+strings.Join(parts,", ")+"]"
  case *Stream: return "<stream>"
  case *Range: op:="..";if x.inclusive{op="..="};return "("+text(x.start)+" "+op+" "+text(x.end)+")"
@@ -264,3 +265,24 @@ func compareScalar(a,b any)int{
 
 var moduleConstructorPrefix=regexp.MustCompile(`^NyancoModule[0-9a-f]+_`)
 func displayConstructor(name string)string{return moduleConstructorPrefix.ReplaceAllString(name,"")}
+
+// Persistent deque nodes are shared; heap arrays are copied before updates.
+type dequeNode struct{value any;next *dequeNode}
+type Collection struct{kind string;front,back *dequeNode;items []any;size int}
+func reverseDeque(n *dequeNode)*dequeNode{var out *dequeNode;for ;n!=nil;n=n.next{out=&dequeNode{n.value,out}};return out}
+func(c *Collection) values()[]any{if c.kind=="heap"{return c.items};out,back:=[]any{},[]any{};for n:=c.front;n!=nil;n=n.next{out=append(out,n.value)};for n:=c.back;n!=nil;n=n.next{back=append(back,n.value)};for i:=len(back)-1;i>=0;i--{out=append(out,back[i])};return out}
+func(m *Machine) collectionOp(name string,source,value any,less func(any,any)bool)(any,any){
+ old:=source.(*Collection);c:=*old
+ if strings.HasSuffix(name,"length"){return int64(c.size),nil};if strings.HasSuffix(name,"isEmpty"){return c.size==0,nil}
+ if c.kind=="deque"{
+  back:=name=="qpopBack"||name=="qpeekBack"
+  if name=="qpush"{c.back=&dequeNode{value,c.back};c.size++;return &c,nil};if name=="qpushFront"{c.front=&dequeNode{value,c.front};c.size++;return &c,nil}
+  found:=c.size>0;var item any
+  if found{if back{if c.back==nil{c.back=reverseDeque(c.front);c.front=nil};item=c.back.value;c.back=c.back.next}else{if c.front==nil{c.front=reverseDeque(c.back);c.back=nil};item=c.front.value;c.front=c.front.next};c.size--}
+  result:=optionValue(item,found);if name=="qpop"||name=="qpopBack"{return &c,result};return result,nil
+ }
+ if name=="hpeek"{if c.size==0{return optionValue(nil,false),nil};return optionValue(c.items[0],true),nil}
+ c.items=append([]any{},c.items...)
+ if name=="hpush"{c.items=append(c.items,value);c.size++;for i:=c.size-1;i>0;{p:=(i-1)/2;if !less(c.items[p],c.items[i]){break};c.items[p],c.items[i]=c.items[i],c.items[p];i=p};return &c,nil}
+ if c.size==0{return &c,optionValue(nil,false)};item:=c.items[0];c.size--;last:=c.items[c.size];c.items=c.items[:c.size];if c.size>0{c.items[0]=last};for i:=0;2*i+1<c.size;{child:=2*i+1;if child+1<c.size&&less(c.items[child],c.items[child+1]){child++};if !less(c.items[i],c.items[child]){break};c.items[i],c.items[child]=c.items[child],c.items[i];i=child};return &c,optionValue(item,true)
+}

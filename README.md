@@ -1,4 +1,4 @@
-# Nyanco 0.80 — 標準ライブラリのmodule化
+# Nyanco 0.81 — dequeとBinaryHeap
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1712,3 +1712,29 @@ main = vec.map [1, 2] {+ 1}
 ```
 
 `pub import`は別moduleの公開名を再公開します。`{map as vmap, vector}`のように公開する名前を選んで改名でき、名前の選択を省くと公開名をすべて再公開します。`import "std.vector" {map as transform}`と`pub`を省略した場合、選んだ名前はそのmodule内部だけで使えます。
+
+## dequeとBinaryHeap（0.81）
+
+`std.vector.push`のprelude名は`vpush`です。`std.deque`と`std.heap`に、それぞれ両端キュー`deque 'a`と最大値を先に取り出すBinaryHeap `heap 'a`を追加しました。
+
+```nyanco
+[]; vpush 1; vpush 2           -- [1, 2]
+deque; qpush 1; qpushFront 0   -- deque [0, 1]
+toDeque [1, 2]; qpop          -- deque [2], Some 1
+toHeap [3, 1, 4]; hpop        -- heap [3, 1], Some 4
+```
+
+| module内の名前 | prelude名 | 動作 |
+|---|---|---|
+| std.deque.push / pushFront | qpush / qpushFront | 後端／前端に追加 |
+| std.deque.pop / popBack | qpop / qpopBack | 前端／後端から取り出す |
+| std.deque.peek / peekBack | qpeek / qpeekBack | 前端／後端を読む |
+| std.deque.length / isEmpty | qlength / qisEmpty | 要素数／空判定 |
+| std.heap.push / pop / peek | hpush / hpop / hpeek | 追加／最大値の取り出し／最大値を読む |
+| std.heap.length / isEmpty | hlength / hisEmpty | 要素数／空判定 |
+
+`deque`／`heap`は空のコンテナを作り、`toDeque`／`toHeap`はstreamなどから変換します。`pop`は更新後のコンテナと`option 'a`を返し、空の場合は`None`です。`peek`はコンテナを消費して`option 'a`だけを返すため、元も必要なら`dup`してください。heapの追加・取り出しには`ord 'a`が必要で、独自instanceにも従います。
+
+どちらも見かけ上immutableで、更新前の値を保持できます。dequeは共有可能な前後の連結スタック、heapは配列上の二分ヒープです。現在のheap更新は配列をコピーするためO(n)のコピーを伴い、比較回数はO(log n)です。dequeの片側が空になると反対側のノードを反転します。
+
+両方とも`streem`に対応し、`each`・`fold`・`map`・`toVector`などが使えます。dequeは前から後の順、heapの走査順は未規定です。走査中の`break`／`cancel`も既存のstreamと同じです。
