@@ -1,3 +1,4 @@
+import {createTypedIR} from './typed-ir.mjs';
 import {collectionOperations} from './collections.mjs';
 import {lookupInstance} from './class-relations.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
@@ -9,7 +10,7 @@ import {ioEffects} from './builtin-effects.mjs';
 import {instanceKey} from './type-names.mjs';
 import {readFileSync} from 'node:fs';
 import {parseExpression} from './language.mjs';
-import {checkExpression,loweringTypes,typeIR,formatType,missingOperands,StaticTypeError} from './types.mjs';
+import {checkExpression,typeIR,formatType,missingOperands,StaticTypeError} from './types.mjs';
 
 const T={...typeIR,prune:t=>{let next=typeIR.prune(t);while(true){const rep=typeIR.aliasRepresentation(next);if(rep===next)return next;next=typeIR.prune(rep);}}};
 T.numericName=t=>typeIR.numericName(T.prune(t));
@@ -71,11 +72,11 @@ function freshTypes(input,output,latent) {
   return T.instantiate(T.generalize(effect));
 }
 
-export function transpileDirect(program,{expression='main',showStack=false,entryNodes=null,optimizeVectors=true}={}) {
+export function transpileDirect(program,{expression='main',showStack=false,entryNodes=null,optimizeVectors=true,onIR=null}={}) {
   const definitions=withStandardFunctions(withOption(Object.assign(new Map(program.definitions),{...program.definitions,effects:ioEffects(program.definitions.effects)}))),entry=entryNodes||parseExpression(definitions.moduleTokens?.(expression,'<entry>')||expression,'<entry>',program.definitions.constructors);
   checkExpression(entry,definitions);
   const vectorReuse=optimizeVectors?vectorOwnership(definitions,entry):new WeakSet();
-  const types=loweringTypes(definitions),hashFunctions=[],hashNames=new Map(),comparisonNames=new Map(),showNames=new Map(),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
+  const types=createTypedIR(definitions,{ownership:optimizeVectors}),hashFunctions=[],hashNames=new Map(),comparisonNames=new Map(),showNames=new Map(),functions=[],specializations=new Map(),sites=[],siteKeys=new Map(),invocations=[],invKeys=new Map();
   const nodeIds=new Map();let next=0;
   const nodeID=n=>{if(!nodeIds.has(n))nodeIds.set(n,nodeIds.size);return nodeIds.get(n);};
   const returns=n=>n?`(${Array(n).fill('any').join(',')})`:'';
@@ -149,6 +150,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         ctx.lines.push(`if boolean(${bodyValues.pop()},${location(clause.token)}) {`);
       }
       const values=emit(clause.body,bodyValues,'e',new Map(),analysis.trace,ctx);
+      types.describe(analysis.trace,{kind:'function',name,signature:key,patterns:clause.patterns},ins,outs);
+      if(guard)types.describe(guard.trace,{kind:'guard',name,signature:key});
       finish(ctx,values);if(guard)ctx.lines.push('}');lines.push(...ctx.lines,'} }');
     }
     lines.push(`fail(${location(definitions.get(name)[0].token)},${str('No matching pattern for '+name)});${failReturn(output.length)}`,'}');
@@ -170,7 +173,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   function emit(nodes,values,env,holes,trace,ctx) {
     holes.references ??= new Map();
     ctx.lines.push(`m.enter(${location(nodes[0])})`);
-    for(const n of nodes) {
+    for(const instruction of types.instructions(nodes,trace,{local:env!=='m.globals'})) {
+      const n=instruction.source;
       if(n.kind==='capture') {
         const snapshot=[...values];
         for(const s of n.slots){const value=snapshot[snapshot.length-1-s.index];holes.references.set(s,value);if(s.capturedName)ctx.lines.push(`${env}.declare(${str(s.capturedName)},${value},false,${location(s)})`);}
@@ -178,7 +182,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         for(const index of removed)values.splice(snapshot.length-1-index,1);
         continue;
       }
-      const at=location(n),info=trace.get(n);if(!info)break;ctx.lines.push(`m.tick(${at})`);
+      const at=location(n),info=instruction.typing&&{...instruction.typing,ownership:instruction.ownership};if(!info)break;ctx.lines.push(`m.tick(${at})`);
       const child=(body,initial=[],bound=holes)=>{
         const e=`e${next++}`;ctx.lines.push(`${e}:=${env}.clone();_=${e}`);
         const result=emit(body,initial,e,bound,trace,ctx);if(result.never)throw new StoppedEmission();return result;
@@ -218,7 +222,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else if(n.kind==='tuple')values.push(ctx.value(`&Tuple{[]any{${child(n.body,[],holes).join(',')}}}`));
       else if(n.kind==='path-update') {
         const original=values.pop(),args=n.fields.slice(0,-1).map(f=>child(f.body,[],holes)[0]);
-        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:(()=>{const methods=info.indexPaths[n.path.indexOf(p)],g=context(),set=context(),read=indexCall('at',['v','i'],methods.get,g,at),write=indexCall('setAt',['v','i','x'],methods.set,set,at,n.path.indexOf(p)===0&&vectorReuse.has(n));return `UpdatePart{kind:"list",optional:${!!p.optional},index:${args[p.argument]},get:func(m *Machine,v,i any) any{${g.lines.join(';')};return ${read}},set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}}`;})());
+        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:(()=>{const methods=info.indexPaths[n.path.indexOf(p)],g=context(),set=context(),read=indexCall('at',['v','i'],methods.get,g,at),write=indexCall('setAt',['v','i','x'],methods.set,set,at,n.path.indexOf(p)===0&&(optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n))));return `UpdatePart{kind:"list",optional:${!!p.optional},index:${args[p.argument]},get:func(m *Machine,v,i any) any{${g.lines.join(';')};return ${read}},set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}}`;})());
         const pathValue=`path${next++}`;ctx.lines.push(`${pathValue}:=[]UpdatePart{${path}}`);
         if(n.defaulting||n.path.some(p=>p.optional)){
           const inner=context(),e=`e${next++}`;inner.lines.push(`${e}:=${env}.clone();_=${e}`);
@@ -229,7 +233,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         }
         const old=n.updating?ctx.value(`m.readUpdatePath(${original},${pathValue},${at})`):null;
         const replacement=child(n.fields.at(-1).body,n.updating?[old]:[],n.updating?new Map():holes)[0];
-        values.push(ctx.value(`m.copyUpdate(${original},${pathValue},${replacement},${at},${vectorReuse.has(n)})`));
+        values.push(ctx.value(`m.copyUpdate(${original},${pathValue},${replacement},${at},${(optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n)))})`));
       }
       else if(n.kind==='list-index'){
         const xs=values.pop(),index=child(n.body,[],holes)[0];
@@ -500,7 +504,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       if(name==='deque'||name==='heap'){v.push(ctx.value(`&Collection{kind:${str(name)}}`));return;}
       const pushing=['qpush','qpushFront','hpush'].includes(name),value=pushing?pop():'nil',source=pop();
       let less='nil';if(name==='hpush'||name==='hpop'){const item=pushing?topTypes.at(-1):T.prune(topTypes.at(-1)).args[0],cmp=comparisonFunction(item,true);less=`func(a,b any)bool{return ${cmp}(m,a,b)<0}`;}
-      const outputs=ctx.call('m.collectionOp',[str(name),source,value,less],2);v.push(outputs[0]);if(['qpop','qpopBack','hpop'].includes(name))v.push(outputs[1]);return;
+      const outputs=ctx.call('m.collectionOp',[str(name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);v.push(outputs[0]);if(['qpop','qpopBack','hpop'].includes(name))v.push(outputs[1]);return;
     }
     if(name==='values'){const source=pop();v.push(ctx.value(`&Stream{func(m *Machine,visit func(any)){${source}.(*Dict).walk(func(_ any,value any){visit(value)})}}`));return;}
     if(name==='split') {
@@ -573,7 +577,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);return;
     }
     if(['+','-','*','/','%','^','<','>','<=','>=','==','/=','&&','||','.&.','.|.','.<<.','.>>.','cons','vpush','push','Push','::','concat','++','range','..','..='].includes(name)) {
-      const b=pop(),a=pop();if(['==','/=','<','<=','>','>='].includes(name)){v.push(binaryCall(n,a,b,info.effect,ctx));return;}v.push(ctx.value(vectorReuse.has(n)&&T.prune(topTypes.at(-2)).tag==='list'&&['vpush','push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name==='vpush'?'push':name)},${a},${b},${at})`));
+      const b=pop(),a=pop();if(['==','/=','<','<=','>','>='].includes(name)){v.push(binaryCall(n,a,b,info.effect,ctx));return;}v.push(ctx.value((optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n)))&&T.prune(topTypes.at(-2)).tag==='list'&&['vpush','push','Push','::','concat','++'].includes(name)?`vectorAppend(${a},${b},${['concat','++'].includes(name)},${at})`:`binary(${str(name==='vpush'?'push':name)},${a},${b},${at})`));
     } else if(['not','head','tail','length'].includes(name))v.push(ctx.value(`unary(${str(name)},${pop()},${at})`));
     else if(name==='nop'){}
     else if(name==='dup')v.push(v.at(-1));
@@ -656,8 +660,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
   const init=definitions.initializers||[],initialEnv=new Map();initialEnv.locals=new Set();
   const initial=types.analyze(init,T.EMPTY,initialEnv),initialCtx=context();
   emit(init,[],'m.globals',new Map(),initial.trace,initialCtx);
+  types.describe(initial.trace,{kind:'initialization'});
   const entryEnv=new Map(types.globals),analysis=types.analyze(entry,T.EMPTY,entryEnv),mainCtx=context();
   const results=emit(entry,[],'m.globals',new Map(),analysis.trace,mainCtx);
+  types.describe(analysis.trace,{kind:'entry',expression});
   // Discover only reachable quotation arities, then compile compatible bodies.
   let changed=true;
   while(changed) {
@@ -670,6 +676,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       try {typed=types.analyze(site.body,signature.input,env,site.node.blockLabel);if(T.isBottom(signature.output)&&!T.isBottom(typed.output))continue;T.checkNeverPromises(typed.output,signature.output,site.node);T.unify(typed.output,signature.output,site.node);if(typedDispatch){T.specializeEffects(typed.effects,signature.effects,site.node);types.validate(site.body,typed.trace);}}
       catch(error){if(error instanceof StaticTypeError)continue;throw error;}
       const ctx=context(),vs=emit(site.body,args(inv.input.length),'e',new Map(),typed.trace,ctx);
+      types.describe(typed.trace,{kind:'quotation',site:site.id,signature:keyOf(inv.input,inv.output)},inv.input,inv.output);
       if(site.node.blockLabel) {
         const result=`labelResult${next++}`;
         inv.handlers.set(site.id,`${result}:=m.labelBlock(func(m *Machine,label *EffectLabel) []any {
@@ -696,5 +703,6 @@ ${initialCtx.lines.join('\n')}
 ${mainCtx.lines.join('\n')}
 ${showStack?`fmt.Println(text([]any{${results}}))`:''}
 }`;
+  if(onIR)onIR(types.serialize());
   return readFileSync(new URL('./go-direct-runtime.go.txt',import.meta.url),'utf8')+'\n'+readFileSync(new URL('./go-effects-runtime.go.txt',import.meta.url),'utf8')+'\n'+hashFunctions.join('\n\n')+'\n'+functions.join('\n\n')+'\n'+dispatch.join('\n\n')+'\n'+main+'\n';
 }

@@ -262,3 +262,5 @@ unwrapはassociated type itemを持つ標準クラスです。optionのSomeとre
 0.80: 標準名はstd-modules.mjsの型・値namespace付きsymbolとして公開し、std/prelude.nyanのpub importを解釈して全標準名を暗黙に導入します。標準関数の実装・型スキームは既存のintrinsic/標準定義を共有します。std.vector.mapなどの修飾名および通常moduleのpub import選択・改名は、module解決時に同じ内部symbolへ変換します。
 
 0.81: deque 'aとheap 'aを組み込みの単項型として扱い、streemの要素型を'aに統一します。heapのpush/popにはord制約と比較のeffectを伝播します。popはコンテナとoptionを生成し、peekはoptionだけを生成します。std.vector.pushのprelude名はvpushです。値と同名型を持つ標準symbolのnamespace情報を併合します。
+
+0.82: createTypedIRはloweringTypesの型推論計画から、型スナップショット・明示的な値ID・構造化regionを構築します。applicationは実行順に正規化し、可変の単一化グラフやバックエンドの変数名を保存しません。stack rowと開いたeffect rowも保持します。SSA形式の値の生存期間とallocation/escape解析によりvector/heapの更新にmove/copyと判定理由を付けます。引数・外部変数は共有扱い、bind/read/shuffleは値IDを転送、aggregate/quotation/未知の制御はescapeとして扱います。各特殊化のtraceごとに判定し、Go生成がこの計画を消費します。

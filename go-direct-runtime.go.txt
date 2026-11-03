@@ -271,7 +271,7 @@ type dequeNode struct{value any;next *dequeNode}
 type Collection struct{kind string;front,back *dequeNode;items []any;size int}
 func reverseDeque(n *dequeNode)*dequeNode{var out *dequeNode;for ;n!=nil;n=n.next{out=&dequeNode{n.value,out}};return out}
 func(c *Collection) values()[]any{if c.kind=="heap"{return c.items};out,back:=[]any{},[]any{};for n:=c.front;n!=nil;n=n.next{out=append(out,n.value)};for n:=c.back;n!=nil;n=n.next{back=append(back,n.value)};for i:=len(back)-1;i>=0;i--{out=append(out,back[i])};return out}
-func(m *Machine) collectionOp(name string,source,value any,less func(any,any)bool)(any,any){
+func(m *Machine) collectionOp(name string,source,value any,less func(any,any)bool,reuse bool)(any,any){
  old:=source.(*Collection);c:=*old
  if strings.HasSuffix(name,"length"){return int64(c.size),nil};if strings.HasSuffix(name,"isEmpty"){return c.size==0,nil}
  if c.kind=="deque"{
@@ -282,7 +282,7 @@ func(m *Machine) collectionOp(name string,source,value any,less func(any,any)boo
   result:=optionValue(item,found);if name=="qpop"||name=="qpopBack"{return &c,result};return result,nil
  }
  if name=="hpeek"{if c.size==0{return optionValue(nil,false),nil};return optionValue(c.items[0],true),nil}
- c.items=append([]any{},c.items...)
+ if !reuse{c.items=append([]any{},c.items...)}
  if name=="hpush"{c.items=append(c.items,value);c.size++;for i:=c.size-1;i>0;{p:=(i-1)/2;if !less(c.items[p],c.items[i]){break};c.items[p],c.items[i]=c.items[i],c.items[p];i=p};return &c,nil}
  if c.size==0{return &c,optionValue(nil,false)};item:=c.items[0];c.size--;last:=c.items[c.size];c.items=c.items[:c.size];if c.size>0{c.items[0]=last};for i:=0;2*i+1<c.size;{child:=2*i+1;if child+1<c.size&&less(c.items[child],c.items[child+1]){child++};if !less(c.items[i],c.items[child]){break};c.items[i],c.items[child]=c.items[child],c.items[i];i=child};return &c,optionValue(item,true)
 }

@@ -11,7 +11,7 @@ import { checkExpression } from './types.mjs';
 import {compileModule,standardTokens} from './modules.mjs';
 import {standardModule,standardModuleNames} from './std-modules.mjs';
 
-const help = `Nyanco 0.81.0 — statically typed stack language
+const help = `Nyanco 0.82.0 — statically typed stack language
 Usage:
   nyanco                       Interactive REPL
   nyanco program.nyan           Execute main (all .nyan files in its directory)
@@ -22,6 +22,7 @@ Usage:
   nyanco --check program.nyan   Check syntax and types (no execution)
   nyanco --types program.nyan   Show inferred function stack effects
   nyanco --type "dup"          Infer an expression without executing it
+  nyanco program.nyan --emit-ir ir.json   Write typed intermediate representation
   nyanco program.nyan --emit-go main.go   Transpile to standalone Go
   nyanco program.nyan --build program.exe Build a native executable
   nyanco --lsp                 Start Language Server (stdio)
@@ -52,7 +53,7 @@ async function repl() {
     vm.definitions = program.definitions;
     try { await vm.executeAsync([]); } catch (error) { vm.definitions = previous; throw error; }
   };
-  stdout.write('Nyanco 0.81.0 — static types; :type EXPR for inference\n');
+  stdout.write('Nyanco 0.82.0 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
     const input = line.trim();
@@ -93,7 +94,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (!args.length) return repl();
   if (args.length === 1 && args[0] === '--lsp') { const {startServer}=await import('./lsp.mjs'); startServer(); return; }
-  let file, expression, typeExpression, emitGo, build, check = false, singleFile = false, showStack = false, showTypes = false;
+  let file, expression, typeExpression, emitGo, emitIR, build, check = false, singleFile = false, showStack = false, showTypes = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') { stdout.write(help); return; }
@@ -103,10 +104,10 @@ async function main() {
     } else if (arg === '--type') {
       if(typeExpression !== undefined || args[i+1] === undefined) throw new Error('--type requires one expression');
       typeExpression=args[++i];
-    } else if (arg === '--emit-go' || arg === '--build') {
+    } else if (arg === '--emit-go' || arg === '--emit-ir' || arg === '--build') {
       const path=args[++i];
-      if(!path || path.startsWith('-') || (arg==='--emit-go' ? emitGo : build))throw new Error(`${arg} requires one output path`);
-      if(arg==='--emit-go')emitGo=resolve(path);else build=resolve(path);
+      if(!path || path.startsWith('-') || (arg==='--emit-go' ? emitGo : arg==='--emit-ir'?emitIR:build))throw new Error(`${arg} requires one output path`);
+      if(arg==='--emit-go')emitGo=resolve(path);else if(arg==='--emit-ir')emitIR=resolve(path);else build=resolve(path);
     } else if (arg === '--types') showTypes = true;
     else if (arg === '--check') check = true;
     else if (arg === '--single-file') singleFile = true;
@@ -118,8 +119,8 @@ async function main() {
   if (check && (!file || expression !== undefined)) throw new Error('--check requires a file and cannot be combined with --eval');
   if(typeExpression !== undefined && (check || expression !== undefined || showTypes || showStack)) throw new Error('--type cannot be combined with execution or other check options');
   if(showTypes && (!file || expression !== undefined)) throw new Error('--types requires a file and cannot be combined with --eval');
-  if((emitGo || build) && (check || showTypes || typeExpression!==undefined))throw new Error('Go output cannot be combined with --check, --types or --type');
-  if((emitGo && emitGo===build) || (file && [emitGo,build].includes(resolve(file))))throw new Error('Input, Go source and executable paths must be different');
+  if((emitGo || emitIR || build) && (check || showTypes || typeExpression!==undefined))throw new Error('Compiled output cannot be combined with --check, --types or --type');
+  if(new Set([emitGo,emitIR,build].filter(Boolean)).size!==[emitGo,emitIR,build].filter(Boolean).length || (file && [emitGo,emitIR,build].includes(resolve(file))))throw new Error('Input, Go source and executable paths must be different');
   if (!file && expression === undefined && typeExpression === undefined) throw new Error('Specify a file, --eval or --type');
   const standalone=new Map();standalone.moduleTokens=standardTokens;
   const program = file ? (singleFile?compile(await readFile(file, 'utf8'), file,standalone):compileModule(file)) : { definitions: standalone };
@@ -134,9 +135,10 @@ async function main() {
     stdout.write(`Types OK: ${file}\n`); return;
   }
   if (expression === undefined && !program.definitions.has('main')) throw new Error('Program has no main definition');
-  if(emitGo || build) {
+  if(emitGo || emitIR || build) {
     if(expression!==undefined)vm.infer(expression);
-    const source=transpileGo(program,{expression:expression ?? 'main',showStack:showStack || expression!==undefined});
+    let ir;const source=transpileGo(program,{expression:expression ?? 'main',showStack:showStack || expression!==undefined,onIR:emitIR?value=>{ir=value;}:null});
+    if(emitIR){await writeFile(emitIR,JSON.stringify(ir,null,2)+'\n','utf8');stdout.write(`Typed IR: ${emitIR}\n`);}
     if(emitGo) { await writeFile(emitGo,source,'utf8');stdout.write(`Go source: ${emitGo}\n`); }
     if(build) {
       const temp=await mkdtemp(join(dirname(build),'.nyanco-build-'));

@@ -1,4 +1,4 @@
-# Nyanco 0.81 — dequeとBinaryHeap
+# Nyanco 0.82 — 型付きIRと所有権解析
 
 `node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
 
@@ -1735,6 +1735,22 @@ toHeap [3, 1, 4]; hpop        -- heap [3, 1], Some 4
 
 `deque`／`heap`は空のコンテナを作り、`toDeque`／`toHeap`はstreamなどから変換します。`pop`は更新後のコンテナと`option 'a`を返し、空の場合は`None`です。`peek`はコンテナを消費して`option 'a`だけを返すため、元も必要なら`dup`してください。heapの追加・取り出しには`ord 'a`が必要で、独自instanceにも従います。
 
-どちらも見かけ上immutableで、更新前の値を保持できます。dequeは共有可能な前後の連結スタック、heapは配列上の二分ヒープです。現在のheap更新は配列をコピーするためO(n)のコピーを伴い、比較回数はO(log n)です。dequeの片側が空になると反対側のノードを反転します。
+どちらも見かけ上immutableで、更新前の値を保持できます。dequeは共有可能な前後の連結スタック、heapは配列上の二分ヒープです。所有権を証明できないheap更新は配列をコピーするためO(n)のコピーを伴い、比較回数はO(log n)です。0.82では、所有権を証明できる場合の直接更新を追加しました。dequeの片側が空になると反対側のノードを反転します。
 
 両方とも`streem`に対応し、`each`・`fold`・`map`・`toVector`などが使えます。dequeは前から後の順、heapの走査順は未規定です。走査中の`break`／`cancel`も既存のstreamと同じです。
+
+## 型付き中間表現と所有権解析（0.82）
+
+`typed-ir.mjs`に、バックエンドから独立して利用できる型付きIRビルダを追加しました。型を推論時の可変オブジェクトから切り離し、型ID、値ID、命令の入出力、effectとその開いたrow、ソース位置を保存します。関数の特殊化・quotation・分岐などはregionで表現します。同じ関数をintとstringで呼ぶ場合、それぞれの特殊化を記録します。
+
+```powershell
+node cli.mjs examples/collections --emit-ir collections.ir.json
+```
+
+このコマンドはプログラムを実行せず、到達する特殊化のIRをJSONへ出力します。現在、到達する関数・quotationの列挙はGo生成パイプラインを利用します。JSON自体にGoのruntimeや命令は含みません。IRの生成APIは`createTypedIR(definitions)`、構造検証は`verifyTypedIR(ir)`です。
+
+`ir-ownership.mjs`は値の生存期間とescapeを調べ、更新を`move`または`copy`と判定します。新しいvector／heapで、入力への別名参照が後で使われず、クロージャや別のコンテナなどへ渡されてもいない場合に、既存の保存領域を直接使えます。例えば`heap; dup; drop; hpush 1`は別名が消えているため直接更新できます。`heap -> h; hpush h 1; h`は元のhが後で必要なのでコピーします。
+
+Go生成はこのIRの型情報・所有権判定を利用し、heapの`hpush`／`hpop`にも直接更新を適用します。所有権を証明できたheapでは配列全体のコピーがなくなり、追加は償却O(log n)、取り出しはO(log n)です。APIの`transpileGo(program, {optimizeVectors:false})`で従来のvector最適化と今回の所有権最適化を両方無効化して比較できます。
+
+関数の入力、mutableな変数、捕捉した値、制御やeffectの境界は保守的に扱います。関数間の所有権移譲やループの借用解析までは行っていないため、すべての更新が直接更新になるわけではありません。現行Go出力の`any`表現は維持しており、C++コード生成・型ごとの保存形式・release専用の最適化パイプラインは今後このIRを使って実装できます。
