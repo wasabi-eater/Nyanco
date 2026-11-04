@@ -9,6 +9,7 @@ import {parseExpression} from './language.mjs';
 import {checkExpression, formatType, missingOperands, StaticTypeError} from './types.mjs';
 import {T, tuple, neverValues, StoppedEmission, items, effectParts, copyEnv, freshTypes} from './native-types.mjs';
 import {transforms, streamTransforms, countTransform} from './iteration.mjs';
+import {patternNames} from './type-syntax.mjs';
 
 // Fixed-width octal escapes make generated source independent of the compiler's
 // input encoding and preserve embedded zero bytes in Nyanco strings.
@@ -22,8 +23,25 @@ const loc = token => string(token ? `${token.file}:${token.line}:${token.col}` :
 const arguments_ = count => Array.from({length: count}, (_, i) => `a${i}`);
 const resultType = count => `Results<${count}>`;
 const params = count => arguments_(count).map(name => `const Value& ${name}`);
+const scalarTypes = new Map([['int','Int'], ['byte','Byte'], ['float','double'], ['bool','bool']]);
+const cppType = type => {
+  const resolved = type && T.prune(type);
+  return resolved?.tag === 'atom' ? scalarTypes.get(resolved.name) || 'Value' : 'Value';
+};
+const nativeResult = types => {
+  if (types.every(type => type === 'Value')) return resultType(types.length);
+  return types.length === 1 ? types[0] : `std::tuple<${types.join(', ')}>`;
+};
 const values = inputs => `Values{${inputs.join(', ')}}`;
 const take = (stack, count) => count ? stack.splice(-count) : [];
+// Nested scopes handle their own bindings. Only statements executed in this
+// environment can require a copy of its binding table.
+const needsLocalEnv = nodes => nodes.some(node =>
+  ['bind','update','local-function'].includes(node.kind) ||
+  node.kind === 'capture' && node.slots.some(slot => slot.capturedName) ||
+  node.kind === 'word' && node.ephemeral ||
+  node.kind === 'application' && needsLocalEnv(node.body)
+);
 const patternKinds = {
   'word': 'word', 'literal': 'literal', 'constructor': 'constructor', 'list-pattern': 'vector',
   'push-pattern': 'push', 'record-pattern': 'record', 'tuple-pattern': 'tuple'
@@ -78,20 +96,48 @@ export function transpileCpp(program, {
   const helpers = new Map();
   const sites = [];
   const sitesByNode = new WeakMap();
+  const representations = new Map();
+  const scalarBindings = new Map();
   let next = 0;
   const id = prefix => `${prefix}${next++}`;
   const typedDispatch = [...definitions.methods.values()].some(m => m.dispatchIndex < 0 && !m.specialCast);
   const latent = effect => typedDispatch ? T.effectSnapshot(effect.effects) : undefined;
   const signatureKey = (input, output, effect) => formatType(T.quote(tuple(input), tuple(output), effect && latent(effect)));
+  const representation = value => representations.get(value) || 'Value';
+  function readAs(value, type) {
+    const actual = representation(value);
+    if (type === actual || type === 'Value') return value;
+    if (actual !== 'Value') throw new Error(`C++ lowering cannot convert ${actual} to ${type}`);
+    return `as<${type}>(${value})`;
+  }
+  function bindings(env) {
+    if (!scalarBindings.has(env)) scalarBindings.set(env,new Map());
+    return scalarBindings.get(env);
+  }
+  function cloneEnv(ctx, parent) {
+    const env = id('env');
+    ctx.add(`Env ${env} = ${parent};`);
+    scalarBindings.set(env,new Map(bindings(parent)));
+    return env;
+  }
+  function captureEnv(ctx, env) {
+    const scalars = bindings(env);
+    if (!scalars.size) return env;
+    const snapshot = id('captured');
+    ctx.add(`Env ${snapshot} = ${env};`);
+    for (const [name,value] of scalars) ctx.add(`${snapshot}.bind(${string(name)}, ${value});`);
+    return snapshot;
+  }
 
   function context() {
     const lines = [];
     return {
       lines,
       add: (...text) => lines.push(...text),
-      value(expression) {
+      value(expression, type = 'Value') {
         const name = id('v');
-        lines.push(`Value ${name} = ${expression};`);
+        lines.push(`${type} ${name} = ${expression};`);
+        if (type !== 'Value') representations.set(name,type);
         return name;
       },
       call(fn, inputs, outputCount) {
@@ -103,34 +149,71 @@ export function transpileCpp(program, {
       }
     };
   }
-  function finish(ctx, output) {
-    ctx.add(output.never
-      ? 'fail("<generated>", "Non-returning computation returned");'
-      : `return {${output.join(', ')}};`);
+  function finish(ctx, output, types = output.map(() => 'Value')) {
+    if (output.never) {
+      ctx.add('fail("<generated>", "Non-returning computation returned");');
+      return;
+    }
+    const returned = output.map((value,i) => readAs(value,types[i]));
+    ctx.add(`return {${returned.join(', ')}};`);
   }
   function assign(ctx, targets, sources) {
     if (targets.length !== sources.length) throw new Error('C++ lowering produced inconsistent stack arity');
     if (!targets.length) return;
-    const result = id('parallel');
-    ctx.add(`${resultType(targets.length)} ${result}{${sources.join(', ')}};`);
-    targets.forEach((target, i) => ctx.add(`${target} = std::move(${result}[${i}]);`));
+    const copies = targets.map((target,i) => {
+      const type = representation(target);
+      return ctx.value(readAs(sources[i],type),type);
+    });
+    targets.forEach((target, i) => ctx.add(`${target} = std::move(${copies[i]});`));
+  }
+  function bindPatterns(ctx, env, ps, inputs, types, mutable, at) {
+    const remaining = [], boxed = [], checks = [];
+    for (const [i,p] of ps.entries()) {
+      for (const name of patternNames([p])) bindings(env).delete(name);
+      const type = types[i];
+      if (p.kind === 'word' && p.value === '_') continue;
+      if (p.kind === 'word' && type !== 'Value' && !p.mutable && !mutable?.get(p.value) && env !== 'm.globals') {
+        const value = ctx.value(readAs(inputs[i],type),type);
+        bindings(env).set(p.value,value);
+      } else if (p.kind === 'literal' && representation(inputs[i]) !== 'Value' &&
+                 (typeof p.value === 'boolean' && type === 'bool' ||
+                  typeof p.value === 'number' && ['Int','Byte','double'].includes(type) &&
+                  (p.numericKind !== 'float' || type === 'double'))) {
+        checks.push(`${inputs[i]} == ${literal(p)}`);
+      } else {
+        remaining.push(p);
+        boxed.push(inputs[i]);
+      }
+    }
+    const target = at ? id('matched') : env;
+    if (remaining.length) {
+      if (at) ctx.add(`Env ${target};`);
+      checks.push(`matches(${patterns(remaining)}, ${values(boxed)}, ${target})`);
+    }
+    const check = checks.length ? checks.join(' && ') : null;
+    if (!at) return check;
+    if (check) ctx.add(`if (!(${check})) fail(${at}, "Assignment pattern did not match");`);
+    for (const name of patternNames(remaining)) {
+      ctx.add(`${env}.bind(${string(name)}, ${target}.read(${string(name)}), ${!!mutable.get(name)});`);
+    }
+    return null;
   }
   function branch(ctx, clause, inputs, env, trace, guardTrace = trace) {
     const count = clause.patterns.length;
     const patternValues = count ? inputs.slice(-count) : [];
     let state = count ? inputs.slice(0, -count) : [...inputs];
-    const local = id('env');
-    ctx.add('{', `Env ${local} = ${env};`,
-      `if (matches(${patterns(clause.patterns)}, ${values(patternValues)}, ${local})) {`);
+    ctx.add('{');
+    const local = cloneEnv(ctx,env);
+    const condition = bindPatterns(ctx,local,clause.patterns,patternValues,patternValues.map(representation));
+    ctx.add(condition ? `if (${condition}) {` : '{');
     if (clause.guard) {
-      const guardEnv = id('env');
-      ctx.add(`Env ${guardEnv} = ${local};`);
+      const guardEnv = cloneEnv(ctx,local);
       state = emit(clause.guard, state, guardEnv, new Map(), guardTrace, ctx);
       if (state.never) {
         ctx.add('}', '}');
         return null;
       }
-      ctx.add(`if (truth(${state.pop()})) {`);
+      ctx.add(`if (${readAs(state.pop(),'bool')}) {`);
     }
     const output = emit(clause.body, state, local, new Map(), trace, ctx);
     return {output, close: () => ctx.add(...(clause.guard ? ['}'] : []), '}', '}')};
@@ -142,7 +225,15 @@ export function transpileCpp(program, {
     if (functions.has(key)) return functions.get(key);
     if (functions.size >= 1000) throw new Error('C++ function specialization limit exceeded');
     const fn = `fn${functions.size}`;
-    const spec = {fn, input, output, header: `${resultType(output.length)} ${fn}(${['Machine& m', ...params(input.length)].join(', ')})`};
+    const inputTypes = input.map(cppType), outputTypes = output.map(cppType);
+    const args = inputTypes.map(type => {
+      const arg = id('arg');
+      if (type !== 'Value') representations.set(arg,type);
+      return arg;
+    });
+    const parameters = args.map((arg,i) => `${inputTypes[i] === 'Value' ? 'const Value&' : inputTypes[i]} ${arg}`);
+    const spec = {fn, inputTypes, outputTypes,
+      header: `${nativeResult(outputTypes)} ${fn}(${['Machine& m', ...parameters].join(', ')})`};
     functions.set(key, spec);
     const ctx = context();
     for (const clause of definitions.get(name)) {
@@ -158,8 +249,8 @@ export function transpileCpp(program, {
       const analysis = ir.analyze(clause.body, tuple(bodyInput), env);
       T.unify(analysis.output, tuple(outs), clause.token);
       if (typedDispatch) T.specializeEffects(analysis.effects, concrete.effects, clause.token);
-      const emitted = branch(ctx, clause, arguments_(input.length), 'm.globals', analysis.trace, guard?.trace);
-      if (emitted) { finish(ctx, emitted.output); emitted.close(); }
+      const emitted = branch(ctx, clause, args, 'm.globals', analysis.trace, guard?.trace);
+      if (emitted) { finish(ctx, emitted.output,outputTypes); emitted.close(); }
       ir.describe(analysis.trace, {kind:'function', name, signature, patterns:clause.patterns}, ins, outs);
       if (guard) ir.describe(guard.trace, {kind:'guard', name, signature});
     }
@@ -169,7 +260,18 @@ export function transpileCpp(program, {
   }
   function callNamed(ctx, name, effect, stack) {
     const spec = named(name, effect);
-    stack.push(...ctx.call(spec.fn, ['m', ...take(stack, spec.input.length)], spec.output.length));
+    const args = take(stack,spec.inputTypes.length).map((value,i) => readAs(value,spec.inputTypes[i]));
+    if (spec.outputTypes.every(type => type === 'Value')) {
+      stack.push(...ctx.call(spec.fn,['m',...args],spec.outputTypes.length));
+      return;
+    }
+    const call = `${spec.fn}(${['m',...args].join(', ')})`;
+    if (spec.outputTypes.length === 1) stack.push(ctx.value(call,spec.outputTypes[0]));
+    else {
+      const result = id('results');
+      ctx.add(`auto ${result} = ${call};`);
+      spec.outputTypes.forEach((type,i) => stack.push(ctx.value(`std::get<${i}>(std::move(${result}))`,type)));
+    }
   }
   function registerSite(node, env, body = node.body) {
     const key = [...env].map(([name, scheme]) =>
@@ -232,12 +334,27 @@ export function transpileCpp(program, {
     }
     if (['.&.','.|.','.<<.','.>>.'].includes(token.value))
       return ctx.value(`bitOp(m, ${string(token.value)}, ${a}, ${b}, ${loc(token)})`);
-    const type = effect && items(effect.input).at(-2);
+    const inputs = effect && items(effect.input);
+    const type = inputs?.at(-2);
+    const scalar = cppType(type), op = token.value;
+    if (scalar !== 'Value' && scalar === cppType(inputs.at(-1))) {
+      const left = readAs(a,scalar), right = readAs(b,scalar);
+      if (['==','/=','<','<=','>','>='].includes(op))
+        return ctx.value(`${left} ${op === '/=' ? '!=' : op} ${right}`,'bool');
+      if (scalar === 'bool' && ['&&','||'].includes(op))
+        return ctx.value(`${left} ${op} ${right}`,'bool');
+      if (scalar !== 'bool' && ['+','-','*','/','%','^'].includes(op)) {
+        if (scalar === 'Int' && ['+','-','*'].includes(op))
+          return ctx.value(`bits(static_cast<UInt>(${left}) ${op} static_cast<UInt>(${right}))`,scalar);
+        const operation = {Int:'intOp',Byte:'byteOp',double:'floatOp'}[scalar];
+        return ctx.value(`${operation}(${string(op)}, ${left}, ${right}, ${loc(token)})`,scalar);
+      }
+    }
     if (type && ['==','/=','<','<=','>','>='].includes(token.value)) {
       const eq = token.value === '==' || token.value === '/=';
       const operation = valueOperation(eq ? 'eq' : 'ord',type,token);
       const call = `${operation}(m,${a},${b})`;
-      return ctx.value(eq ? (token.value === '/=' ? '!' : '') + call : `${call} ${token.value} 0`);
+      return ctx.value(eq ? (token.value === '/=' ? '!' : '') + call : `${call} ${token.value} 0`,'bool');
     }
     return ctx.value(`binary(${string(token.value)}, ${a}, ${b}, ${loc(token)}, ${reuse})`);
   }
@@ -379,8 +496,7 @@ return {option(${args[0]})};
       const at = loc(n);
       const reuse = optimizeVectors && (instruction.ownership?.mode === 'move' || vectorReuse.has(n));
       const child = (body, initial = [], bindings = holes, into = ctx) => {
-        const scope = id('env');
-        into.add(`Env ${scope} = ${env};`);
+        const scope = needsLocalEnv(body) ? cloneEnv(into,env) : env;
         const result = emit(body, initial, scope, bindings, trace, into);
         if (result.never) throw new StoppedEmission();
         return result;
@@ -410,7 +526,7 @@ return {option(${args[0]})};
             const numeric = typeof n.value === 'number' && n.numericKind !== 'float'
               ? T.integerLiteralInfo(definitions, n, type) : null;
             if (numeric?.conversion) {
-              const value = ctx.value(literal(n, 'int'));
+              const value = ctx.value(literal(n, 'int'),'Int');
               if (numeric.conversion.target === 'fromInt')
                 stack.push(ctx.value(`cast(m, ${value}, ${string(numeric.conversion.destination)}, ${at})`));
               else {
@@ -418,7 +534,11 @@ return {option(${args[0]})};
                 callNamed(ctx, numeric.conversion.target, numeric.effect, args);
                 stack.push(...args);
               }
-            } else stack.push(ctx.value(literal(n, numeric?.type || T.numericName(type) || undefined)));
+            } else {
+              const numericType = numeric?.type || T.numericName(type);
+              const cpp = scalarTypes.get(numericType) || cppType(type);
+              stack.push(ctx.value(literal(n,numericType || undefined),cpp));
+            }
             break;
           }
           case 'application':
@@ -490,8 +610,7 @@ return {option(${args[0]})};
               return `{${string(p.kind)}, ${string(p.name || '')}, ${index}, ${!!p.optional}, ${get}, ${set}}`;
             });
             const inner = context();
-            const local = id('env');
-            inner.add(`Env ${local} = ${env};`);
+            const local = cloneEnv(inner,env);
             const result = emit(n.fields.at(-1).body, n.updating ? ['old'] : [], local,
               n.updating ? new Map() : holes, trace, inner);
             inner.add(result.never ? `fail(${at}, "Non-returning update returned");` : `return ${result[0]};`);
@@ -501,22 +620,23 @@ return {option(${args[0]})};
           }
           case 'quote': {
             const site = registerSite(n, info.env);
-            stack.push(ctx.value(`std::make_shared<Quote>(Quote{${site}, ${env}, {}})`));
+            const captured = captureEnv(ctx,env);
+            stack.push(ctx.value(`std::make_shared<Quote>(Quote{${site}, ${captured}, {}})`));
             break;
           }
           case 'local-function': {
             const site = registerSite(n, info.localEnv);
             const name = string(n.name);
-            ctx.add(`${env}.bind(${name}, std::make_shared<Quote>(Quote{${site}, ${env}, ${name}}));`);
+            const captured = captureEnv(ctx,env);
+            ctx.add(`${env}.bind(${name}, std::make_shared<Quote>(Quote{${site}, ${captured}, ${name}}));`);
+            bindings(env).delete(n.name);
             break;
           }
           case 'bind': {
             const inputs = take(stack, n.patterns.length);
-            const matched = id('matched');
-            ctx.add(`Env ${matched};`,
-              `if (!matches(${patterns(n.patterns)}, ${values(inputs)}, ${matched})) fail(${at}, "Assignment pattern did not match");`);
-            n.names.forEach((name, i) => ctx.add(
-              `${env}.bind(${string(name)}, ${matched}.read(${string(name)}), ${n.mutable[i]});`));
+            const inputTypes = items(info.input);
+            const types = inputTypes.slice(inputTypes.length-inputs.length).map(cppType);
+            bindPatterns(ctx,env,n.patterns,inputs,types,new Map(n.names.map((name,i)=>[name,n.mutable[i]])),at);
             break;
           }
           case 'update': {
@@ -526,7 +646,7 @@ return {option(${args[0]})};
             break;
           }
           case 'case': {
-            const outputs = items(info.output).map(() => ctx.value('Value{}'));
+            const outputs = items(info.output).map(cppType).map(type => ctx.value(type+'{}',type));
             const matched = id('matched');
             ctx.add(`bool ${matched} = false;`);
             for (const clause of n.branches) {
@@ -548,19 +668,20 @@ return {option(${args[0]})};
             stack.push(emitOperator(n, info, stack, holes, ctx, child));
             break;
           case 'label': {
-            const scope = id('env');
-            ctx.add(`Env ${scope} = ${env};`, `${scope}.bind(${string(n.key)}, std::make_shared<Label>());`);
+            const scope = cloneEnv(ctx,env);
+            ctx.add(`${scope}.bind(${string(n.key)}, std::make_shared<Label>());`);
+            bindings(scope).delete(n.key);
             stack = emit(n.body, stack, scope, holes, trace, ctx);
             break;
           }
           case 'mask':
           case 'borrow': {
-            const inner = context(), local = id('env');
-            inner.add(`Env ${local} = ${env};`);
+            const inner = context(), local = cloneEnv(inner,env);
             if (n.kind === 'borrow') {
               const borrow = id('borrow');
               inner.add(`BorrowScope ${borrow}(${env}.cell(${string(n.owner)}));`,
                 `${local}.bind(${string(n.reference)}, ${borrow}.ref);`);
+              bindings(local).delete(n.reference);
             }
             const output = emit(n.body, [...stack], local, holes, trace, inner);
             inner.add(output.never ? `fail(${at}, "Non-returning block returned");` : `return ${values(output)};`);
@@ -601,12 +722,13 @@ return {option(${args[0]})};
     const bound = bindHoles(n, stack, holes);
     if (n.kind === 'comparison-chain') {
       let left = child(n.operands[0], [], bound)[0];
-      const result = ctx.value('true');
+      const result = ctx.value('true','bool');
       for (let i=0; i<n.operators.length; i++) {
-        ctx.add(`if (truth(${result})) {`);
+        ctx.add(`if (${result}) {`);
         try {
           const right = child(n.operands[i+1], [], bound)[0];
-          ctx.add(`${result} = ${callBinary(ctx, n.operators[i], left, right, info.operatorEffects[i])};`);
+          const compared = callBinary(ctx,n.operators[i],left,right,info.operatorEffects[i]);
+          ctx.add(`${result} = ${readAs(compared,'bool')};`);
           left = right;
         } catch (error) {
           if (!(error instanceof StoppedEmission)) throw error;
@@ -622,7 +744,8 @@ return {option(${args[0]})};
       const b = child(n.right, [], bound)[0];
       return callBinary(ctx, n, a, b, info.operatorEffects[0]);
     }
-    const result = ctx.value(a);
+    const type = cppType(T.prune(info.output).item);
+    const result = ctx.value(readAs(a,type),type);
     let condition = a;
     if (n.value === '||') {
       const target = customMethod({...n,value:'hasValue'}, info.orElsePredicate);
@@ -632,11 +755,11 @@ return {option(${args[0]})};
         condition = args[0];
       }
     }
-    ctx.add(`if (${n.value === '||' ? '!' : ''}truth(${condition})) {`);
+    ctx.add(`if (${n.value === '||' ? '!' : ''}${readAs(condition,'bool')}) {`);
     try {
       const b = child(n.right, [], bound)[0];
       const selected = n.value === '||' ? callBinary(ctx, n, a, b, info.operatorEffects[0]) : b;
-      ctx.add(`${result} = ${selected};`);
+      ctx.add(`${result} = ${readAs(selected,type)};`);
     } catch (error) { if (!(error instanceof StoppedEmission)) throw error; }
     ctx.add('}');
     return result;
@@ -683,9 +806,14 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     const outCount = () => items(info.output).length;
     const call = (q, effect, state = stack, into = ctx) => callQuote(into, q, effect, state, at);
     if (info.env.has(name)) {
-      const value = ctx.value(get(name));
-      if (n.ephemeral) ctx.add(`${env}.erase(${string(name)});`);
-      if (info.env.get(name).callable) return call(value, info.effect);
+      const callable = info.env.get(name).callable;
+      const type = callable ? 'Value' : cppType(T.prune(info.output).item);
+      const value = bindings(env).get(name) || ctx.value(readAs(get(name),type),type);
+      if (n.ephemeral) {
+        bindings(env).delete(name);
+        ctx.add(`${env}.erase(${string(name)});`);
+      }
+      if (callable) return call(value, info.effect);
       stack.push(value);
       return stack;
     }
@@ -721,7 +849,9 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       const conversion = T.castInfo(definitions,n,info.effect);
       if (conversion.target !== name) callNamed(ctx, conversion.target, info.effect, stack);
       else push(`cast(m, ${pop()}, ${string(conversion.destination)}, ${at})`);
-    } else if (['not','head','tail','length','chars','bytes'].includes(name)) {
+    } else if (name === 'not') {
+      stack.push(ctx.value(`!${readAs(pop(),'bool')}`,'bool'));
+    } else if (['head','tail','length','chars','bytes'].includes(name)) {
       push(`unary(${string(name)}, ${pop()}, ${at})`);
     } else if (['xor','testBit','setBit','clearBit'].includes(name)) {
       const [a,b] = take(stack,2);
@@ -754,8 +884,8 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       return result;
     } else if (name === 'if' || name === 'when') {
       const [condition, yes, no] = take(stack,name === 'if' ? 3 : 2);
-      const types = inputs(), outputs = Array.from({length:outCount()}, () => ctx.value('Value{}'));
-      ctx.add(`if (truth(${condition})) {`);
+      const types = inputs(), outputs = items(info.output).map(cppType).map(type => ctx.value(type+'{}',type));
+      ctx.add(`if (${readAs(condition,'bool')}) {`);
       const first = call(yes,types.at(no ? -2 : -1),[...stack]);
       if (!first.never) assign(ctx,outputs,first);
       ctx.add('} else {');
@@ -766,14 +896,17 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     } else if (name === 'while') {
       const [cond,body] = take(stack,2), types = inputs();
       const state = stack.map(v => ctx.value(v));
-      const outputs = Array.from({length:outCount()}, (_, i) => ctx.value(state.length === outCount() ? state[i] : 'Value{}'));
+      const count = outCount();
+      // The condition can change the state type, while cancellation can return
+      // the last state before the first condition completed.
+      const outputs = Array.from({length:count}, (_,i) => ctx.value(state.length === count ? state[i] : 'Value{}'));
       const result = id('breakResult');
       ctx.add(`auto ${result} = loop(m, [&](Machine& m) {`, 'while (true) {');
       const condition = call(cond,types.at(-2),[...state]);
       if (!condition.never) {
         const flag = condition.pop();
         assign(ctx,outputs,condition);
-        ctx.add(`if (!truth(${flag})) break;`);
+        ctx.add(`if (!${readAs(flag,'bool')}) break;`);
         const next = call(body,types.at(-1),condition);
         if (!next.never) assign(ctx,state,next);
       }
@@ -1013,6 +1146,7 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
         throw error;
       }
       const ctx = context();
+      scalarBindings.delete('local');
       const results = emit(body,arguments_(spec.input.length),'local',new Map(),analysis.trace,ctx);
       ir.describe(analysis.trace,{kind:'quotation',site,signature:spec.key},spec.input,spec.output);
       if (node.blockLabel) {

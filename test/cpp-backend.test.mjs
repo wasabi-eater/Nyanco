@@ -35,6 +35,21 @@ test('C++ lowering uses typed specializations and preserves vector ownership dec
   assert.throws(() => transpileCpp(compile('main = 1 + True', 'bad.nyan', new Map(), {checkTypes:false})), /Type error/);
 });
 
+test('scalar arithmetic and ordinary function calls avoid boxing', () => {
+  const source = transpileCpp(compile(`calc : int int -> int
+calc x y =
+    total <- x + y
+    total * 2
+mixed : int -> int string bool
+mixed x = x, "hi", True
+main = mixed (calc 2 3); drop; drop`));
+  const arithmetic = source.match(/Int fn\d+\(Machine& m, Int arg\d+, Int arg\d+\) \{[\s\S]*?No matching pattern for calc/);
+  assert.ok(arithmetic);
+  assert.match(arithmetic[0], /Int v\d+ = bits\(static_cast<UInt>/);
+  assert.doesNotMatch(arithmetic[0], /\bValue\b|\bas<|\.read\(|\.bind\(/);
+  assert.match(source, /std::tuple<Int, Value, bool> fn\d+\(Machine& m, Int arg\d+\)/);
+});
+
 test('CLI C++20 emission builds a standalone program with modules, IO and resumable effects', {
   skip: !compiler, timeout: 120000
 }, () => {
@@ -45,9 +60,17 @@ test('CLI C++20 emission builds a standalone program with modules, IO and resuma
     const source = join(dir,'main.nyan');
     writeFileSync(source,`import "./math"
 effect ask : -> int
+mixed : int -> int string bool
+mixed x = x, "hi", True
+localCapture x =
+    value <- x + 2
+    call {value * 3}
 main =
     n <- parseInt read
     print (math.square n)
+    mixed n; print; print; print
+    print (localCapture n)
+    1; while {drop; True; False} {drop; 1}; print
     print (handle {ask; ask; +} {ask: {-> k; resume n k}})
     print (toVector (take (map (1 ..= n) {* 2}) 3))
     saved <- [1,2]

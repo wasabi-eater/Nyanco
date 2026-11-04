@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -172,6 +173,7 @@ inline Value option(std::optional<Value> value = {}) {
     return value ? adt("option", "Some", "Some", {*value}) : adt("option", "None", "None");
 }
 inline bool truth(const Value& value) { return as<bool>(value); }
+inline bool truth(bool value) { return value; }
 inline std::string utf8(char32_t code) {
     std::string result;
     if (code < 0x80) result += static_cast<char>(code);
@@ -795,6 +797,31 @@ inline Int intOp(const std::string& op, Int x, Int y, const std::string& at) {
     }
     fail(at, "Unknown integer operator: " + op);
 }
+inline Byte byteOp(const std::string& op, Byte x, Byte y, const std::string& at) {
+    Int result;
+    if (op == "^") {
+        result = 1;
+        for (Int i = 0; i < y; ++i) {
+            result *= x;
+            if (result > 255) fail(at, "byte overflow");
+        }
+    } else result = intOp(op,x,y,at);
+    if (result < 0 || result > 255) fail(at, "byte overflow");
+    return static_cast<Byte>(result);
+}
+inline double floatOp(const std::string& op, double x, double y, const std::string& at) {
+    double result;
+    if (op == "+") result = x+y;
+    else if (op == "-") result = x-y;
+    else if (op == "*") result = x*y;
+    else if (op == "/" || op == "%") {
+        if (y == 0) fail(at, "Division by zero");
+        result = op == "/" ? x/y : std::fmod(x,y);
+    } else if (op == "^") result = std::pow(x,y);
+    else fail(at, "Unknown numeric operator: " + op);
+    if (!std::isfinite(result)) fail(at, "Non-finite numeric result");
+    return result;
+}
 inline Value bitOp(Machine& m, const std::string& op, const Value& left, const Value& right, const std::string& at) {
     if (is<bool>(left)) return op == ".&." ? truth(left) && truth(right) : op == ".|."
         ? truth(left) || truth(right) : truth(left) != truth(right);
@@ -850,29 +877,8 @@ inline Value binary(const std::string& op, const Value& a, const Value& b,
         return vector(std::move(xs));
     }
     if (is<Int>(a)) return intOp(op,as<Int>(a),as<Int>(b),at);
-    if (is<Byte>(a)) {
-        Int x = as<Byte>(a), y = as<Byte>(b), result;
-        if (op == "^") {
-            result = 1;
-            for (Int i = 0; i < y; ++i) {
-                result *= x;
-                if (result > 255) fail(at, "byte overflow");
-            }
-        } else result = intOp(op,x,y,at);
-        if (result < 0 || result > 255) fail(at, "byte overflow");
-        return static_cast<Byte>(result);
-    }
-    double x = as<double>(a), y = as<double>(b), result;
-    if (op == "+") result = x+y;
-    else if (op == "-") result = x-y;
-    else if (op == "*") result = x*y;
-    else if (op == "/" || op == "%") {
-        if (y == 0) fail(at, "Division by zero");
-        result = op == "/" ? x/y : std::fmod(x,y);
-    } else if (op == "^") result = std::pow(x,y);
-    else fail(at, "Unknown numeric operator: " + op);
-    if (!std::isfinite(result)) fail(at, "Non-finite numeric result");
-    return result;
+    if (is<Byte>(a)) return byteOp(op,as<Byte>(a),as<Byte>(b),at);
+    return floatOp(op,as<double>(a),as<double>(b),at);
 }
 inline Value unary(const std::string& op, const Value& value, const std::string& at) {
     if (op == "not") return !truth(value);
