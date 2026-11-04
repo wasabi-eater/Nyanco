@@ -1,5 +1,5 @@
-import {readFileSync} from 'node:fs';
 import {createTypedIR} from './typed-ir.mjs';
+import {emitCppRuntime} from './cpp-runtime.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
 import {withOption} from './builtin-option.mjs';
 import {ioEffects} from './builtin-effects.mjs';
@@ -104,25 +104,26 @@ function adtLayout(definitions) {
   };
   const none = runtimeOption('None',0), some = runtimeOption('Some',1);
   const make = (member, args) => `makeAdt<AdtFamily${member.family.id}>(${member.cpp}{{${args.join(', ')}}})`;
-  const source = [];
+  const fragments = [];
   for (const [type,family] of families) {
     // Keep the existing structural order for standard options and results.
     const first = type === 'option' ? 'None' : type === 'result' ? 'Ok' : null;
     family.members.sort((a,b) => a.name === b.name ? 0 : a.name === first ? -1 :
       b.name === first ? 1 : a.name < b.name ? -1 : 1);
-    for (const [index,c] of family.members.entries()) {
-      source.push(`struct ${c.cpp} {
+    const alias = `AdtFamily${family.id}`;
+    const members = family.members.map(c=>c.cpp);
+    const declarations = family.members.map((c,index) => `struct ${c.cpp} {
     std::array<Value, ${c.arity}> fields;
     static constexpr AdtTag tag{${family.id}, ${index}};
     static constexpr AdtInfo info{std::string_view(${stringLiteral(c.display)}), UINT32_C(${hashText(type+':'+c.name)})};
 };`);
-    }
-    source.push(`using AdtFamily${family.id} = AdtValue<${family.id}, ${family.members.map(c=>c.cpp).join(', ')}>;`);
+    declarations.push(`using ${alias} = AdtValue<${family.id}, ${members.join(', ')}>;`);
+    fragments.push({symbols:[alias,...members],text:declarations.join('\n')});
   }
-  source.push(`inline Value option(std::optional<Value> value) {
+  fragments.push({symbols:['option'],text:`inline Value option(std::optional<Value> value) {
     return value ? ${make(some,['std::move(*value)'])} : ${make(none,[])};
-}`);
-  return {constructors, make, source:source.join('\n')};
+}`});
+  return {constructors, make, fragments};
 }
 function unsupported(token, feature = token.value || token.kind) {
   throw new StaticTypeError(`Unsupported by the C++ backend: ${feature}`, token);
@@ -1278,13 +1279,7 @@ fail(at, "Unsupported quotation specialization");
   });
   const declarations = [...functions.values(), ...invocations.values(), ...helpers.values()].map(spec => spec.header + ';');
   const bodies = [...functions.values(), ...helpers.values()].map(spec => `${spec.header} {\n${spec.body.join('\n')}\n}`);
-  const runtime = readFileSync(new URL('./cpp-runtime.hpp.txt',import.meta.url),'utf8');
-  if (onIR) onIR(ir.serialize());
-  return `${runtime}
-namespace nyanco {
-${adts.source}
-
-${declarations.join('\n')}
+  const body = `${declarations.join('\n')}
 
 ${bodies.join('\n\n')}
 
@@ -1306,4 +1301,16 @@ ${main.lines.map(line=>'        '+line).join('\n')}
     }
 }
 `;
+  const {includes,runtime,declarations:adtDeclarations} = emitCppRuntime(body,adts.fragments);
+  if (onIR) onIR(ir.serialize());
+  return `${includes}
+
+namespace nyanco {
+${runtime}
+}
+
+namespace nyanco {
+${adtDeclarations}
+
+${body}`;
 }

@@ -1,61 +1,52 @@
-// Nyanco standalone C++20 runtime.
-#include <algorithm>
-#include <any>
-#include <array>
-#include <bit>
-#include <charconv>
-#include <cmath>
-#include <condition_variable>
-#include <cstdint>
-#include <exception>
-#include <functional>
-#include <iostream>
-#include <limits>
-#include <map>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-#include <thread>
-#include <tuple>
-#include <type_traits>
-#include <unordered_map>
-#include <utility>
-#include <variant>
-#include <vector>
-
-namespace nyanco {
+// Each @runtime marker lists the symbols provided by the following fragment.
+// A !name excludes a declaration-only dependency. @if-runtime cases inspect
+// values that can only exist when the named representation is also emitted.
+// @runtime Value
 using Value = std::any;
+// @runtime Int
 using Int = std::int64_t;
+// @runtime UInt
 using UInt = std::uint64_t;
+// @runtime Byte
 using Byte = std::uint8_t;
+// @runtime Values
 using Values = std::vector<Value>;
+// @runtime Results
 template <std::size_t N> using Results = std::array<Value, N>;
+// @runtime Ptr
 template <typename T> using Ptr = std::shared_ptr<T>;
+// @runtime as
 template <typename T> const T& as(const Value& value) { return std::any_cast<const T&>(value); }
+// @runtime is
 template <typename T> bool is(const Value& value) { return value.type() == typeid(T); }
+// @runtime fail
 [[noreturn]] inline void fail(const std::string& at, const std::string& message) {
     throw std::runtime_error(at + ": " + message);
 }
 
+// @runtime Char
 struct Char { char32_t code; };
+// @runtime Vector
 struct Vector { Values values; };
+// @runtime Tuple
 struct Tuple { Values values; };
+// @runtime Record
 struct Record { std::map<std::string, Value> fields; };
+// @runtime AdtTag
 struct AdtTag {
     std::size_t family, alternative;
     bool operator==(const AdtTag&) const = default;
 };
+// @runtime AdtInfo
 struct AdtInfo { std::string_view display; std::uint32_t hashSeed; };
+// @runtime Adt
 struct Adt {
     virtual ~Adt() = default;
     virtual AdtTag tag() const = 0;
     virtual std::span<const Value> fields() const = 0;
     virtual const AdtInfo& info() const = 0;
 };
+// @runtime AdtValue
 template <std::size_t Family, typename... Constructors>
 class AdtValue final : public Adt {
     std::variant<Constructors...> value;
@@ -73,12 +64,16 @@ public:
         return alternatives[value.index()];
     }
 };
+// @runtime makeAdt
 template <typename Family, typename Constructor>
 Value makeAdt(Constructor constructor) {
     return Ptr<Adt>(std::make_shared<Family>(std::move(constructor)));
 }
+// @runtime Range
 struct Range { Int first, last; bool inclusive; };
+// @runtime Collection
 struct Collection { std::string kind; Values values; };
+// @runtime Dict DictEntry HashNode HashRoot
 struct DictEntry { Value key, value; std::size_t position; };
 struct HashNode;
 using HashRoot = Ptr<const HashNode>;
@@ -154,6 +149,7 @@ public:
         return result;
     }
 };
+// @runtime Cell Env
 struct Cell { Value value; bool mutable_; bool borrowed = false; };
 struct Env {
     std::unordered_map<std::string, Ptr<Cell>> bindings;
@@ -165,17 +161,26 @@ struct Env {
     void update(const std::string& name, Value value) { cell(name)->value = std::move(value); }
     void erase(const std::string& name) { bindings.erase(name); }
 };
+// @runtime Quote
 struct Quote { std::size_t site; Env env; std::string self; };
+// @runtime Label
 struct Label { const void* target = nullptr; };
+// @runtime Machine
 struct Machine;
+// @runtime Visit
 using Visit = std::function<void(Value)>;
+// @runtime NativeVisitor
 struct NativeVisitor { Visit visit; };
+// @runtime Stream
 struct Stream { std::function<void(Machine&, const Visit&)> walk; };
+// @runtime Continuation
 struct Continuation {
     bool active = true, used = false, never = false;
     std::function<Values(Values)> resume;
 };
+// @runtime Borrow
 struct Borrow { Ptr<Cell> owner; bool active = true, suspended = false; };
+// @runtime BorrowScope
 struct BorrowScope {
     Ptr<Borrow> ref, parent;
     explicit BorrowScope(const Ptr<Cell>& cell) {
@@ -198,12 +203,18 @@ struct BorrowScope {
     BorrowScope(const BorrowScope&) = delete;
 };
 
+// @runtime vector
 inline Value vector(Values values) { return std::make_shared<Vector>(Vector{std::move(values)}); }
+// @runtime tuple
 inline Value tuple(Values values) { return std::make_shared<Tuple>(Tuple{std::move(values)}); }
+// @runtime record
 inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
+// @runtime option
 inline Value option(std::optional<Value> value = {});
+// @runtime truth
 inline bool truth(const Value& value) { return as<bool>(value); }
 inline bool truth(bool value) { return value; }
+// @runtime utf8
 inline std::string utf8(char32_t code) {
     std::string result;
     if (code < 0x80) result += static_cast<char>(code);
@@ -222,6 +233,7 @@ inline std::string utf8(char32_t code) {
     }
     return result;
 }
+// @runtime decode
 inline std::optional<char32_t> decode(const std::string& text, std::size_t& pos) {
     auto lead = static_cast<Byte>(text[pos++]);
     if (lead < 0x80) return lead;
@@ -237,6 +249,7 @@ inline std::optional<char32_t> decode(const std::string& text, std::size_t& pos)
         || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return {};
     return code;
 }
+// @runtime escape
 inline std::string escape(const std::string& text, char quote) {
     std::string result(1, quote);
     for (unsigned char c : text) {
@@ -254,7 +267,9 @@ inline std::string escape(const std::string& text, char quote) {
     }
     return result + quote;
 }
+// @runtime show
 inline std::string show(const Value& value);
+// @runtime join
 inline std::string join(const std::vector<std::string>& parts, const std::string& sep) {
     std::string result;
     for (std::size_t i = 0; i < parts.size(); ++i) {
@@ -263,11 +278,13 @@ inline std::string join(const std::vector<std::string>& parts, const std::string
     }
     return result;
 }
+// @runtime shown
 inline std::string shown(std::span<const Value> values, const std::string& sep) {
     std::vector<std::string> parts;
     for (const auto& value : values) parts.push_back(show(value));
     return join(parts, sep);
 }
+// @runtime floatText
 inline std::string floatText(double n) {
     if (n == 0) return "0";
     if (!std::isfinite(n)) return std::isnan(n) ? "NaN" : n < 0 ? "-Infinity" : "Infinity";
@@ -281,11 +298,13 @@ inline std::string floatText(double n) {
         text.erase(exponent + 2, 1);
     return text;
 }
+// @runtime show
 inline std::string show(const Value& v) {
     if (is<Int>(v)) return std::to_string(as<Int>(v));
     if (is<Byte>(v)) return std::to_string(as<Byte>(v));
     if (is<double>(v)) return floatText(as<double>(v));
     if (is<bool>(v)) return truth(v) ? "True" : "False";
+// @if-runtime Char
     if (is<Char>(v)) {
         auto code = as<Char>(v).code;
         if (code == 0) return "'\\0'";
@@ -296,58 +315,93 @@ inline std::string show(const Value& v) {
         }
         return escape(utf8(code), '\'');
     }
+// @end-runtime
     if (is<std::string>(v)) return escape(as<std::string>(v), '"');
+// @if-runtime Vector
     if (is<Ptr<Vector>>(v)) return "[" + shown(as<Ptr<Vector>>(v)->values, ", ") + "]";
+// @end-runtime
+// @if-runtime Tuple
     if (is<Ptr<Tuple>>(v)) return "#(" + shown(as<Ptr<Tuple>>(v)->values, " ") + ")";
+// @end-runtime
+// @if-runtime Record
     if (is<Ptr<Record>>(v)) {
         std::vector<std::string> parts;
         for (const auto& [key, value] : as<Ptr<Record>>(v)->fields) parts.push_back(key + ": " + show(value));
         return parts.empty() ? "{:}" : "{" + join(parts, ", ") + "}";
     }
+// @end-runtime
+// @if-runtime Dict
     if (is<Ptr<Dict>>(v)) {
         std::vector<std::string> parts;
         for (const auto& [key, value] : as<Ptr<Dict>>(v)->entries()) parts.push_back(show(key) + ": " + show(value));
         return parts.empty() ? "[:]" : "[" + join(parts, ", ") + "]";
     }
+// @end-runtime
+// @if-runtime AdtValue
     if (is<Ptr<Adt>>(v)) {
         const auto& a = *as<Ptr<Adt>>(v);
         auto fields = a.fields();
         std::string name(a.info().display);
         return fields.empty() ? name : "(" + name + " " + shown(fields, " ") + ")";
     }
+// @end-runtime
+// @if-runtime Range
     if (is<Range>(v)) {
         const auto& r = as<Range>(v);
         return "(" + std::to_string(r.first) + (r.inclusive ? " ..= " : " .. ") + std::to_string(r.last) + ")";
     }
+// @end-runtime
+// @if-runtime Collection
     if (is<Ptr<Collection>>(v)) {
         const auto& c = *as<Ptr<Collection>>(v);
         return c.kind + " [" + shown(c.values, ", ") + "]";
     }
+// @end-runtime
+// @if-runtime Stream
     if (is<Ptr<Stream>>(v)) return "<stream>";
+// @end-runtime
+// @if-runtime Continuation
     if (is<Ptr<Continuation>>(v)) return "<continuation>";
+// @end-runtime
+// @if-runtime Borrow
     if (is<Ptr<Borrow>>(v)) return "<mutref>";
+// @end-runtime
+// @if-runtime Quote
     if (is<Ptr<Quote>>(v)) return "{ ... }";
+// @end-runtime
     return "<value>";
 }
+// @runtime raw
 inline std::string raw(const Value& v) { return is<std::string>(v) ? as<std::string>(v) : show(v); }
 
+// @runtime order
 template <typename T> int order(const T& a, const T& b) { return a < b ? -1 : b < a ? 1 : 0; }
+// @runtime compare
 inline int compare(const Value& a, const Value& b);
+// @runtime compareValues
 inline int compareValues(std::span<const Value> a, std::span<const Value> b) {
     for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i)
         if (int result = compare(a[i], b[i])) return result;
     return order(a.size(), b.size());
 }
+// @runtime compare
 inline int compare(const Value& a, const Value& b) {
     if (a.type() != b.type()) return a.type().before(b.type()) ? -1 : 1;
     if (is<Int>(a)) return order(as<Int>(a), as<Int>(b));
     if (is<double>(a)) return order(as<double>(a), as<double>(b));
     if (is<Byte>(a)) return order(as<Byte>(a), as<Byte>(b));
     if (is<bool>(a)) return order(truth(a), truth(b));
+// @if-runtime Char
     if (is<Char>(a)) return order(as<Char>(a).code, as<Char>(b).code);
+// @end-runtime
     if (is<std::string>(a)) return order(as<std::string>(a), as<std::string>(b));
+// @if-runtime Vector
     if (is<Ptr<Vector>>(a)) return compareValues(as<Ptr<Vector>>(a)->values, as<Ptr<Vector>>(b)->values);
+// @end-runtime
+// @if-runtime Tuple
     if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
+// @end-runtime
+// @if-runtime AdtValue
     if (is<Ptr<Adt>>(a)) {
         const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
         const auto left = x.tag(), right = y.tag();
@@ -355,6 +409,8 @@ inline int compare(const Value& a, const Value& b) {
         if (left.alternative != right.alternative) return order(left.alternative,right.alternative);
         return compareValues(x.fields(),y.fields());
     }
+// @end-runtime
+// @if-runtime Record
     if (is<Ptr<Record>>(a)) {
         const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
         auto left = x.begin(), right = y.begin();
@@ -364,12 +420,16 @@ inline int compare(const Value& a, const Value& b) {
         }
         return order(x.size(), y.size());
     }
+// @end-runtime
+// @if-runtime Range
     if (is<Range>(a)) {
         const auto& x = as<Range>(a); const auto& y = as<Range>(b);
         if (int result = order(x.first, y.first)) return result;
         if (int result = order(x.last, y.last)) return result;
         return order(x.inclusive, y.inclusive);
     }
+// @end-runtime
+// @if-runtime Dict
     if (is<Ptr<Dict>>(a)) {
         auto x = as<Ptr<Dict>>(a)->entries(), y = as<Ptr<Dict>>(b)->entries();
         const auto less = [](const auto& p,const auto& q){return compare(p.first,q.first)<0;};
@@ -381,28 +441,43 @@ inline int compare(const Value& a, const Value& b) {
         }
         return order(x.size(),y.size());
     }
+// @end-runtime
     throw std::runtime_error("Values cannot be ordered");
 }
+// @runtime equal
 inline bool equal(const Value& a, const Value& b);
+// @runtime equalValues
 inline bool equalValues(std::span<const Value> a, std::span<const Value> b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), equal);
 }
+// @runtime equal
 inline bool equal(const Value& a, const Value& b) {
     if (a.type() != b.type()) return false;
     if (is<double>(a)) return as<double>(a) == as<double>(b);
+// @if-runtime Continuation
     if (is<Ptr<Continuation>>(a)) return as<Ptr<Continuation>>(a) == as<Ptr<Continuation>>(b);
+// @end-runtime
+// @if-runtime Vector
     if (is<Ptr<Vector>>(a)) return equalValues(as<Ptr<Vector>>(a)->values, as<Ptr<Vector>>(b)->values);
+// @end-runtime
+// @if-runtime Tuple
     if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
+// @end-runtime
+// @if-runtime AdtValue
     if (is<Ptr<Adt>>(a)) {
         const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
         return x.tag() == y.tag() && equalValues(x.fields(),y.fields());
     }
+// @end-runtime
+// @if-runtime Record
     if (is<Ptr<Record>>(a)) {
         const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
         return x.size() == y.size() && std::equal(x.begin(), x.end(), y.begin(), [](const auto& p, const auto& q) {
             return p.first == q.first && equal(p.second, q.second);
         });
     }
+// @end-runtime
+// @if-runtime Dict
     if (is<Ptr<Dict>>(a)) {
         const auto& x = *as<Ptr<Dict>>(a); const auto& y = *as<Ptr<Dict>>(b);
         if (x.size() != y.size()) return false;
@@ -412,28 +487,36 @@ inline bool equal(const Value& a, const Value& b) {
         }
         return true;
     }
+// @end-runtime
     return compare(a,b) == 0;
 }
+// @runtime hashMix
 inline std::uint32_t hashMix(std::uint32_t hash, std::uint32_t value) {
     return (hash ^ value) * 16777619u;
 }
+// @runtime hashText
 inline std::uint32_t hashText(const std::string& text) {
     std::uint32_t hash = 2166136261u;
     for (unsigned char c : text) hash = hashMix(hash,c);
     return hash;
 }
+// @runtime hashValue
 inline std::uint32_t hashValue(const Value& v);
+// @runtime hashValues
 inline std::uint32_t hashValues(std::uint32_t hash, std::span<const Value> xs) {
     for (const auto& x : xs) hash = hashMix(hash,hashValue(x));
     return hash;
 }
+// @runtime hashValue
 inline std::uint32_t hashValue(const Value& v) {
     if (is<Int>(v)) {
         auto bits = static_cast<UInt>(as<Int>(v));
         return static_cast<std::uint32_t>(bits ^ (bits >> 32));
     }
     if (is<Byte>(v)) return as<Byte>(v);
+// @if-runtime Char
     if (is<Char>(v)) return as<Char>(v).code;
+// @end-runtime
     if (is<bool>(v)) return truth(v) ? 1u : 0u;
     if (is<std::string>(v)) return hashText(as<std::string>(v));
     if (is<double>(v)) {
@@ -442,30 +525,43 @@ inline std::uint32_t hashValue(const Value& v) {
         for (int i=0; i<8; ++i, bits >>= 8) hash = hashMix(hash,static_cast<Byte>(bits));
         return hash;
     }
+// @if-runtime Vector
     if (is<Ptr<Vector>>(v)) return hashValues(hashText("vector"),as<Ptr<Vector>>(v)->values);
+// @end-runtime
+// @if-runtime Tuple
     if (is<Ptr<Tuple>>(v)) return hashValues(hashText("tuple"),as<Ptr<Tuple>>(v)->values);
+// @end-runtime
+// @if-runtime Record
     if (is<Ptr<Record>>(v)) {
         auto hash = hashText("record");
         for (const auto& [k,x] : as<Ptr<Record>>(v)->fields) hash = hashMix(hashMix(hash,hashText(k)),hashValue(x));
         return hash;
     }
+// @end-runtime
+// @if-runtime Range
     if (is<Range>(v)) {
         const auto& r = as<Range>(v);
         return hashValues(hashText("range"), Values{r.first,r.last,r.inclusive});
     }
+// @end-runtime
+// @if-runtime AdtValue
     if (is<Ptr<Adt>>(v)) {
         const auto& a = *as<Ptr<Adt>>(v);
         return hashValues(a.info().hashSeed,a.fields());
     }
+// @end-runtime
+// @if-runtime Dict
     if (is<Ptr<Dict>>(v)) {
         const auto& d = *as<Ptr<Dict>>(v);
         std::uint32_t sum = 0;
         for (const auto& [k,x] : d.entries()) sum += hashMix(static_cast<std::uint32_t>(d.hash(k)),hashValue(x));
         return hashMix(hashMix(hashText("dict"),static_cast<std::uint32_t>(d.size())),sum);
     }
+// @end-runtime
     throw std::runtime_error("Missing hash instance");
 }
 
+// @runtime Pattern PatternKind
 enum class PatternKind { word, literal, constructor, vector, push, tuple, record };
 struct Pattern {
     PatternKind kind;
@@ -476,13 +572,16 @@ struct Pattern {
     bool mutable_ = false;
     AdtTag constructor{};
 };
+// @runtime match
 inline bool match(const Pattern&, const Value&, Env&);
+// @runtime matches
 inline bool matches(const std::vector<Pattern>& patterns, std::span<const Value> values, Env& env) {
     if (patterns.size() != values.size()) return false;
     for (std::size_t i = 0; i < patterns.size(); ++i)
         if (!match(patterns[i], values[i], env)) return false;
     return true;
 }
+// @runtime match
 inline bool match(const Pattern& p, const Value& value, Env& env) {
     switch (p.kind) {
     case PatternKind::word:
@@ -492,9 +591,12 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         if (is<Int>(p.literals[0]) && is<Byte>(value)) return as<Int>(p.literals[0]) == as<Byte>(value);
         if (is<Int>(p.literals[0]) && is<double>(value)) return static_cast<double>(as<Int>(p.literals[0])) == as<double>(value);
         return equal(p.literals[0], value);
+// @if-runtime AdtValue
     case PatternKind::constructor:
         return is<Ptr<Adt>>(value) && as<Ptr<Adt>>(value)->tag() == p.constructor
             && matches(p.fields, as<Ptr<Adt>>(value)->fields(), env);
+// @end-runtime
+// @if-runtime Vector
     case PatternKind::vector:
         return is<Ptr<Vector>>(value) && matches(p.fields, as<Ptr<Vector>>(value)->values, env);
     case PatternKind::push: {
@@ -502,8 +604,12 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         const auto& xs = as<Ptr<Vector>>(value)->values;
         return !xs.empty() && matches(p.fields, Values{vector(Values(xs.begin(), xs.end()-1)), xs.back()}, env);
     }
+// @end-runtime
+// @if-runtime Tuple
     case PatternKind::tuple:
         return is<Ptr<Tuple>>(value) && matches(p.fields, as<Ptr<Tuple>>(value)->values, env);
+// @end-runtime
+// @if-runtime Record
     case PatternKind::record: {
         if (!is<Ptr<Record>>(value)) return false;
         const auto& fields = as<Ptr<Record>>(value)->fields;
@@ -513,10 +619,13 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         }
         return true;
     }
+// @end-runtime
+    default:
+        return false;
     }
-    return false;
 }
 
+// @runtime Event Route
 struct Event {
     std::string name, at;
     Values arguments;
@@ -525,32 +634,39 @@ struct Event {
     unsigned skip = 0;
 };
 using Route = std::function<Values(Event)>;
+// @runtime Handler
 using Handler = std::function<Values(const Values&, Ptr<Continuation>)>;
+// @runtime Machine !perform !exception
 struct Machine {
     Env& globals;
     Route route;
-    Values perform(Event event) {
-        if (route) return route(std::move(event));
-        if (event.target || event.skip) fail(event.at, "Unhandled routed effect: " + event.name);
-        if (event.name == "put") {
-            std::cout << raw(event.arguments.at(0)) << '\n';
-            return {};
-        }
-        if (event.name == "read") {
-            std::cout.flush();
-            std::string line;
-            std::getline(std::cin, line);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            return {line};
-        }
-        if (event.name == "exn") fail(event.at, "Exception: " + raw(event.arguments.at(0)));
-        fail(event.at, "Unhandled effect: " + event.name);
-    }
-    [[noreturn]] void exception(const std::string& message, const std::string& at) {
-        perform(Event{"exn", at, {message}, true});
-        fail(at, "Non-returning effect returned");
-    }
+    Values perform(Event event);
+    [[noreturn]] void exception(const std::string& message, const std::string& at);
 };
+// @runtime perform
+inline Values Machine::perform(Event event) {
+    if (route) return route(std::move(event));
+    if (event.target || event.skip) fail(event.at, "Unhandled routed effect: " + event.name);
+    if (event.name == "put") {
+        std::cout << raw(event.arguments.at(0)) << '\n';
+        return {};
+    }
+    if (event.name == "read") {
+        std::cout.flush();
+        std::string line;
+        std::getline(std::cin, line);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        return {line};
+    }
+    if (event.name == "exn") fail(event.at, "Exception: " + raw(event.arguments.at(0)));
+    fail(event.at, "Unhandled effect: " + event.name);
+}
+// @runtime exception
+inline void Machine::exception(const std::string& message, const std::string& at) {
+    perform(Event{"exn", at, {message}, true});
+    fail(at, "Non-returning effect returned");
+}
+// @runtime RoutedLabel
 struct RoutedLabel {
     Ptr<Label> label;
     const void* previous = nullptr;
@@ -560,17 +676,21 @@ struct RoutedLabel {
     ~RoutedLabel() { if (label) label->target = previous; }
     RoutedLabel(const RoutedLabel&) = delete;
 };
+// @runtime labelTarget
 inline const void* labelTarget(const Value& value, const std::string& at) {
     const auto& label = as<Ptr<Label>>(value);
     if (!label->target) fail(at, "Effect label is outside its handler lifetime");
     return label->target;
 }
+// @runtime accepts
 inline bool accepts(Event& event, const RoutedLabel& scope) {
     if (event.target) return event.target == &scope;
     if (event.skip) { --event.skip; return false; }
     return true;
 }
+// @runtime Abort
 struct Abort { const void* owner; std::optional<Values> result; };
+// @runtime loop
 template <typename Body>
 std::optional<Values> loop(Machine& parent, Body body, Ptr<Label> label = {}, bool cancelOnly = false) {
     const RoutedLabel scope(std::move(label));
@@ -586,6 +706,7 @@ std::optional<Values> loop(Machine& parent, Body body, Ptr<Label> label = {}, bo
     }
     return std::nullopt;
 }
+// @runtime resume
 inline Values resume(const Value& value, Values arguments, const std::string& at) {
     const auto& k = as<Ptr<Continuation>>(value);
     if (k->never) fail(at, "Cannot resume a non-returning effect");
@@ -597,6 +718,7 @@ inline Values resume(const Value& value, Values arguments, const std::string& at
 // Suspending a worker retains the C++ call frames across a user effect.
 // The driver and worker alternate at each operation. Only arguments and
 // results cross the rendezvous, and abandoning a continuation joins the worker.
+// @runtime EffectWorker Abandoned
 struct Abandoned {};
 class EffectWorker {
     std::mutex mutex;
@@ -654,6 +776,7 @@ public:
         changed.notify_all();
     }
 };
+// @runtime handle
 template <typename Body>
 Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& handlers, Ptr<Label> label = {}) {
     const RoutedLabel scope(std::move(label));
@@ -678,6 +801,7 @@ Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& 
     };
     return drive();
 }
+// @runtime mask
 template <typename Body>
 Values mask(Machine& parent, Body body, const std::string& name, const void* target) {
     Machine child{parent.globals, [&](Event event) {
@@ -689,6 +813,7 @@ Values mask(Machine& parent, Body body, const std::string& name, const void* tar
     }};
     return body(child);
 }
+// @runtime labelBlock
 template <typename Body>
 Values labelBlock(Machine& parent, Body body) {
     auto label = std::make_shared<Label>();
@@ -700,16 +825,19 @@ Values labelBlock(Machine& parent, Body body) {
     return body(child, label);
 }
 
+// @runtime readBorrow
 inline Value readBorrow(const Value& value, const std::string& at) {
     const auto& ref = as<Ptr<Borrow>>(value);
     if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
     return ref->owner->value;
 }
+// @runtime writeBorrow
 inline void writeBorrow(const Value& value, Value replacement, const std::string& at) {
     const auto& ref = as<Ptr<Borrow>>(value);
     if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
     ref->owner->value = std::move(replacement);
 }
+// @runtime findIndex
 inline std::optional<Value> findIndex(const Value& value, const Value& index) {
     if (is<Ptr<Dict>>(value)) {
         const auto& dict = *as<Ptr<Dict>>(value);
@@ -727,10 +855,12 @@ inline std::optional<Value> findIndex(const Value& value, const Value& index) {
     }
     return {};
 }
+// @runtime atIndex
 inline Value atIndex(Machine& m, const Value& value, const Value& index, const std::string& at) {
     if (auto item = findIndex(value, index)) return *item;
     m.exception((is<Ptr<Dict>>(value) ? "Dictionary key not found: " : "Index out of bounds: ") + show(index), at);
 }
+// @runtime setIndex
 inline Value setIndex(Machine& m, const Value& value, const Value& index, const Value& replacement,
                       const std::string& at, bool reuse = false) {
     if (is<Ptr<Dict>>(value)) {
@@ -752,6 +882,7 @@ inline Value setIndex(Machine& m, const Value& value, const Value& index, const 
     xs->values[pos] = replacement;
     return xs;
 }
+// @runtime append
 template <bool Concat>
 inline Value append(const Value& value, const Value& item, bool reuse) {
     auto xs = as<Ptr<Vector>>(value);
@@ -762,8 +893,11 @@ inline Value append(const Value& value, const Value& item, bool reuse) {
     } else xs->values.push_back(item);
     return xs;
 }
+// @runtime field
 inline Value field(const Value& value, const std::string& key) { return as<Ptr<Record>>(value)->fields.at(key); }
+// @runtime tupleAt
 inline Value tupleAt(const Value& value, std::size_t i) { return as<Ptr<Tuple>>(value)->values.at(i); }
+// @runtime UpdatePart
 struct UpdatePart {
     std::string kind, field;
     Value index;
@@ -771,11 +905,13 @@ struct UpdatePart {
     std::function<Value(Machine&, const Value&, const Value&)> get;
     std::function<Value(Machine&, const Value&, const Value&, const Value&)> set;
 };
+// @runtime pathRead
 inline Value pathRead(Machine& m, const Value& value, const UpdatePart& part, const std::string& at) {
     if (part.kind == "field") return field(value, part.field);
     if (part.kind == "tuple-index") return tupleAt(value, static_cast<std::size_t>(as<Int>(part.index)));
     return part.get ? part.get(m,value,part.index) : atIndex(m,value,part.index,at);
 }
+// @runtime pathFind
 inline std::optional<Value> pathFind(Machine& m, const Value& value, const UpdatePart& part) {
     if (!part.get) return findIndex(value,part.index);
     auto values = handle(m,[&](Machine& child) -> Values {return {part.get(child,value,part.index)};},
@@ -783,6 +919,7 @@ inline std::optional<Value> pathFind(Machine& m, const Value& value, const Updat
     if (values.empty()) return std::nullopt;
     return std::move(values[0]);
 }
+// @runtime updatePath
 template <typename Replace>
 Value updatePath(Machine& m, const Value& value, const std::vector<UpdatePart>& path, std::size_t i,
                  const Replace& replace, bool defaulting, bool updating, bool reuse, const std::string& at) {
@@ -810,8 +947,11 @@ Value updatePath(Machine& m, const Value& value, const std::vector<UpdatePart>& 
     return part.set ? part.set(m,value,part.index,changed) : setIndex(m,value,part.index,changed,at,reuse);
 }
 
+// @runtime bits
 inline Int bits(UInt n) { return std::bit_cast<Int>(n); }
+// @runtime Arithmetic
 enum class Arithmetic { add, subtract, multiply, divide, remainder, power };
+// @runtime intOp
 template <Arithmetic Op>
 inline Int intOp(Int x, Int y, const std::string& at) {
     auto a = static_cast<UInt>(x), b = static_cast<UInt>(y);
@@ -829,6 +969,7 @@ inline Int intOp(Int x, Int y, const std::string& at) {
         return bits(result);
     }
 }
+// @runtime byteOp
 template <Arithmetic Op>
 inline Byte byteOp(Byte x, Byte y, const std::string& at) {
     Int result;
@@ -842,6 +983,7 @@ inline Byte byteOp(Byte x, Byte y, const std::string& at) {
     if (result < 0 || result > 255) fail(at, "byte overflow");
     return static_cast<Byte>(result);
 }
+// @runtime floatOp
 template <Arithmetic Op>
 inline double floatOp(double x, double y, const std::string& at) {
     double result;
@@ -855,12 +997,15 @@ inline double floatOp(double x, double y, const std::string& at) {
     if (!std::isfinite(result)) fail(at, "Non-finite numeric result");
     return result;
 }
+// @runtime bitPosition
 inline unsigned bitPosition(Machine& m, Int index, unsigned width, const std::string& at) {
     if (index < 0 || static_cast<UInt>(index) >= width)
         m.exception("Bit position or shift count is outside 0.." + std::to_string(width-1),at);
     return static_cast<unsigned>(index);
 }
+// @runtime BitOp
 enum class BitOp { bitAnd, bitOr, bitXor, shiftLeft, shiftRight, testBit, setBit, clearBit };
+// @runtime bitOp
 template <BitOp Op>
 inline Value bitOp(Machine& m, const Value& left, const Value& right, const std::string& at) {
     if constexpr (Op == BitOp::bitAnd || Op == BitOp::bitOr || Op == BitOp::bitXor) {
@@ -890,40 +1035,48 @@ inline Value bitOp(Machine& m, const Value& left, const Value& right, const std:
     if (byte) return static_cast<Byte>(result);
     return bits(result);
 }
+// @runtime walkRange
 inline void walkRange(const Range& r, const Visit& visit) {
     const Int step = r.first > r.last ? -1 : 1;
     for (Int n = r.first; n != r.last; n += step) visit(n);
     if (r.inclusive) visit(r.last);
 }
+// @runtime numeric
 template <Arithmetic Op>
 inline Value numeric(const Value& a, const Value& b, const std::string& at) {
     if (is<Int>(a)) return intOp<Op>(as<Int>(a),as<Int>(b),at);
     if (is<Byte>(a)) return byteOp<Op>(as<Byte>(a),as<Byte>(b),at);
     return floatOp<Op>(as<double>(a),as<double>(b),at);
 }
+// @runtime prepend
 inline Value prepend(const Value& item, const Value& source) {
     Values result{item};
     const auto& tail = as<Ptr<Vector>>(source)->values;
     result.insert(result.end(),tail.begin(),tail.end());
     return vector(std::move(result));
 }
+// @runtime concatStrings
 inline std::string concatStrings(const Value& a, const Value& b) {
     return as<std::string>(a) + as<std::string>(b);
 }
+// @runtime concatValues
 inline Value concatValues(const Value& a, const Value& b, bool reuse) {
     if (is<std::string>(a)) return concatStrings(a,b);
     return append<true>(a,b,reuse);
 }
+// @runtime rangeVector
 inline Value rangeVector(Int first, Int last) {
     Values result;
     walkRange({first,last,true},[&](Value v){ result.push_back(std::move(v)); });
     return vector(std::move(result));
 }
+// @runtime bytes
 inline Value bytes(const Value& value) {
     Values result;
     for (unsigned char c : as<std::string>(value)) result.emplace_back(static_cast<Byte>(c));
     return vector(std::move(result));
 }
+// @runtime chars
 inline Value chars(const Value& value, const std::string& at) {
     const auto& text = as<std::string>(value);
     Values result;
@@ -934,19 +1087,23 @@ inline Value chars(const Value& value, const std::string& at) {
     }
     return vector(std::move(result));
 }
+// @runtime vectorLength
 inline Int vectorLength(const Value& value) {
     return static_cast<Int>(as<Ptr<Vector>>(value)->values.size());
 }
+// @runtime vectorHead
 inline Value vectorHead(const Value& value, const std::string& at) {
     const auto& xs = as<Ptr<Vector>>(value)->values;
     if (xs.empty()) fail(at, "head: empty list");
     return xs.front();
 }
+// @runtime vectorTail
 inline Value vectorTail(const Value& value, const std::string& at) {
     const auto& xs = as<Ptr<Vector>>(value)->values;
     if (xs.empty()) fail(at, "tail: empty list");
     return vector(Values(xs.begin()+1,xs.end()));
 }
+// @runtime cast
 template <typename Target>
 inline Value cast(Machine& m, const Value& value, const std::string& at) {
     if constexpr (std::is_same_v<Target,std::string>) {
@@ -986,6 +1143,7 @@ inline Value cast(Machine& m, const Value& value, const std::string& at) {
         }
     }
 }
+// @runtime parseNumber
 template <typename Number, bool Strict>
 inline Value parseNumber(Machine& m, const Value& value, const std::string& at) {
     const auto& text = as<std::string>(value);
@@ -1008,20 +1166,39 @@ inline Value parseNumber(Machine& m, const Value& value, const std::string& at) 
         return *result;
     } else return option(result);
 }
+// @runtime walk
 inline void walk(Machine& m, const Value& value, const Visit& visit) {
+// @if-runtime Vector
     if (is<Ptr<Vector>>(value)) {
         for (const auto& v : as<Ptr<Vector>>(value)->values) visit(v);
-    } else if (is<Range>(value)) walkRange(as<Range>(value),visit);
-    else if (is<Ptr<Stream>>(value)) as<Ptr<Stream>>(value)->walk(m,visit);
-    else if (is<Ptr<Dict>>(value)) {
+        return;
+    }
+// @end-runtime
+// @if-runtime Range
+    if (is<Range>(value)) { walkRange(as<Range>(value),visit); return; }
+// @end-runtime
+// @if-runtime Stream
+    if (is<Ptr<Stream>>(value)) { as<Ptr<Stream>>(value)->walk(m,visit); return; }
+// @end-runtime
+// @if-runtime Dict
+    if (is<Ptr<Dict>>(value)) {
         for (const auto& [k,v] : as<Ptr<Dict>>(value)->entries()) visit(tuple({k,v}));
-    } else if (is<Ptr<Collection>>(value)) {
+        return;
+    }
+// @end-runtime
+// @if-runtime Collection
+    if (is<Ptr<Collection>>(value)) {
         for (const auto& v : as<Ptr<Collection>>(value)->values) visit(v);
-    } else throw std::runtime_error("Value is not iterable");
+        return;
+    }
+// @end-runtime
+    throw std::runtime_error("Value is not iterable");
 }
+// @runtime stream
 inline Value stream(std::function<void(Machine&, const Visit&)> body) {
     return std::make_shared<Stream>(Stream{std::move(body)});
 }
+// @runtime fromYield
 inline Value fromYield(Ptr<Label> label, std::function<void(Machine&)> body) {
     return stream([label, body = std::move(body)](Machine& parent, const Visit& visit) {
         const RoutedLabel scope(label);
@@ -1035,20 +1212,26 @@ inline Value fromYield(Ptr<Label> label, std::function<void(Machine&)> body) {
         body(child);
     });
 }
+// @runtime StopIteration untilStopped
 struct StopIteration { const void* owner; };
 template <typename Body> void untilStopped(Body body) {
     int owner = 0;
     try { body([&]{ throw StopIteration{&owner}; }); }
     catch (StopIteration& stop) { if (stop.owner != &owner) throw; }
 }
+// @runtime countValue
 inline Int countValue(Machine& m, const Value& value, const std::string& op, const std::string& at, bool positive = false) {
     auto count = as<Int>(value);
     if (count < (positive ? 1 : 0)) m.exception(op + (positive ? ": count must be positive" : ": count must be nonnegative"),at);
     return count;
 }
+// @runtime MapItem
 using MapItem = std::function<Value(Machine&, Value)>;
+// @runtime Walk
 using Walk = std::function<void(Machine&, const Visit&)>;
+// @runtime WalkItem
 using WalkItem = std::function<void(Machine&, Value, const Visit&)>;
+// @runtime Transform transform
 enum class Transform { map, filter, takeWhile, skipWhile, take, skip, flatMap, flatten };
 template <Transform Mode>
 inline Value transform(Walk source, Int count, MapItem fn, Ptr<Label> label,
@@ -1082,6 +1265,7 @@ inline Value transform(Walk source, Int count, MapItem fn, Ptr<Label> label,
     });
 }
 
+// @runtime split
 inline Value split(const Value& source, const Value& separator) {
     return stream([text = as<std::string>(source), sep = as<std::string>(separator)](Machine&,const Visit& visit) {
         if (sep.empty()) {
@@ -1100,7 +1284,9 @@ inline Value split(const Value& source, const Value& separator) {
         }
     });
 }
+// @runtime Compare
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
+// @runtime Partition partition
 enum class Partition { windows, chunks, chunkBy };
 template <Partition Mode>
 inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Label> label) {
@@ -1133,6 +1319,7 @@ inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Labe
         },label);
     });
 }
+// @runtime Cursor
 class Cursor {
     Walk walk;
     Ptr<EffectWorker> worker;
@@ -1153,6 +1340,7 @@ public:
         return {};
     }
 };
+// @runtime zip
 inline Value zip(Walk left, Walk right, Ptr<Label> label) {
     return stream([=](Machine& parent,const Visit& visit) {
         loop(parent,[&](Machine& m){
@@ -1165,6 +1353,7 @@ inline Value zip(Walk left, Walk right, Ptr<Label> label) {
         },label,true);
     });
 }
+// @runtime Combinatorics combinatorics
 enum class Combinatorics { permutations, combinations, combinationsWithReplacement, powerset, cartesianProduct };
 template <Combinatorics Mode>
 inline Value combinatorics(Walk left, Walk right, Int count) {
@@ -1204,6 +1393,7 @@ inline Value combinatorics(Walk left, Walk right, Int count) {
         else emit(static_cast<UInt>(count));
     });
 }
+// @runtime CollectionOp collectionOp
 enum class CollectionOp { qpush, qpushFront, qpop, qpopBack, qpeek, qpeekBack, qlength, qisEmpty,
                           hpush, hpop, hpeek, hlength, hisEmpty };
 template <CollectionOp Op>
@@ -1232,6 +1422,7 @@ inline Results<2> collectionOp(const Value& value, const Value& item,
     }
     return {result,{}};
 }
+// @runtime Consumption Consume consume
 struct Consumption { Value value; std::optional<Values> broken; };
 enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, toDict, counts, groupBy };
 template <Consume Mode>
@@ -1289,5 +1480,3 @@ inline Consumption consume(Machine& parent, Walk source, const Value& arg,
     } else result = option(best);
     return {std::move(result),std::move(broken)};
 }
-
-} // namespace nyanco

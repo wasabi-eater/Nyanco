@@ -1759,6 +1759,8 @@ Go生成はこのIRの型情報・所有権判定を利用し、heapの`hpush`�
 
 `--emit-cpp` で、C++標準ライブラリだけでビルドできる単一ファイルを出力します。ディレクトリのモジュールやimport先も一緒に型検査し、実行に必要な関数とランタイムを出力します。
 
+生成コードが参照するC++ランタイムと、その依存先だけを埋め込みます。参照されないADTの定義や、利用しない標準ヘッダーも省きます。
+
 ```sh
 node cli.mjs examples/modules --emit-cpp main.cpp
 c++ -std=c++20 -O2 -pthread main.cpp -o main

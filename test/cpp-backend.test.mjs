@@ -35,6 +35,23 @@ test('C++ lowering uses typed specializations and preserves vector ownership dec
   assert.throws(() => transpileCpp(compile('main = 1 + True', 'bad.nyan', new Map(), {checkTypes:false})), /Type error/);
 });
 
+test('C++ output keeps only runtime fragments reachable from the generated program', () => {
+  const source = transpileCpp(compile(`data unused = UnusedTag
+unused = toVector (map [1, 2] {* 2})
+main = print "EffectWorker transform"`));
+  assert.match(source, /inline Values Machine::perform\(/);
+  assert.match(source, /"EffectWorker transform"/);
+  assert.doesNotMatch(source, /#include <thread>|class EffectWorker|class Dict|class AdtValue|UnusedTag/);
+  assert.doesNotMatch(source, /inline Value transform\(|No matching pattern for unused/);
+
+  const arithmetic = transpileCpp(compile('main = 1 + 2'));
+  assert.doesNotMatch(arithmetic, /inline Values Machine::perform|std::string show\(/);
+  const effects = transpileCpp(compile('main = handle {print "ok"} {put: {-> text k; resume k}}'));
+  assert.match(effects, /#include <thread>/);
+  assert.match(effects, /class EffectWorker/);
+  assert.match(effects, /inline Values Machine::perform\(/);
+});
+
 test('scalar arithmetic and ordinary function calls avoid boxing', () => {
   const source = transpileCpp(compile(`calc : int int -> int
 calc x y =
