@@ -46,9 +46,11 @@ const patternKinds = {
   'word': 'word', 'literal': 'literal', 'constructor': 'constructor', 'list-pattern': 'vector',
   'push-pattern': 'push', 'record-pattern': 'record', 'tuple-pattern': 'tuple'
 };
+const bitwise = new Map([['.&.','&'], ['.|.','|'], ['xor','^']]);
+const bitPositions = new Set(['.<<.','.>>.','testBit','setBit','clearBit']);
 const binaryNames = new Set([
   '+', '-', '*', '/', '%', '^', '<', '<=', '>', '>=', '==', '/=', '&&', '||',
-  '.&.', '.|.', '.<<.', '.>>.', '++', '::', 'vpush', 'push', 'Push', 'concat', 'cons', '..', '..=', 'range'
+  ...bitwise.keys(), ...bitPositions, '++', '::', 'vpush', 'push', 'Push', 'concat', 'cons', '..', '..=', 'range'
 ]);
 const canReuse = new Set(['++', '::', 'vpush', 'push', 'Push', 'concat']);
 
@@ -325,6 +327,34 @@ export function transpileCpp(program, {
     });
     return lookupInstance(cls, heads)?.implementations.get(token.value) || null;
   }
+  function callBit(ctx, token, a, b, leftType, rightType) {
+    const op = token.value;
+    const integer = leftType === 'Int' || leftType === 'Byte';
+    const bitwiseOperator = bitwise.get(op);
+    const native = bitwiseOperator
+      ? (integer || leftType === 'bool') && leftType === rightType
+      : integer && rightType === 'Int';
+    if (!native) return ctx.value(`bitOp(m, ${string(op)}, ${a}, ${b}, ${loc(token)})`);
+
+    const left = readAs(a,leftType), right = readAs(b,rightType);
+    if (leftType === 'bool') {
+      const operator = bitwiseOperator === '^' ? '!=' : bitwiseOperator;
+      return ctx.value(`${left} ${operator} ${right}`,'bool');
+    }
+    const unsignedLeft = `static_cast<UInt>(${left})`;
+    const result = value => ctx.value(leftType === 'Byte' ? `static_cast<Byte>(${value})` : `bits(${value})`,leftType);
+    if (bitwiseOperator) return result(`${unsignedLeft} ${bitwiseOperator} static_cast<UInt>(${right})`);
+
+    const pos = ctx.value(`bitPosition(m, ${right}, ${leftType === 'Byte' ? 8 : 64}, ${loc(token)})`,'unsigned');
+    if (op === '.<<.') return result(`${unsignedLeft} << ${pos}`);
+    if (op === '.>>.') {
+      // C++20 signed right shift is arithmetic. Byte shifts use unsigned bits.
+      return leftType === 'Int' ? ctx.value(`${left} >> ${pos}`,'Int') : result(`${unsignedLeft} >> ${pos}`);
+    }
+    const mask = `(UInt{1} << ${pos})`;
+    if (op === 'testBit') return ctx.value(`(${unsignedLeft} & ${mask}) != 0`,'bool');
+    return result(op === 'setBit' ? `${unsignedLeft} | ${mask}` : `${unsignedLeft} & ~${mask}`);
+  }
   function callBinary(ctx, token, a, b, effect, reuse = false) {
     const target = customMethod(token, effect);
     if (target) {
@@ -332,12 +362,11 @@ export function transpileCpp(program, {
       callNamed(ctx, target, effect, stack);
       return stack[0];
     }
-    if (['.&.','.|.','.<<.','.>>.'].includes(token.value))
-      return ctx.value(`bitOp(m, ${string(token.value)}, ${a}, ${b}, ${loc(token)})`);
     const inputs = effect && items(effect.input);
     const type = inputs?.at(-2);
-    const scalar = cppType(type), op = token.value;
-    if (scalar !== 'Value' && scalar === cppType(inputs.at(-1))) {
+    const scalar = cppType(type), rightType = cppType(inputs?.at(-1)), op = token.value;
+    if (bitwise.has(op) || bitPositions.has(op)) return callBit(ctx,token,a,b,scalar,rightType);
+    if (scalar !== 'Value' && scalar === rightType) {
       const left = readAs(a,scalar), right = readAs(b,scalar);
       if (['==','/=','<','<=','>','>='].includes(op))
         return ctx.value(`${left} ${op === '/=' ? '!=' : op} ${right}`,'bool');
@@ -853,9 +882,6 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       stack.push(ctx.value(`!${readAs(pop(),'bool')}`,'bool'));
     } else if (['head','tail','length','chars','bytes'].includes(name)) {
       push(`unary(${string(name)}, ${pop()}, ${at})`);
-    } else if (['xor','testBit','setBit','clearBit'].includes(name)) {
-      const [a,b] = take(stack,2);
-      push(`bitOp(m, ${string(name)}, ${a}, ${b}, ${at})`);
     } else if (name === 'hash') {
       const operation = valueOperation('hash',inputs().at(-1),n);
       push(`static_cast<Int>(${operation}(m,${pop()}))`);

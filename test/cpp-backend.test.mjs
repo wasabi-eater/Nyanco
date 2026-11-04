@@ -50,6 +50,20 @@ main = mixed (calc 2 3); drop; drop`));
   assert.match(source, /std::tuple<Int, Value, bool> fn\d+\(Machine& m, Int arg\d+\)/);
 });
 
+test('known bit operations lower to native scalars and checked positions', () => {
+  const source = transpileCpp(compile(`change : byte int -> byte bool
+change b n = clearBit (setBit (b .<<. n) n) 0; testBit b n
+logical : bool bool -> bool
+logical a b = xor (a .&. b) (a .|. b)
+main = change (toByte 5) 1; drop; drop; logical True False`));
+  const emitted = source.slice(source.lastIndexOf('\nnamespace nyanco {'));
+  assert.match(emitted, /std::tuple<Byte, bool> fn\d+\(Machine& m, Byte arg\d+, Int arg\d+\)/);
+  assert.match(emitted, /unsigned v\d+ = bitPosition\(m, v\d+, 8,/);
+  assert.match(emitted, /Byte v\d+ = static_cast<Byte>\(static_cast<UInt>\(v\d+\) << v\d+\)/);
+  assert.match(emitted, /bool v\d+ = v\d+ != v\d+;/);
+  assert.doesNotMatch(emitted, /\bbitOp\(/);
+});
+
 test('CLI C++20 emission builds a standalone program with modules, IO and resumable effects', {
   skip: !compiler, timeout: 120000
 }, () => {
@@ -79,7 +93,15 @@ main =
     dict <- [0: "left", 4294967297: "right"]
     print (dict with [0] = "next")
     print dict
+    print ((1 .<<. 63) .>>. 63)
+    print ((toByte 128) .>>. 7)
+    print (setBit (toByte 0) 7)
+    print (clearBit 15 2)
+    print (testBit (toByte 128) 7)
+    print (xor (True .&. False) (False .|. True))
     print (catch {1 .<<. 64})
+    print (catch {(toByte 1) .>>. -1})
+    print (catch {clearBit (toByte 1) 8})
     print "猫😀"
 `);
     const program = compileModule(source);

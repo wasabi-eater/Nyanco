@@ -822,6 +822,11 @@ inline double floatOp(const std::string& op, double x, double y, const std::stri
     if (!std::isfinite(result)) fail(at, "Non-finite numeric result");
     return result;
 }
+inline unsigned bitPosition(Machine& m, Int index, unsigned width, const std::string& at) {
+    if (index < 0 || static_cast<UInt>(index) >= width)
+        m.exception("Bit position or shift count is outside 0.." + std::to_string(width-1),at);
+    return static_cast<unsigned>(index);
+}
 inline Value bitOp(Machine& m, const std::string& op, const Value& left, const Value& right, const std::string& at) {
     if (is<bool>(left)) return op == ".&." ? truth(left) && truth(right) : op == ".|."
         ? truth(left) || truth(right) : truth(left) != truth(right);
@@ -834,13 +839,13 @@ inline Value bitOp(Machine& m, const std::string& op, const Value& left, const V
     else if (op == ".|.") result = x | y;
     else if (op == "xor") result = x ^ y;
     else {
-        if (y >= width) m.exception("Bit position or shift count is outside 0.." + std::to_string(width-1),at);
-        const UInt mask = UInt{1} << y;
+        const unsigned pos = bitPosition(m,bits(y),width,at);
+        const UInt mask = UInt{1} << pos;
         if (op == "testBit") return (x & mask) != 0;
         if (op == "setBit") result = x | mask;
         else if (op == "clearBit") result = x & ~mask;
-        else if (op == ".<<.") result = x << y;
-        else if (op == ".>>.") result = byte ? x >> y : static_cast<UInt>(bits(x) >> y);
+        else if (op == ".<<.") result = x << pos;
+        else if (op == ".>>.") result = byte ? x >> pos : static_cast<UInt>(bits(x) >> pos);
         else fail(at, "Unknown bit operation: " + op);
     }
     if (byte) return static_cast<Byte>(result);
