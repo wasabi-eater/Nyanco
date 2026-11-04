@@ -48,6 +48,11 @@ const patternKinds = {
 };
 const bitwise = new Map([['.&.','&'], ['.|.','|'], ['xor','^']]);
 const bitPositions = new Set(['.<<.','.>>.','testBit','setBit','clearBit']);
+const arithmetic = new Map([['+','add'], ['-','subtract'], ['*','multiply'],
+  ['/','divide'], ['%','remainder'], ['^','power']]);
+const bitCodes = new Map([['.&.','bitAnd'], ['.|.','bitOr'], ['xor','bitXor'],
+  ['.<<.','shiftLeft'], ['.>>.','shiftRight']]);
+const castType = new Map([['int','Int'], ['byte','Byte'], ['float','double'], ['char','Char'], ['string','std::string']]);
 const binaryNames = new Set([
   '+', '-', '*', '/', '%', '^', '<', '<=', '>', '>=', '==', '/=', '&&', '||',
   ...bitwise.keys(), ...bitPositions, '++', '::', 'vpush', 'push', 'Push', 'concat', 'cons', '..', '..=', 'range'
@@ -334,7 +339,7 @@ export function transpileCpp(program, {
     const native = bitwiseOperator
       ? (integer || leftType === 'bool') && leftType === rightType
       : integer && rightType === 'Int';
-    if (!native) return ctx.value(`bitOp(m, ${string(op)}, ${a}, ${b}, ${loc(token)})`);
+    if (!native) return ctx.value(`bitOp<BitOp::${bitCodes.get(op) || op}>(m, ${a}, ${b}, ${loc(token)})`);
 
     const left = readAs(a,leftType), right = readAs(b,rightType);
     if (leftType === 'bool') {
@@ -372,20 +377,35 @@ export function transpileCpp(program, {
         return ctx.value(`${left} ${op === '/=' ? '!=' : op} ${right}`,'bool');
       if (scalar === 'bool' && ['&&','||'].includes(op))
         return ctx.value(`${left} ${op} ${right}`,'bool');
-      if (scalar !== 'bool' && ['+','-','*','/','%','^'].includes(op)) {
+      if (scalar !== 'bool' && arithmetic.has(op)) {
         if (scalar === 'Int' && ['+','-','*'].includes(op))
           return ctx.value(`bits(static_cast<UInt>(${left}) ${op} static_cast<UInt>(${right}))`,scalar);
         const operation = {Int:'intOp',Byte:'byteOp',double:'floatOp'}[scalar];
-        return ctx.value(`${operation}(${string(op)}, ${left}, ${right}, ${loc(token)})`,scalar);
+        return ctx.value(`${operation}<Arithmetic::${arithmetic.get(op)}>(${left}, ${right}, ${loc(token)})`,scalar);
       }
     }
-    if (type && ['==','/=','<','<=','>','>='].includes(token.value)) {
+    if (['==','/=','<','<=','>','>='].includes(op)) {
       const eq = token.value === '==' || token.value === '/=';
-      const operation = valueOperation(eq ? 'eq' : 'ord',type,token);
-      const call = `${operation}(m,${a},${b})`;
+      const call = type
+        ? `${valueOperation(eq ? 'eq' : 'ord',type,token)}(m,${a},${b})`
+        : `${eq ? 'equal' : 'compare'}(${a},${b})`;
       return ctx.value(eq ? (token.value === '/=' ? '!' : '') + call : `${call} ${token.value} 0`,'bool');
     }
-    return ctx.value(`binary(${string(token.value)}, ${a}, ${b}, ${loc(token)}, ${reuse})`);
+    if (arithmetic.has(op)) return ctx.value(`numeric<Arithmetic::${arithmetic.get(op)}>(${a}, ${b}, ${loc(token)})`);
+    if (op === 'cons') return ctx.value(`prepend(${a}, ${b})`);
+    if (['vpush','push','Push','::'].includes(op)) return ctx.value(`append<false>(${a}, ${b}, ${reuse})`);
+    if (op === 'concat' || op === '++') {
+      const container = type && T.prune(type);
+      if (op === 'concat' || container?.tag === 'list') return ctx.value(`append<true>(${a}, ${b}, ${reuse})`);
+      if (container?.tag === 'atom' && container.name === 'string') return ctx.value(`concatStrings(${a}, ${b})`);
+      return ctx.value(`concatValues(${a}, ${b}, ${reuse})`);
+    }
+    if (op === 'range' || op === '..' || op === '..=') {
+      const left = readAs(a,'Int'), right = readAs(b,'Int');
+      return ctx.value(op === 'range' ? `rangeVector(${left}, ${right})` : `Range{${left}, ${right}, ${op === '..='}}`);
+    }
+    if (op === '&&' || op === '||') return ctx.value(`${readAs(a,'bool')} ${op} ${readAs(b,'bool')}`,'bool');
+    unsupported(token);
   }
   function callIndex(ctx, token, effect, args, optional = false) {
     const methodToken = {...token, value:args.length === 2 ? 'at' : 'setAt'};
@@ -557,7 +577,7 @@ return {option(${args[0]})};
             if (numeric?.conversion) {
               const value = ctx.value(literal(n, 'int'),'Int');
               if (numeric.conversion.target === 'fromInt')
-                stack.push(ctx.value(`cast(m, ${value}, ${string(numeric.conversion.destination)}, ${at})`));
+                stack.push(ctx.value(`cast<${castType.get(numeric.conversion.destination)}>(m, ${value}, ${at})`));
               else {
                 const args = [value];
                 callNamed(ctx, numeric.conversion.target, numeric.effect, args);
@@ -877,18 +897,22 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     } else if (method?.specialCast) {
       const conversion = T.castInfo(definitions,n,info.effect);
       if (conversion.target !== name) callNamed(ctx, conversion.target, info.effect, stack);
-      else push(`cast(m, ${pop()}, ${string(conversion.destination)}, ${at})`);
+      else push(`cast<${castType.get(conversion.destination)}>(m, ${pop()}, ${at})`);
     } else if (name === 'not') {
       stack.push(ctx.value(`!${readAs(pop(),'bool')}`,'bool'));
     } else if (['head','tail','length','chars','bytes'].includes(name)) {
-      push(`unary(${string(name)}, ${pop()}, ${at})`);
+      const value = pop();
+      if (name === 'length') stack.push(ctx.value(`vectorLength(${value})`,'Int'));
+      else if (name === 'bytes') push(`bytes(${value})`);
+      else if (name === 'chars') push(`chars(${value}, ${at})`);
+      else push(`${name === 'head' ? 'vectorHead' : 'vectorTail'}(${value}, ${at})`);
     } else if (name === 'hash') {
       const operation = valueOperation('hash',inputs().at(-1),n);
       push(`static_cast<Int>(${operation}(m,${pop()}))`);
     } else if (name === 'at' || name === 'setAt') {
       stack.push(callIndex(ctx,n,info.effect,take(stack,name === 'at' ? 2 : 3)));
     } else if (['parseInt','parseFloat','toNum'].includes(name)) {
-      push(`parseNumber(m, ${pop()}, ${name === 'parseInt'}, ${name !== 'toNum'}, ${at})`);
+      push(`parseNumber<${name === 'parseInt' ? 'Int' : 'double'}, ${name !== 'toNum'}>(m, ${pop()}, ${at})`);
     } else if (name === 'nop') {
       return stack;
     } else if (name === 'dup') stack.push(stack.at(-1));
@@ -1025,7 +1049,7 @@ auto walkItem = ${walker('item',nestedType,n)};
 walkItem(m,visit);
 }` : '{}';
       const lazy = streamTransforms.has(name);
-      const stream = ctx.value(`transform(${walk}, ${string(mode)}, ${count}, ${fn}, ${lazy ? label : 'Ptr<Label>{}'}, ${!lazy}, ${nested})`);
+      const stream = ctx.value(`transform<Transform::${mode}>(${walk}, ${count}, ${fn}, ${lazy ? label : 'Ptr<Label>{}'}, ${!lazy}, ${nested})`);
       if (lazy) stack.push(stream);
       else return collect(ctx, stack, walker(stream,T.prune(info.output).item,n), label);
       return stack;
@@ -1064,14 +1088,14 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
       const inner = context();
       const less = keyed && info.comparison ? callBinary(inner,{...n,value:'=='},'a','b',info.comparison) : null;
       const eq = less ? `[](Machine& m,const Value& a,const Value& b) { ${inner.lines.join(' ')} return truth(${less}); }` : '{}';
-      push(`partition(${walk}, ${string(name)}, ${count}, ${key}, ${eq}, ${label})`);
+      push(`partition<Partition::${name}>(${walk}, ${count}, ${key}, ${eq}, ${label})`);
       return stack;
     }
     if (['permutations','combinations','combinationsWithReplacement','powerset','cartesianProduct'].includes(name)) {
       const arg = name === 'powerset' ? null : stack.pop(), source = stack.pop();
       const right = name === 'cartesianProduct' ? walker(arg,types.at(-1),n) : 'Walk{}';
       const count = arg && name !== 'cartesianProduct' ? `countValue(m,${arg},${string(name)},${at})` : '0';
-      push(`combinatorics(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count}, ${string(name)})`);
+      push(`combinatorics<Combinatorics::${name}>(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count})`);
       return stack;
     }
     if (['deque','heap','qpush','qpushFront','qpop','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
@@ -1090,7 +1114,7 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
         const less = callBinary(cmp,{...n,value:'<'},'a','b',effect);
         compare = `[&](const Value& a, const Value& b) { ${cmp.lines.join(' ')} return truth(${less}); }`;
       }
-      stack.push(...ctx.call('collectionOp',[string(name),source,item,compare,String(reuse)],2)
+      stack.push(...ctx.call(`collectionOp<CollectionOp::${name}>`,[source,item,compare,String(reuse)],2)
         .slice(0,['qpop','qpopBack','hpop'].includes(name) ? 2 : 1));
       return stack;
     }
@@ -1130,7 +1154,7 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
     const compare = less ? `[](Machine& m, const Value& a,const Value& b) { ${cmp.lines.join(' ')} return truth(${less}); }` : '{}';
     const result = id('consumed');
     const state = stack.map(v => ctx.value(v));
-    ctx.add(`auto ${result} = consume(m,${walk},${string(name)},${arg || 'Value{}'},${key},${compare},${dict || '{}'},${label});`);
+    ctx.add(`auto ${result} = consume<Consume::${name}>(m,${walk},${arg || 'Value{}'},${key},${compare},${dict || '{}'},${label});`);
     state.push(ctx.value(`std::move(${result}.value)`));
     replaceOnBreak(ctx,state,`${result}.broken`);
     return state;

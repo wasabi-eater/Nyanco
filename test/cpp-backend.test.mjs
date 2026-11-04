@@ -30,7 +30,7 @@ test('C++ lowering uses typed specializations and preserves vector ownership dec
   const source = transpileCpp(program, {onIR: value => {ir = value;}});
   assert.ok(verifyTypedIR(ir));
   assert.match(source, /Results<1> fn\d+\(Machine& m\)/);
-  assert.match(source, /binary\(std::string\("vpush", 5\), [^\n]+, true\)/);
+  assert.match(source, /append<false>\([^\n]+, true\)/);
   assert.doesNotMatch(source, /evalStack|node\.exe|system\(/);
   assert.throws(() => transpileCpp(compile('main = 1 + True', 'bad.nyan', new Map(), {checkTypes:false})), /Type error/);
 });
@@ -61,7 +61,26 @@ main = change (toByte 5) 1; drop; drop; logical True False`));
   assert.match(emitted, /unsigned v\d+ = bitPosition\(m, v\d+, 8,/);
   assert.match(emitted, /Byte v\d+ = static_cast<Byte>\(static_cast<UInt>\(v\d+\) << v\d+\)/);
   assert.match(emitted, /bool v\d+ = v\d+ != v\d+;/);
-  assert.doesNotMatch(emitted, /\bbitOp\(/);
+  assert.doesNotMatch(emitted, /\bbitOp[<(]/);
+});
+
+test('built-in calls select their operation at C++ compile time', () => {
+  const program = compile(`main =
+    print (7 / 2)
+    print (length (tail [1, 2, 3]))
+    print (toVector (take (map [1, 2] {* 2}) 1))
+    print (toVector (chunks [1, 2] 1))
+    print (toVector (combinations [1, 2] 1))
+    print (sort [2, 1])
+    print (qlength (qpush deque 1))`);
+  const source = transpileCpp(program);
+  const emitted = source.slice(source.lastIndexOf('\nnamespace nyanco {'));
+  for (const call of ['intOp<Arithmetic::divide>', 'vectorTail(', 'vectorLength(',
+    'transform<Transform::map>', 'transform<Transform::take>', 'partition<Partition::chunks>',
+    'combinatorics<Combinatorics::combinations>', 'consume<Consume::sort>', 'collectionOp<CollectionOp::qpush>']) {
+    assert.ok(emitted.includes(call),call);
+  }
+  assert.doesNotMatch(source,/\b(?:binary|unary)\(const std::string& op|\b(?:op|mode) == "/);
 });
 
 test('CLI C++20 emission builds a standalone program with modules, IO and resumable effects', {

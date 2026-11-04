@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -721,10 +722,11 @@ inline Value setIndex(Machine& m, const Value& value, const Value& index, const 
     xs->values[pos] = replacement;
     return xs;
 }
-inline Value append(const Value& value, const Value& item, bool concat, bool reuse) {
+template <bool Concat>
+inline Value append(const Value& value, const Value& item, bool reuse) {
     auto xs = as<Ptr<Vector>>(value);
-    if (!reuse || (concat && xs == as<Ptr<Vector>>(item))) xs = std::make_shared<Vector>(*xs);
-    if (concat) {
+    if (!reuse || (Concat && xs == as<Ptr<Vector>>(item))) xs = std::make_shared<Vector>(*xs);
+    if constexpr (Concat) {
         const auto& ys = as<Ptr<Vector>>(item)->values;
         xs->values.insert(xs->values.end(), ys.begin(), ys.end());
     } else xs->values.push_back(item);
@@ -779,46 +781,47 @@ Value updatePath(Machine& m, const Value& value, const std::vector<UpdatePart>& 
 }
 
 inline Int bits(UInt n) { return std::bit_cast<Int>(n); }
-inline Int intOp(const std::string& op, Int x, Int y, const std::string& at) {
+enum class Arithmetic { add, subtract, multiply, divide, remainder, power };
+template <Arithmetic Op>
+inline Int intOp(Int x, Int y, const std::string& at) {
     auto a = static_cast<UInt>(x), b = static_cast<UInt>(y);
-    if (op == "+") return bits(a+b);
-    if (op == "-") return bits(a-b);
-    if (op == "*") return bits(a*b);
-    if (op == "/" || op == "%") {
+    if constexpr (Op == Arithmetic::add) return bits(a+b);
+    else if constexpr (Op == Arithmetic::subtract) return bits(a-b);
+    else if constexpr (Op == Arithmetic::multiply) return bits(a*b);
+    else if constexpr (Op == Arithmetic::divide || Op == Arithmetic::remainder) {
         if (!y) fail(at, "Division by zero");
-        if (x == std::numeric_limits<Int>::min() && y == -1) return op == "/" ? x : 0;
-        return op == "/" ? x/y : x%y;
-    }
-    if (op == "^") {
+        if (x == std::numeric_limits<Int>::min() && y == -1) return Op == Arithmetic::divide ? x : 0;
+        return Op == Arithmetic::divide ? x/y : x%y;
+    } else {
         if (y < 0) fail(at, "Integer exponent must be nonnegative");
         UInt result = 1;
         for (; b; b >>= 1, a *= a) if (b & 1) result *= a;
         return bits(result);
     }
-    fail(at, "Unknown integer operator: " + op);
 }
-inline Byte byteOp(const std::string& op, Byte x, Byte y, const std::string& at) {
+template <Arithmetic Op>
+inline Byte byteOp(Byte x, Byte y, const std::string& at) {
     Int result;
-    if (op == "^") {
+    if constexpr (Op == Arithmetic::power) {
         result = 1;
         for (Int i = 0; i < y; ++i) {
             result *= x;
             if (result > 255) fail(at, "byte overflow");
         }
-    } else result = intOp(op,x,y,at);
+    } else result = intOp<Op>(x,y,at);
     if (result < 0 || result > 255) fail(at, "byte overflow");
     return static_cast<Byte>(result);
 }
-inline double floatOp(const std::string& op, double x, double y, const std::string& at) {
+template <Arithmetic Op>
+inline double floatOp(double x, double y, const std::string& at) {
     double result;
-    if (op == "+") result = x+y;
-    else if (op == "-") result = x-y;
-    else if (op == "*") result = x*y;
-    else if (op == "/" || op == "%") {
+    if constexpr (Op == Arithmetic::add) result = x+y;
+    else if constexpr (Op == Arithmetic::subtract) result = x-y;
+    else if constexpr (Op == Arithmetic::multiply) result = x*y;
+    else if constexpr (Op == Arithmetic::divide || Op == Arithmetic::remainder) {
         if (y == 0) fail(at, "Division by zero");
-        result = op == "/" ? x/y : std::fmod(x,y);
-    } else if (op == "^") result = std::pow(x,y);
-    else fail(at, "Unknown numeric operator: " + op);
+        result = Op == Arithmetic::divide ? x/y : std::fmod(x,y);
+    } else result = std::pow(x,y);
     if (!std::isfinite(result)) fail(at, "Non-finite numeric result");
     return result;
 }
@@ -827,26 +830,32 @@ inline unsigned bitPosition(Machine& m, Int index, unsigned width, const std::st
         m.exception("Bit position or shift count is outside 0.." + std::to_string(width-1),at);
     return static_cast<unsigned>(index);
 }
-inline Value bitOp(Machine& m, const std::string& op, const Value& left, const Value& right, const std::string& at) {
-    if (is<bool>(left)) return op == ".&." ? truth(left) && truth(right) : op == ".|."
-        ? truth(left) || truth(right) : truth(left) != truth(right);
+enum class BitOp { bitAnd, bitOr, bitXor, shiftLeft, shiftRight, testBit, setBit, clearBit };
+template <BitOp Op>
+inline Value bitOp(Machine& m, const Value& left, const Value& right, const std::string& at) {
+    if constexpr (Op == BitOp::bitAnd || Op == BitOp::bitOr || Op == BitOp::bitXor) {
+        if (is<bool>(left)) {
+            if constexpr (Op == BitOp::bitAnd) return truth(left) && truth(right);
+            else if constexpr (Op == BitOp::bitOr) return truth(left) || truth(right);
+            else return truth(left) != truth(right);
+        }
+    }
     bool byte = is<Byte>(left);
     UInt x = byte ? as<Byte>(left) : static_cast<UInt>(as<Int>(left));
     UInt y = is<Byte>(right) ? as<Byte>(right) : static_cast<UInt>(as<Int>(right));
     auto width = byte ? 8u : 64u;
     UInt result = 0;
-    if (op == ".&.") result = x & y;
-    else if (op == ".|.") result = x | y;
-    else if (op == "xor") result = x ^ y;
+    if constexpr (Op == BitOp::bitAnd) result = x & y;
+    else if constexpr (Op == BitOp::bitOr) result = x | y;
+    else if constexpr (Op == BitOp::bitXor) result = x ^ y;
     else {
         const unsigned pos = bitPosition(m,bits(y),width,at);
         const UInt mask = UInt{1} << pos;
-        if (op == "testBit") return (x & mask) != 0;
-        if (op == "setBit") result = x | mask;
-        else if (op == "clearBit") result = x & ~mask;
-        else if (op == ".<<.") result = x << pos;
-        else if (op == ".>>.") result = byte ? x >> pos : static_cast<UInt>(bits(x) >> pos);
-        else fail(at, "Unknown bit operation: " + op);
+        if constexpr (Op == BitOp::testBit) return (x & mask) != 0;
+        else if constexpr (Op == BitOp::setBit) result = x | mask;
+        else if constexpr (Op == BitOp::clearBit) result = x & ~mask;
+        else if constexpr (Op == BitOp::shiftLeft) result = x << pos;
+        else result = byte ? x >> pos : static_cast<UInt>(bits(x) >> pos);
     }
     if (byte) return static_cast<Byte>(result);
     return bits(result);
@@ -856,84 +865,99 @@ inline void walkRange(const Range& r, const Visit& visit) {
     for (Int n = r.first; n != r.last; n += step) visit(n);
     if (r.inclusive) visit(r.last);
 }
-inline Value binary(const std::string& op, const Value& a, const Value& b,
-                    const std::string& at, bool reuse = false) {
-    if (op == "==") return equal(a,b);
-    if (op == "/=") return !equal(a,b);
-    if (op == "<") return compare(a,b) < 0;
-    if (op == ">") return compare(a,b) > 0;
-    if (op == "<=") return compare(a,b) <= 0;
-    if (op == ">=") return compare(a,b) >= 0;
-    if (op == "&&") return truth(a) && truth(b);
-    if (op == "||") return truth(a) || truth(b);
-    if (op == "cons") {
-        Values xs{a}; const auto& tail = as<Ptr<Vector>>(b)->values;
-        xs.insert(xs.end(), tail.begin(), tail.end());
-        return vector(std::move(xs));
-    }
-    if (op == "vpush" || op == "push" || op == "Push" || op == "::") return append(a,b,false,reuse);
-    if (op == "++" && is<std::string>(a)) return as<std::string>(a)+as<std::string>(b);
-    if (op == "++" || op == "concat") return append(a,b,true,reuse);
-    if (op == ".." || op == "..=" || op == "range") {
-        Range r{as<Int>(a),as<Int>(b),op != ".."};
-        if (op != "range") return r;
-        Values xs;
-        walkRange(r,[&](Value v){ xs.push_back(std::move(v)); });
-        return vector(std::move(xs));
-    }
-    if (is<Int>(a)) return intOp(op,as<Int>(a),as<Int>(b),at);
-    if (is<Byte>(a)) return byteOp(op,as<Byte>(a),as<Byte>(b),at);
-    return floatOp(op,as<double>(a),as<double>(b),at);
+template <Arithmetic Op>
+inline Value numeric(const Value& a, const Value& b, const std::string& at) {
+    if (is<Int>(a)) return intOp<Op>(as<Int>(a),as<Int>(b),at);
+    if (is<Byte>(a)) return byteOp<Op>(as<Byte>(a),as<Byte>(b),at);
+    return floatOp<Op>(as<double>(a),as<double>(b),at);
 }
-inline Value unary(const std::string& op, const Value& value, const std::string& at) {
-    if (op == "not") return !truth(value);
-    if (op == "show") return show(value);
-    if (op == "chars" || op == "bytes") {
-        const auto& text = as<std::string>(value); Values result;
-        if (op == "bytes") for (unsigned char c : text) result.emplace_back(static_cast<Byte>(c));
-        else for (std::size_t pos = 0; pos < text.size();) {
-            auto code = decode(text,pos);
-            if (!code) fail(at, "Invalid UTF-8");
-            result.emplace_back(Char{*code});
-        }
-        return vector(std::move(result));
+inline Value prepend(const Value& item, const Value& source) {
+    Values result{item};
+    const auto& tail = as<Ptr<Vector>>(source)->values;
+    result.insert(result.end(),tail.begin(),tail.end());
+    return vector(std::move(result));
+}
+inline std::string concatStrings(const Value& a, const Value& b) {
+    return as<std::string>(a) + as<std::string>(b);
+}
+inline Value concatValues(const Value& a, const Value& b, bool reuse) {
+    if (is<std::string>(a)) return concatStrings(a,b);
+    return append<true>(a,b,reuse);
+}
+inline Value rangeVector(Int first, Int last) {
+    Values result;
+    walkRange({first,last,true},[&](Value v){ result.push_back(std::move(v)); });
+    return vector(std::move(result));
+}
+inline Value bytes(const Value& value) {
+    Values result;
+    for (unsigned char c : as<std::string>(value)) result.emplace_back(static_cast<Byte>(c));
+    return vector(std::move(result));
+}
+inline Value chars(const Value& value, const std::string& at) {
+    const auto& text = as<std::string>(value);
+    Values result;
+    for (std::size_t pos = 0; pos < text.size();) {
+        auto code = decode(text,pos);
+        if (!code) fail(at, "Invalid UTF-8");
+        result.emplace_back(Char{*code});
     }
+    return vector(std::move(result));
+}
+inline Int vectorLength(const Value& value) {
+    return static_cast<Int>(as<Ptr<Vector>>(value)->values.size());
+}
+inline Value vectorHead(const Value& value, const std::string& at) {
     const auto& xs = as<Ptr<Vector>>(value)->values;
-    if (op == "length") return static_cast<Int>(xs.size());
-    if (xs.empty()) fail(at, op + ": empty list");
-    if (op == "head") return xs.front();
+    if (xs.empty()) fail(at, "head: empty list");
+    return xs.front();
+}
+inline Value vectorTail(const Value& value, const std::string& at) {
+    const auto& xs = as<Ptr<Vector>>(value)->values;
+    if (xs.empty()) fail(at, "tail: empty list");
     return vector(Values(xs.begin()+1,xs.end()));
 }
-inline Value cast(Machine& m, const Value& value, const std::string& target, const std::string& at) {
-    if (target == "string" && is<Char>(value)) return utf8(as<Char>(value).code);
-    if (target == "char" && is<std::string>(value)) {
-        const auto& text = as<std::string>(value);
-        std::size_t pos = 0;
-        auto code = text.empty() ? std::optional<char32_t>{} : decode(text,pos);
-        if (!code || pos != text.size()) m.exception("toChar requires one character",at);
-        return Char{*code};
+template <typename Target>
+inline Value cast(Machine& m, const Value& value, const std::string& at) {
+    if constexpr (std::is_same_v<Target,std::string>) {
+        return utf8(as<Char>(value).code);
+    } else if constexpr (std::is_same_v<Target,double>) {
+        return is<double>(value) ? as<double>(value)
+            : is<Byte>(value) ? static_cast<double>(as<Byte>(value))
+            : is<Char>(value) ? static_cast<double>(as<Char>(value).code) : static_cast<double>(as<Int>(value));
+    } else {
+        if constexpr (std::is_same_v<Target,Char>) {
+            if (is<std::string>(value)) {
+                const auto& text = as<std::string>(value);
+                std::size_t pos = 0;
+                auto code = text.empty() ? std::optional<char32_t>{} : decode(text,pos);
+                if (!code || pos != text.size()) m.exception("toChar requires one character",at);
+                return Char{*code};
+            }
+        }
+        constexpr const char* target = std::is_same_v<Target,Byte> ? "byte" :
+            std::is_same_v<Target,Char> ? "char" : "int";
+        auto invalid = [&] { m.exception(std::string("Invalid numeric cast to ")+target,at); };
+        Int n;
+        if (is<double>(value)) {
+            const auto f = as<double>(value);
+            if (!std::isfinite(f) || f < -0x1p63 || f >= 0x1p63) invalid();
+            n = static_cast<Int>(f);
+        } else n = is<Byte>(value) ? as<Byte>(value) : is<Char>(value) ? as<Char>(value).code : as<Int>(value);
+        if constexpr (std::is_same_v<Target,Byte>) {
+            if (n < 0 || n > 255) invalid();
+            return static_cast<Byte>(n);
+        } else if constexpr (std::is_same_v<Target,Char>) {
+            if (n < 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) invalid();
+            return Char{static_cast<char32_t>(n)};
+        } else {
+            static_assert(std::is_same_v<Target,Int>);
+            return n;
+        }
     }
-    if (target == "float") return is<double>(value) ? as<double>(value)
-        : is<Byte>(value) ? static_cast<double>(as<Byte>(value))
-        : is<Char>(value) ? static_cast<double>(as<Char>(value).code) : static_cast<double>(as<Int>(value));
-    Int n;
-    if (is<double>(value)) {
-        const auto f = as<double>(value);
-        if (!std::isfinite(f) || f < -0x1p63 || f >= 0x1p63) m.exception("Invalid numeric cast to "+target,at);
-        n = static_cast<Int>(f);
-    } else n = is<Byte>(value) ? as<Byte>(value) : is<Char>(value) ? as<Char>(value).code : as<Int>(value);
-    if (target == "int") return n;
-    if (target == "byte") {
-        if (n < 0 || n > 255) m.exception("Invalid numeric cast to "+target,at);
-        return static_cast<Byte>(n);
-    }
-    if (target == "char") {
-        if (n < 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) m.exception("Invalid numeric cast to "+target,at);
-        return Char{static_cast<char32_t>(n)};
-    }
-    fail(at, "Unsupported conversion to " + target);
 }
-inline Value parseNumber(Machine& m, const Value& value, bool integer, bool strict, const std::string& at) {
+template <typename Number, bool Strict>
+inline Value parseNumber(Machine& m, const Value& value, const std::string& at) {
     const auto& text = as<std::string>(value);
     auto first = text.find_first_not_of(" \t\r\n\f\v");
     auto last = text.find_last_not_of(" \t\r\n\f\v");
@@ -941,16 +965,18 @@ inline Value parseNumber(Machine& m, const Value& value, bool integer, bool stri
     auto end = text.data() + (last == std::string::npos ? text.size() : last+1);
     if (start < end && *start == '+') ++start;
     std::optional<Value> result;
-    if (integer) {
+    constexpr bool integer = std::is_same_v<Number,Int>;
+    if constexpr (integer) {
         Int n; auto parsed = std::from_chars(start,end,n);
         if (parsed.ec == std::errc{} && parsed.ptr == end) result = n;
     } else {
         double n; auto parsed = std::from_chars(start,end,n,std::chars_format::general);
         if (parsed.ec == std::errc{} && parsed.ptr == end && std::isfinite(n)) result = n;
     }
-    if (!strict) return option(result);
-    if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(value),at);
-    return *result;
+    if constexpr (Strict) {
+        if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(value),at);
+        return *result;
+    } else return option(result);
 }
 inline void walk(Machine& m, const Value& value, const Visit& visit) {
     if (is<Ptr<Vector>>(value)) {
@@ -993,30 +1019,32 @@ inline Int countValue(Machine& m, const Value& value, const std::string& op, con
 using MapItem = std::function<Value(Machine&, Value)>;
 using Walk = std::function<void(Machine&, const Visit&)>;
 using WalkItem = std::function<void(Machine&, Value, const Visit&)>;
-inline Value transform(Walk source, const std::string& mode, Int count, MapItem fn, Ptr<Label> label,
+enum class Transform { map, filter, takeWhile, skipWhile, take, skip, flatMap, flatten };
+template <Transform Mode>
+inline Value transform(Walk source, Int count, MapItem fn, Ptr<Label> label,
                        bool cancelOnly, WalkItem nested) {
     return stream([=](Machine& parent, const Visit& visit) {
-        if (mode == "take" && !count) return;
+        if constexpr (Mode == Transform::take) if (!count) return;
         Int remaining = count;
         bool skipping = true;
         untilStopped([&](auto stop){
             loop(parent,[&](Machine& m) {
                 source(m,[&](Value item) {
-                    if (mode == "take") {
+                    if constexpr (Mode == Transform::take) {
                         visit(item);
                         if (!--remaining) stop();
-                    } else if (mode == "skip") {
+                    } else if constexpr (Mode == Transform::skip) {
                         if (remaining) --remaining; else visit(item);
-                    } else if (mode == "flatten") nested(m,item,visit);
-                    else if (mode == "skipWhile") {
+                    } else if constexpr (Mode == Transform::flatten) nested(m,item,visit);
+                    else if constexpr (Mode == Transform::skipWhile) {
                         if (skipping && truth(fn(m,item))) return;
                         skipping = false; visit(item);
                     } else {
                         auto mapped = fn(m,item);
-                        if (mode == "map") visit(mapped);
-                        else if (mode == "filter") { if (truth(mapped)) visit(item); }
-                        else if (mode == "takeWhile") { if (!truth(mapped)) stop(); visit(item); }
-                        else if (mode == "flatMap") nested(m,mapped,visit);
+                        if constexpr (Mode == Transform::map) visit(mapped);
+                        else if constexpr (Mode == Transform::filter) { if (truth(mapped)) visit(item); }
+                        else if constexpr (Mode == Transform::takeWhile) { if (!truth(mapped)) stop(); visit(item); }
+                        else if constexpr (Mode == Transform::flatMap) nested(m,mapped,visit);
                     }
                 });
             },label,cancelOnly);
@@ -1043,19 +1071,21 @@ inline Value split(const Value& source, const Value& separator) {
     });
 }
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
-inline Value partition(Walk source, const std::string& mode, Int count, MapItem key, Compare eq, Ptr<Label> label) {
+enum class Partition { windows, chunks, chunkBy };
+template <Partition Mode>
+inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Label> label) {
     return stream([=](Machine& parent,const Visit& visit) {
         loop(parent,[&](Machine& m){
             Values pending;
             Value last;
             const auto emit = [&] {
-                if (mode == "chunkBy") visit(stream([saved=pending](Machine&,const Visit& next){
+                if constexpr (Mode == Partition::chunkBy) visit(stream([saved=pending](Machine&,const Visit& next){
                     for (const auto& value : saved) next(value);
                 }));
                 else visit(vector(pending));
             };
             source(m,[&](Value item){
-                if (mode == "chunkBy") {
+                if constexpr (Mode == Partition::chunkBy) {
                     auto k = key(m,item);
                     if (!pending.empty() && !(eq ? eq(m,last,k) : equal(last,k))) { emit(); pending.clear(); }
                     last = std::move(k);
@@ -1064,12 +1094,12 @@ inline Value partition(Walk source, const std::string& mode, Int count, MapItem 
                     pending.push_back(std::move(item));
                     if (pending.size() == static_cast<UInt>(count)) {
                         emit();
-                        if (mode == "windows") pending.erase(pending.begin());
+                        if constexpr (Mode == Partition::windows) pending.erase(pending.begin());
                         else pending.clear();
                     }
                 }
             });
-            if (!pending.empty() && mode != "windows") emit();
+            if constexpr (Mode != Partition::windows) if (!pending.empty()) emit();
         },label);
     });
 }
@@ -1105,18 +1135,20 @@ inline Value zip(Walk left, Walk right, Ptr<Label> label) {
         },label,true);
     });
 }
-inline Value combinatorics(Walk left, Walk right, Int count, const std::string& mode) {
+enum class Combinatorics { permutations, combinations, combinationsWithReplacement, powerset, cartesianProduct };
+template <Combinatorics Mode>
+inline Value combinatorics(Walk left, Walk right, Int count) {
     return stream([=](Machine& m,const Visit& visit){
         Values xs,ys;
         loop(m,[&](Machine& child){ left(child,[&](Value v){xs.push_back(std::move(v));}); });
-        if (right) {
+        if constexpr (Mode == Combinatorics::cartesianProduct) {
             loop(m,[&](Machine& child){ right(child,[&](Value v){ys.push_back(std::move(v));}); });
             for (const auto& a : xs) for (const auto& b : ys) visit(tuple({a,b}));
             return;
         }
         const auto emit = [&](UInt k) {
             if (!k) { visit(vector({})); return; }
-            if (xs.empty() || (k > xs.size() && mode != "combinationsWithReplacement")) return;
+            if (xs.empty() || (k > xs.size() && Mode != Combinatorics::combinationsWithReplacement)) return;
             std::vector<std::size_t> selected, next{0};
             while (!next.empty()) {
                 if (selected.size() == k) {
@@ -1132,73 +1164,79 @@ inline Value combinatorics(Walk left, Walk right, Int count, const std::string& 
                     continue;
                 }
                 if (i > xs.size()) { next.pop_back(); if (!selected.empty()) selected.pop_back(); continue; }
-                if (mode == "permutations" && std::find(selected.begin(),selected.end(),i) != selected.end()) continue;
+                if constexpr (Mode == Combinatorics::permutations)
+                    if (std::find(selected.begin(),selected.end(),i) != selected.end()) continue;
                 selected.push_back(i);
-                next.push_back(mode == "permutations" ? 0 : mode == "combinationsWithReplacement" ? i : i+1);
+                next.push_back(Mode == Combinatorics::permutations ? 0 : Mode == Combinatorics::combinationsWithReplacement ? i : i+1);
             }
         };
-        if (mode == "powerset") for (std::size_t k=0; k<=xs.size(); ++k) emit(k);
+        if constexpr (Mode == Combinatorics::powerset) for (std::size_t k=0; k<=xs.size(); ++k) emit(k);
         else emit(static_cast<UInt>(count));
     });
 }
-inline Results<2> collectionOp(const std::string& op, const Value& value, const Value& item,
+enum class CollectionOp { qpush, qpushFront, qpop, qpopBack, qpeek, qpeekBack, qlength, qisEmpty,
+                          hpush, hpop, hpeek, hlength, hisEmpty };
+template <CollectionOp Op>
+inline Results<2> collectionOp(const Value& value, const Value& item,
                                std::function<bool(const Value&,const Value&)> less, bool reuse) {
     auto old = as<Ptr<Collection>>(value);
     const auto& xs = old->values;
-    if (op == "hlength" || op == "qlength") return {static_cast<Int>(xs.size()),{}};
-    if (op == "hisEmpty" || op == "qisEmpty") return {xs.empty(),{}};
-    if (op == "hpeek" || op == "qpeek" || op == "qpeekBack") {
-        return {xs.empty() ? option() : option(op == "qpeekBack" ? xs.back() : xs.front()),{}};
+    if constexpr (Op == CollectionOp::hlength || Op == CollectionOp::qlength) return {static_cast<Int>(xs.size()),{}};
+    if constexpr (Op == CollectionOp::hisEmpty || Op == CollectionOp::qisEmpty) return {xs.empty(),{}};
+    if constexpr (Op == CollectionOp::hpeek || Op == CollectionOp::qpeek || Op == CollectionOp::qpeekBack) {
+        return {xs.empty() ? option() : option(Op == CollectionOp::qpeekBack ? xs.back() : xs.front()),{}};
     }
     auto result = reuse ? old : std::make_shared<Collection>(*old);
     auto& changed = result->values;
-    if (op == "qpush" || op == "hpush") {
+    if constexpr (Op == CollectionOp::qpush || Op == CollectionOp::hpush) {
         changed.push_back(item);
-        if (op == "hpush") std::push_heap(changed.begin(),changed.end(),less);
-    } else if (op == "qpushFront") changed.insert(changed.begin(),item);
+        if constexpr (Op == CollectionOp::hpush) std::push_heap(changed.begin(),changed.end(),less);
+    } else if constexpr (Op == CollectionOp::qpushFront) changed.insert(changed.begin(),item);
     else {
         if (changed.empty()) return {result,option()};
         Value popped;
-        if (op == "hpop") std::pop_heap(changed.begin(),changed.end(),less);
-        if (op == "qpop") { popped = std::move(changed.front()); changed.erase(changed.begin()); }
+        if constexpr (Op == CollectionOp::hpop) std::pop_heap(changed.begin(),changed.end(),less);
+        if constexpr (Op == CollectionOp::qpop) { popped = std::move(changed.front()); changed.erase(changed.begin()); }
         else { popped = std::move(changed.back()); changed.pop_back(); }
         return {result,option(popped)};
     }
     return {result,{}};
 }
 struct Consumption { Value value; std::optional<Values> broken; };
-inline Consumption consume(Machine& parent, Walk source, const std::string& name, const Value& arg,
+enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, toDict, counts, groupBy };
+template <Consume Mode>
+inline Consumption consume(Machine& parent, Walk source, const Value& arg,
                            MapItem key, Compare less, Ptr<Dict> dict, Ptr<Label> label) {
     Values collected;
     std::vector<std::pair<Value,Value>> sorted;
     std::vector<std::string> joined;
     Value result;
     std::optional<Value> best, bestKey;
-    bool flag = name == "all";
-    Int remaining = name == "nth" ? as<Int>(arg) : 0;
+    bool flag = Mode == Consume::all;
+    Int remaining = Mode == Consume::nth ? as<Int>(arg) : 0;
     std::optional<Values> broken;
     if (remaining >= 0) untilStopped([&](auto stop){
         broken = loop(parent,[&](Machine& m){
             source(m,[&](Value item){
-                if (name == "join") joined.push_back(as<std::string>(item));
-                else if (name == "reverse") collected.push_back(item);
-                else if (name == "sort" || name == "sortBy") sorted.emplace_back(item,key ? key(m,item) : item);
-                else if (name == "nth") { if (remaining-- == 0) { best = item; stop(); } }
-                else if (name == "all" || name == "any") {
+                if constexpr (Mode == Consume::join) joined.push_back(as<std::string>(item));
+                else if constexpr (Mode == Consume::reverse) collected.push_back(item);
+                else if constexpr (Mode == Consume::sort || Mode == Consume::sortBy) sorted.emplace_back(item,Mode == Consume::sortBy ? key(m,item) : item);
+                else if constexpr (Mode == Consume::nth) { if (remaining-- == 0) { best = item; stop(); } }
+                else if constexpr (Mode == Consume::all || Mode == Consume::any) {
                     flag = truth(key(m,item));
-                    if (flag == (name == "any")) stop();
-                } else if (name == "toDict") dict->set(tupleAt(item,0),tupleAt(item,1));
-                else if (name == "counts") {
+                    if (flag == (Mode == Consume::any)) stop();
+                } else if constexpr (Mode == Consume::toDict) dict->set(tupleAt(item,0),tupleAt(item,1));
+                else if constexpr (Mode == Consume::counts) {
                     auto previous = dict->get(item);
                     dict->set(item, Int{previous ? as<Int>(*previous)+1 : 1});
-                } else if (name == "groupBy") {
+                } else if constexpr (Mode == Consume::groupBy) {
                     auto k = key(m,item);
                     auto previous = dict->get(k);
                     if (previous) as<Ptr<Vector>>(*previous)->values.push_back(item);
                     else dict->set(k,vector({item}));
                 } else {
-                    auto k = key ? key(m,item) : item;
-                    bool maximum = name == "maxi" || name == "maxiBy";
+                    auto k = Mode == Consume::maxiBy || Mode == Consume::miniBy ? key(m,item) : item;
+                    constexpr bool maximum = Mode == Consume::maxi || Mode == Consume::maxiBy;
                     if (!bestKey || (maximum ? !less(m,k,*bestKey) : less(m,k,*bestKey))) {
                         best = item; bestKey = std::move(k);
                     }
@@ -1206,16 +1244,16 @@ inline Consumption consume(Machine& parent, Walk source, const std::string& name
             });
         },label);
     });
-    if (dict) result = dict;
-    else if (name == "all" || name == "any") result = flag;
-    else if (name == "join") result = join(joined,as<std::string>(arg));
-    else if (name == "sort" || name == "sortBy") {
+    if constexpr (Mode == Consume::toDict || Mode == Consume::counts || Mode == Consume::groupBy) result = dict;
+    else if constexpr (Mode == Consume::all || Mode == Consume::any) result = flag;
+    else if constexpr (Mode == Consume::join) result = join(joined,as<std::string>(arg));
+    else if constexpr (Mode == Consume::sort || Mode == Consume::sortBy) {
         if (!broken) broken = loop(parent,[&](Machine& m) {
             std::stable_sort(sorted.begin(),sorted.end(),[&](const auto& a,const auto& b){return less(m,a.second,b.second);});
         },label);
         for (auto& pair : sorted) collected.push_back(std::move(pair.first));
         result = vector(std::move(collected));
-    } else if (name == "reverse") {
+    } else if constexpr (Mode == Consume::reverse) {
         std::reverse(collected.begin(),collected.end());
         result = vector(std::move(collected));
     } else result = option(best);
