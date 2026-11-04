@@ -24,6 +24,7 @@ Usage:
   nyanco --type "dup"          Infer an expression without executing it
   nyanco program.nyan --emit-ir ir.json   Write typed intermediate representation
   nyanco program.nyan --emit-go main.go   Transpile to standalone Go
+  nyanco program.nyan --emit-cpp main.cpp Transpile to standalone C++20
   nyanco program.nyan --build program.exe Build a native executable
   nyanco --lsp                 Start Language Server (stdio)
   nyanco --help
@@ -94,7 +95,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (!args.length) return repl();
   if (args.length === 1 && args[0] === '--lsp') { const {startServer}=await import('./lsp.mjs'); startServer(); return; }
-  let file, expression, typeExpression, emitGo, emitIR, build, check = false, singleFile = false, showStack = false, showTypes = false;
+  let file, expression, typeExpression, emitGo, emitCpp, emitIR, build, check = false, singleFile = false, showStack = false, showTypes = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') { stdout.write(help); return; }
@@ -104,10 +105,14 @@ async function main() {
     } else if (arg === '--type') {
       if(typeExpression !== undefined || args[i+1] === undefined) throw new Error('--type requires one expression');
       typeExpression=args[++i];
-    } else if (arg === '--emit-go' || arg === '--emit-ir' || arg === '--build') {
+    } else if (arg === '--emit-go' || arg === '--emit-cpp' || arg === '--emit-ir' || arg === '--build') {
       const path=args[++i];
-      if(!path || path.startsWith('-') || (arg==='--emit-go' ? emitGo : arg==='--emit-ir'?emitIR:build))throw new Error(`${arg} requires one output path`);
-      if(arg==='--emit-go')emitGo=resolve(path);else if(arg==='--emit-ir')emitIR=resolve(path);else build=resolve(path);
+      const existing={'--emit-go':emitGo,'--emit-cpp':emitCpp,'--emit-ir':emitIR,'--build':build};
+      if(!path || path.startsWith('-') || existing[arg])throw new Error(`${arg} requires one output path`);
+      if(arg==='--emit-go')emitGo=resolve(path);
+      else if(arg==='--emit-cpp')emitCpp=resolve(path);
+      else if(arg==='--emit-ir')emitIR=resolve(path);
+      else build=resolve(path);
     } else if (arg === '--types') showTypes = true;
     else if (arg === '--check') check = true;
     else if (arg === '--single-file') singleFile = true;
@@ -119,11 +124,17 @@ async function main() {
   if (check && (!file || expression !== undefined)) throw new Error('--check requires a file and cannot be combined with --eval');
   if(typeExpression !== undefined && (check || expression !== undefined || showTypes || showStack)) throw new Error('--type cannot be combined with execution or other check options');
   if(showTypes && (!file || expression !== undefined)) throw new Error('--types requires a file and cannot be combined with --eval');
-  if((emitGo || emitIR || build) && (check || showTypes || typeExpression!==undefined))throw new Error('Compiled output cannot be combined with --check, --types or --type');
-  if(new Set([emitGo,emitIR,build].filter(Boolean)).size!==[emitGo,emitIR,build].filter(Boolean).length || (file && [emitGo,emitIR,build].includes(resolve(file))))throw new Error('Input, Go source and executable paths must be different');
+  const outputs=[emitGo,emitCpp,emitIR,build].filter(Boolean);
+  if(outputs.length && (check || showTypes || typeExpression!==undefined))throw new Error('Compiled output cannot be combined with --check, --types or --type');
+  const pathKey=p=>process.platform==='win32'?p.toLowerCase():p;
+  if(new Set(outputs.map(pathKey)).size!==outputs.length || (file && outputs.map(pathKey).includes(pathKey(resolve(file)))))throw new Error('Input and output paths must be different');
   if (!file && expression === undefined && typeExpression === undefined) throw new Error('Specify a file, --eval or --type');
   const standalone=new Map();standalone.moduleTokens=standardTokens;
-  const program = file ? (singleFile?compile(await readFile(file, 'utf8'), file,standalone):compileModule(file)) : { definitions: standalone };
+  const program = file ? (singleFile?compile(await readFile(file, 'utf8'), file,standalone):compileModule(file)) : compile('', '<input>', standalone);
+  if(outputs.length&&program.modules){
+    const sources=new Set([...program.modules.sources.keys()].map(pathKey));
+    if(outputs.some(path=>sources.has(pathKey(path))))throw new Error('Input and output paths must be different');
+  }
   const vm = new VM(program);
   if (typeExpression !== undefined) {stdout.write(vm.infer(typeExpression) + '\n');return;}
   if (showTypes) {for(const [name,type] of program.types)if(!/^nyancoModule/i.test(name)&&!name.startsWith('__tc_'))stdout.write(`${name} : ${type}\n`);return;}
@@ -135,11 +146,16 @@ async function main() {
     stdout.write(`Types OK: ${file}\n`); return;
   }
   if (expression === undefined && !program.definitions.has('main')) throw new Error('Program has no main definition');
-  if(emitGo || emitIR || build) {
+  if(outputs.length) {
     if(expression!==undefined)vm.infer(expression);
-    let ir;const source=transpileGo(program,{expression:expression ?? 'main',showStack:showStack || expression!==undefined,onIR:emitIR?value=>{ir=value;}:null});
+    let ir;
+    const options={expression:expression ?? 'main',showStack:showStack || expression!==undefined};
+    const onIR=emitIR?value=>{ir=value;}:null;
+    const source=emitGo||build||(!emitCpp&&emitIR)?transpileGo(program,{...options,onIR}):null;
+    const cpp=emitCpp?(await import('./cpp-backend.mjs')).transpileCpp(program,{...options,onIR:source?null:onIR}):null;
     if(emitIR){await writeFile(emitIR,JSON.stringify(ir,null,2)+'\n','utf8');stdout.write(`Typed IR: ${emitIR}\n`);}
     if(emitGo) { await writeFile(emitGo,source,'utf8');stdout.write(`Go source: ${emitGo}\n`); }
+    if(emitCpp) { await writeFile(emitCpp,cpp,'utf8');stdout.write(`C++ source: ${emitCpp}\n`); }
     if(build) {
       const temp=await mkdtemp(join(dirname(build),'.nyanco-build-'));
       try {

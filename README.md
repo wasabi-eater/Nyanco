@@ -1753,7 +1753,28 @@ node cli.mjs examples/collections --emit-ir collections.ir.json
 
 Go生成はこのIRの型情報・所有権判定を利用し、heapの`hpush`／`hpop`にも直接更新を適用します。所有権を証明できたheapでは配列全体のコピーがなくなり、追加は償却O(log n)、取り出しはO(log n)です。APIの`transpileGo(program, {optimizeVectors:false})`で従来のvector最適化と今回の所有権最適化を両方無効化して比較できます。
 
-関数の入力、mutableな変数、捕捉した値、制御やeffectの境界は保守的に扱います。関数間の所有権移譲やループの借用解析までは行っていないため、すべての更新が直接更新になるわけではありません。現行Go出力の`any`表現は維持しており、C++コード生成・型ごとの保存形式・release専用の最適化パイプラインは今後このIRを使って実装できます。
+関数の入力、mutableな変数、捕捉した値、制御やeffectの境界は保守的に扱います。関数間の所有権移譲やループの借用解析までは行っていないため、すべての更新が直接更新になるわけではありません。
+
+## C++20へのトランスパイル
+
+`--emit-cpp` で、C++標準ライブラリだけでビルドできる単一ファイルを出力します。ディレクトリのモジュールやimport先も一緒に型検査し、実行に必要な関数とランタイムを出力します。
+
+```sh
+node cli.mjs examples/modules --emit-cpp main.cpp
+c++ -std=c++20 -O2 -pthread main.cpp -o main
+./main
+```
+
+WindowsのVisual Studio開発者コマンドプロンプトでは次のようにビルドします。
+
+```bat
+cl /std:c++20 /EHsc /utf-8 /O2 main.cpp
+main.exe
+```
+
+`--single-file`、`--eval`、`--stack` を組み合わせられます。`--emit-cpp main.cpp --emit-ir main.ir.json` ではC++の型特殊化に使ったIRも確認できます。JavaScriptからは `cpp-backend.mjs` の `transpileCpp(program, options)` で生成できます。
+
+評価値はC++のローカル変数になり、特殊化された関数は固定個数の値を受け渡します。値の表現には `std::any` を使います。所有権を証明できたvectorやheapの更新では既存の領域を再利用します。`handle` で中断した継続や、遅延した `zip` の入力はC++のスレッド上に呼び出しフレームを保持します。
 
 ## effectの全称量化と可変借用（0.83）
 

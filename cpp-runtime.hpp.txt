@@ -1,0 +1,1214 @@
+// Nyanco standalone C++20 runtime.
+#include <algorithm>
+#include <any>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <condition_variable>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace nyanco {
+using Value = std::any;
+using Int = std::int64_t;
+using UInt = std::uint64_t;
+using Byte = std::uint8_t;
+using Values = std::vector<Value>;
+template <std::size_t N> using Results = std::array<Value, N>;
+template <typename T> using Ptr = std::shared_ptr<T>;
+template <typename T> const T& as(const Value& value) { return std::any_cast<const T&>(value); }
+template <typename T> bool is(const Value& value) { return value.type() == typeid(T); }
+[[noreturn]] inline void fail(const std::string& at, const std::string& message) {
+    throw std::runtime_error(at + ": " + message);
+}
+
+struct Char { char32_t code; };
+struct Vector { Values values; };
+struct Tuple { Values values; };
+struct Record { std::map<std::string, Value> fields; };
+struct Adt { std::string type, name, display; Values fields; };
+struct Range { Int first, last; bool inclusive; };
+struct Collection { std::string kind; Values values; };
+struct DictEntry { Value key, value; std::size_t position; };
+struct HashNode;
+using HashRoot = Ptr<const HashNode>;
+struct HashNode {
+    std::uint32_t hash = 0;
+    std::vector<DictEntry> bucket;
+    std::array<HashRoot,2> branches;
+};
+class Dict {
+    HashRoot root;
+    std::size_t count = 0;
+    static unsigned bit(std::uint32_t hash, unsigned depth) { return (hash >> depth) & 1; }
+    static HashRoot merge(const HashRoot& a, const HashRoot& b, unsigned depth) {
+        auto joined = std::make_shared<HashNode>();
+        auto side = bit(a->hash,depth);
+        if (side != bit(b->hash,depth)) {
+            joined->branches[side] = a;
+            joined->branches[1-side] = b;
+        } else joined->branches[side] = merge(a,b,depth+1);
+        return joined;
+    }
+    static void enumerate(const HashRoot& node, std::vector<std::pair<Value,Value>>& result) {
+        if (!node) return;
+        for (const auto& pair : node->bucket) result[pair.position] = {pair.key,pair.value};
+        for (const auto& child : node->branches) enumerate(child,result);
+    }
+    HashRoot insert(const HashRoot& node, std::uint32_t h, DictEntry entry, unsigned depth) {
+        if (!node || (!node->bucket.empty() && node->hash != h)) {
+            auto leaf = std::make_shared<HashNode>();
+            leaf->hash = h;
+            leaf->bucket.push_back(std::move(entry));
+            ++count;
+            return node ? merge(node,leaf,depth) : leaf;
+        }
+        auto next = std::make_shared<HashNode>(*node);
+        if (!next->bucket.empty()) {
+            for (auto& old : next->bucket) if (equal(old.key,entry.key)) {
+                old.value = std::move(entry.value);
+                return next;
+            }
+            next->bucket.push_back(std::move(entry));
+            ++count;
+        } else {
+            auto side = bit(h,depth);
+            next->branches[side] = insert(node->branches[side],h,std::move(entry),depth+1);
+        }
+        return next;
+    }
+public:
+    std::function<std::size_t(const Value&)> hash;
+    std::function<bool(const Value&, const Value&)> equal;
+    std::size_t size() const { return count; }
+    const Value* get(const Value& key) const {
+        const auto h = static_cast<std::uint32_t>(hash(key));
+        auto node = root.get();
+        for (unsigned depth=0; node; ++depth) {
+            if (!node->bucket.empty()) {
+                if (node->hash == h) for (const auto& pair : node->bucket)
+                    if (equal(pair.key,key)) return &pair.value;
+                break;
+            }
+            node = node->branches[bit(h,depth)].get();
+        }
+        return nullptr;
+    }
+    void set(Value key, Value value) {
+        const auto h = static_cast<std::uint32_t>(hash(key));
+        root = insert(root,h,DictEntry{std::move(key),std::move(value),count},0);
+    }
+    std::vector<std::pair<Value,Value>> entries() const {
+        std::vector<std::pair<Value,Value>> result(count);
+        enumerate(root,result);
+        return result;
+    }
+};
+struct Cell { Value value; bool mutable_; bool borrowed = false; };
+struct Env {
+    std::unordered_map<std::string, Ptr<Cell>> bindings;
+    Ptr<Cell> cell(const std::string& name) const { return bindings.at(name); }
+    Value read(const std::string& name) const { return cell(name)->value; }
+    void bind(const std::string& name, Value value, bool mutable_ = false) {
+        bindings[name] = std::make_shared<Cell>(Cell{std::move(value), mutable_});
+    }
+    void update(const std::string& name, Value value) { cell(name)->value = std::move(value); }
+    void erase(const std::string& name) { bindings.erase(name); }
+};
+struct Quote { std::size_t site; Env env; std::string self; };
+struct Label { const void* target = nullptr; };
+struct Machine;
+using Visit = std::function<void(Value)>;
+struct NativeVisitor { Visit visit; };
+struct Stream { std::function<void(Machine&, const Visit&)> walk; };
+struct Continuation {
+    bool active = true, used = false, never = false;
+    std::function<Values(Values)> resume;
+};
+struct Borrow { Ptr<Cell> owner; bool active = true, suspended = false; };
+struct BorrowScope {
+    Ptr<Borrow> ref, parent;
+    explicit BorrowScope(const Ptr<Cell>& cell) {
+        if (is<Ptr<Borrow>>(cell->value)) {
+            parent = as<Ptr<Borrow>>(cell->value);
+            if (!parent->active || parent->suspended) throw std::runtime_error("Invalid mutable reborrow");
+            ref = std::make_shared<Borrow>(Borrow{parent->owner});
+            parent->suspended = true;
+        } else {
+            if (cell->borrowed) throw std::runtime_error("Value is already borrowed");
+            ref = std::make_shared<Borrow>(Borrow{cell});
+            cell->borrowed = true;
+        }
+    }
+    ~BorrowScope() {
+        ref->active = false;
+        if (parent) parent->suspended = false;
+        else ref->owner->borrowed = false;
+    }
+    BorrowScope(const BorrowScope&) = delete;
+};
+
+inline Value vector(Values values) { return std::make_shared<Vector>(Vector{std::move(values)}); }
+inline Value tuple(Values values) { return std::make_shared<Tuple>(Tuple{std::move(values)}); }
+inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
+inline Value adt(std::string type, std::string name, std::string display, Values fields = {}) {
+    return std::make_shared<Adt>(Adt{std::move(type), std::move(name), std::move(display), std::move(fields)});
+}
+inline Value option(std::optional<Value> value = {}) {
+    return value ? adt("option", "Some", "Some", {*value}) : adt("option", "None", "None");
+}
+inline bool truth(const Value& value) { return as<bool>(value); }
+inline std::string utf8(char32_t code) {
+    std::string result;
+    if (code < 0x80) result += static_cast<char>(code);
+    else if (code < 0x800) {
+        result += static_cast<char>(0xc0 | (code >> 6));
+        result += static_cast<char>(0x80 | (code & 63));
+    } else if (code < 0x10000) {
+        result += static_cast<char>(0xe0 | (code >> 12));
+        result += static_cast<char>(0x80 | ((code >> 6) & 63));
+        result += static_cast<char>(0x80 | (code & 63));
+    } else {
+        result += static_cast<char>(0xf0 | (code >> 18));
+        result += static_cast<char>(0x80 | ((code >> 12) & 63));
+        result += static_cast<char>(0x80 | ((code >> 6) & 63));
+        result += static_cast<char>(0x80 | (code & 63));
+    }
+    return result;
+}
+inline std::optional<char32_t> decode(const std::string& text, std::size_t& pos) {
+    auto lead = static_cast<Byte>(text[pos++]);
+    if (lead < 0x80) return lead;
+    int extra = lead >= 0xf0 ? 3 : lead >= 0xe0 ? 2 : 1;
+    if (lead < 0xc2 || lead > 0xf4 || pos + extra > text.size()) return {};
+    char32_t code = lead & (0x7f >> (extra + 1));
+    for (int i = 0; i < extra; ++i) {
+        auto part = static_cast<Byte>(text[pos++]);
+        if ((part & 0xc0) != 0x80) return {};
+        code = (code << 6) | (part & 63);
+    }
+    if (code < (extra == 1 ? 0x80 : extra == 2 ? 0x800 : 0x10000)
+        || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return {};
+    return code;
+}
+inline std::string escape(const std::string& text, char quote) {
+    std::string result(1, quote);
+    for (unsigned char c : text) {
+        if (c == quote || c == '\\') { result += '\\'; result += static_cast<char>(c); }
+        else if (c == '\n') result += "\\n";
+        else if (c == '\r') result += "\\r";
+        else if (c == '\t') result += "\\t";
+        else if (c == '\b') result += "\\b";
+        else if (c == '\f') result += "\\f";
+        else if (c < 32) {
+            constexpr char digits[] = "0123456789abcdef";
+            result += "\\u00";
+            result += digits[c >> 4]; result += digits[c & 15];
+        } else result += static_cast<char>(c);
+    }
+    return result + quote;
+}
+inline std::string show(const Value& value);
+inline std::string join(const std::vector<std::string>& parts, const std::string& sep) {
+    std::string result;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i) result += sep;
+        result += parts[i];
+    }
+    return result;
+}
+inline std::string shown(const Values& values, const std::string& sep) {
+    std::vector<std::string> parts;
+    for (const auto& value : values) parts.push_back(show(value));
+    return join(parts, sep);
+}
+inline std::string floatText(double n) {
+    if (n == 0) return "0";
+    if (!std::isfinite(n)) return std::isnan(n) ? "NaN" : n < 0 ? "-Infinity" : "Infinity";
+    char buf[400];
+    auto style = std::abs(n) >= 1e-6 && std::abs(n) < 1e21
+        ? std::chars_format::fixed : std::chars_format::scientific;
+    auto [end, error] = std::to_chars(buf, buf + sizeof(buf), n, style);
+    std::string text(buf, end);
+    auto exponent = text.find('e');
+    if (exponent != std::string::npos && exponent + 3 < text.size() && text[exponent + 2] == '0')
+        text.erase(exponent + 2, 1);
+    return text;
+}
+inline std::string show(const Value& v) {
+    if (is<Int>(v)) return std::to_string(as<Int>(v));
+    if (is<Byte>(v)) return std::to_string(as<Byte>(v));
+    if (is<double>(v)) return floatText(as<double>(v));
+    if (is<bool>(v)) return truth(v) ? "True" : "False";
+    if (is<Char>(v)) {
+        auto code = as<Char>(v).code;
+        if (code == 0) return "'\\0'";
+        if ((code < 32 || code == 127) && code != 9 && code != 10 && code != 13) {
+            char hex[8];
+            auto end = std::to_chars(hex,hex+sizeof(hex),static_cast<unsigned>(code),16).ptr;
+            return "'\\u{" + std::string(hex,end) + "}'";
+        }
+        return escape(utf8(code), '\'');
+    }
+    if (is<std::string>(v)) return escape(as<std::string>(v), '"');
+    if (is<Ptr<Vector>>(v)) return "[" + shown(as<Ptr<Vector>>(v)->values, ", ") + "]";
+    if (is<Ptr<Tuple>>(v)) return "#(" + shown(as<Ptr<Tuple>>(v)->values, " ") + ")";
+    if (is<Ptr<Record>>(v)) {
+        std::vector<std::string> parts;
+        for (const auto& [key, value] : as<Ptr<Record>>(v)->fields) parts.push_back(key + ": " + show(value));
+        return parts.empty() ? "{:}" : "{" + join(parts, ", ") + "}";
+    }
+    if (is<Ptr<Dict>>(v)) {
+        std::vector<std::string> parts;
+        for (const auto& [key, value] : as<Ptr<Dict>>(v)->entries()) parts.push_back(show(key) + ": " + show(value));
+        return parts.empty() ? "[:]" : "[" + join(parts, ", ") + "]";
+    }
+    if (is<Ptr<Adt>>(v)) {
+        const auto& a = *as<Ptr<Adt>>(v);
+        return a.fields.empty() ? a.display : "(" + a.display + " " + shown(a.fields, " ") + ")";
+    }
+    if (is<Range>(v)) {
+        const auto& r = as<Range>(v);
+        return "(" + std::to_string(r.first) + (r.inclusive ? " ..= " : " .. ") + std::to_string(r.last) + ")";
+    }
+    if (is<Ptr<Collection>>(v)) {
+        const auto& c = *as<Ptr<Collection>>(v);
+        return c.kind + " [" + shown(c.values, ", ") + "]";
+    }
+    if (is<Ptr<Stream>>(v)) return "<stream>";
+    if (is<Ptr<Continuation>>(v)) return "<continuation>";
+    if (is<Ptr<Borrow>>(v)) return "<mutref>";
+    if (is<Ptr<Quote>>(v)) return "{ ... }";
+    return "<value>";
+}
+inline std::string raw(const Value& v) { return is<std::string>(v) ? as<std::string>(v) : show(v); }
+
+template <typename T> int order(const T& a, const T& b) { return a < b ? -1 : b < a ? 1 : 0; }
+inline int compare(const Value& a, const Value& b);
+inline int compareValues(const Values& a, const Values& b) {
+    for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i)
+        if (int result = compare(a[i], b[i])) return result;
+    return order(a.size(), b.size());
+}
+inline int compare(const Value& a, const Value& b) {
+    if (a.type() != b.type()) return a.type().before(b.type()) ? -1 : 1;
+    if (is<Int>(a)) return order(as<Int>(a), as<Int>(b));
+    if (is<double>(a)) return order(as<double>(a), as<double>(b));
+    if (is<Byte>(a)) return order(as<Byte>(a), as<Byte>(b));
+    if (is<bool>(a)) return order(truth(a), truth(b));
+    if (is<Char>(a)) return order(as<Char>(a).code, as<Char>(b).code);
+    if (is<std::string>(a)) return order(as<std::string>(a), as<std::string>(b));
+    if (is<Ptr<Vector>>(a)) return compareValues(as<Ptr<Vector>>(a)->values, as<Ptr<Vector>>(b)->values);
+    if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
+    if (is<Ptr<Adt>>(a)) {
+        const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
+        if (x.name != y.name) {
+            if (x.type == "option") return x.name == "None" ? -1 : 1;
+            if (x.type == "result") return x.name == "Ok" ? -1 : 1;
+            return order(x.name,y.name);
+        }
+        return compareValues(x.fields, y.fields);
+    }
+    if (is<Ptr<Record>>(a)) {
+        const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
+        auto left = x.begin(), right = y.begin();
+        for (; left != x.end() && right != y.end(); ++left, ++right) {
+            if (int result = order(left->first, right->first)) return result;
+            if (int result = compare(left->second, right->second)) return result;
+        }
+        return order(x.size(), y.size());
+    }
+    if (is<Range>(a)) {
+        const auto& x = as<Range>(a); const auto& y = as<Range>(b);
+        if (int result = order(x.first, y.first)) return result;
+        if (int result = order(x.last, y.last)) return result;
+        return order(x.inclusive, y.inclusive);
+    }
+    if (is<Ptr<Dict>>(a)) {
+        auto x = as<Ptr<Dict>>(a)->entries(), y = as<Ptr<Dict>>(b)->entries();
+        const auto less = [](const auto& p,const auto& q){return compare(p.first,q.first)<0;};
+        std::stable_sort(x.begin(),x.end(),less);
+        std::stable_sort(y.begin(),y.end(),less);
+        for (std::size_t i=0; i<std::min(x.size(),y.size()); ++i) {
+            if (int result=compare(x[i].first,y[i].first)) return result;
+            if (int result=compare(x[i].second,y[i].second)) return result;
+        }
+        return order(x.size(),y.size());
+    }
+    throw std::runtime_error("Values cannot be ordered");
+}
+inline bool equal(const Value& a, const Value& b);
+inline bool equalValues(const Values& a, const Values& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), equal);
+}
+inline bool equal(const Value& a, const Value& b) {
+    if (a.type() != b.type()) return false;
+    if (is<double>(a)) return as<double>(a) == as<double>(b);
+    if (is<Ptr<Continuation>>(a)) return as<Ptr<Continuation>>(a) == as<Ptr<Continuation>>(b);
+    if (is<Ptr<Vector>>(a)) return equalValues(as<Ptr<Vector>>(a)->values, as<Ptr<Vector>>(b)->values);
+    if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
+    if (is<Ptr<Adt>>(a)) {
+        const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
+        return x.name == y.name && x.type == y.type && equalValues(x.fields, y.fields);
+    }
+    if (is<Ptr<Record>>(a)) {
+        const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
+        return x.size() == y.size() && std::equal(x.begin(), x.end(), y.begin(), [](const auto& p, const auto& q) {
+            return p.first == q.first && equal(p.second, q.second);
+        });
+    }
+    if (is<Ptr<Dict>>(a)) {
+        const auto& x = *as<Ptr<Dict>>(a); const auto& y = *as<Ptr<Dict>>(b);
+        if (x.size() != y.size()) return false;
+        for (const auto& [key, value] : x.entries()) {
+            auto other = y.get(key);
+            if (!other || !equal(value,*other)) return false;
+        }
+        return true;
+    }
+    return compare(a,b) == 0;
+}
+inline std::uint32_t hashMix(std::uint32_t hash, std::uint32_t value) {
+    return (hash ^ value) * 16777619u;
+}
+inline std::uint32_t hashText(const std::string& text) {
+    std::uint32_t hash = 2166136261u;
+    for (unsigned char c : text) hash = hashMix(hash,c);
+    return hash;
+}
+inline std::uint32_t hashValue(const Value& v);
+inline std::uint32_t hashValues(std::uint32_t hash, const Values& xs) {
+    for (const auto& x : xs) hash = hashMix(hash,hashValue(x));
+    return hash;
+}
+inline std::uint32_t hashValue(const Value& v) {
+    if (is<Int>(v)) {
+        auto bits = static_cast<UInt>(as<Int>(v));
+        return static_cast<std::uint32_t>(bits ^ (bits >> 32));
+    }
+    if (is<Byte>(v)) return as<Byte>(v);
+    if (is<Char>(v)) return as<Char>(v).code;
+    if (is<bool>(v)) return truth(v) ? 1u : 0u;
+    if (is<std::string>(v)) return hashText(as<std::string>(v));
+    if (is<double>(v)) {
+        auto bits = std::bit_cast<UInt>(as<double>(v) == 0 ? 0.0 : as<double>(v));
+        std::uint32_t hash = 2166136261u;
+        for (int i=0; i<8; ++i, bits >>= 8) hash = hashMix(hash,static_cast<Byte>(bits));
+        return hash;
+    }
+    if (is<Ptr<Vector>>(v)) return hashValues(hashText("vector"),as<Ptr<Vector>>(v)->values);
+    if (is<Ptr<Tuple>>(v)) return hashValues(hashText("tuple"),as<Ptr<Tuple>>(v)->values);
+    if (is<Ptr<Record>>(v)) {
+        auto hash = hashText("record");
+        for (const auto& [k,x] : as<Ptr<Record>>(v)->fields) hash = hashMix(hashMix(hash,hashText(k)),hashValue(x));
+        return hash;
+    }
+    if (is<Range>(v)) {
+        const auto& r = as<Range>(v);
+        return hashValues(hashText("range"), {r.first,r.last,r.inclusive});
+    }
+    if (is<Ptr<Adt>>(v)) {
+        const auto& a = *as<Ptr<Adt>>(v);
+        return hashValues(hashText(a.type + ":" + a.name),a.fields);
+    }
+    if (is<Ptr<Dict>>(v)) {
+        const auto& d = *as<Ptr<Dict>>(v);
+        std::uint32_t sum = 0;
+        for (const auto& [k,x] : d.entries()) sum += hashMix(static_cast<std::uint32_t>(d.hash(k)),hashValue(x));
+        return hashMix(hashMix(hashText("dict"),static_cast<std::uint32_t>(d.size())),sum);
+    }
+    throw std::runtime_error("Missing hash instance");
+}
+
+enum class PatternKind { word, literal, constructor, vector, push, tuple, record };
+struct Pattern {
+    PatternKind kind;
+    std::string name;
+    Values literals;
+    std::vector<Pattern> fields;
+    std::vector<std::string> keys;
+    bool mutable_ = false;
+};
+inline bool match(const Pattern&, const Value&, Env&);
+inline bool matches(const std::vector<Pattern>& patterns, const Values& values, Env& env) {
+    if (patterns.size() != values.size()) return false;
+    for (std::size_t i = 0; i < patterns.size(); ++i)
+        if (!match(patterns[i], values[i], env)) return false;
+    return true;
+}
+inline bool match(const Pattern& p, const Value& value, Env& env) {
+    switch (p.kind) {
+    case PatternKind::word:
+        if (p.name != "_") env.bind(p.name, value, p.mutable_);
+        return true;
+    case PatternKind::literal:
+        if (is<Int>(p.literals[0]) && is<Byte>(value)) return as<Int>(p.literals[0]) == as<Byte>(value);
+        if (is<Int>(p.literals[0]) && is<double>(value)) return static_cast<double>(as<Int>(p.literals[0])) == as<double>(value);
+        return equal(p.literals[0], value);
+    case PatternKind::constructor:
+        return is<Ptr<Adt>>(value) && as<Ptr<Adt>>(value)->name == p.name
+            && matches(p.fields, as<Ptr<Adt>>(value)->fields, env);
+    case PatternKind::vector:
+        return is<Ptr<Vector>>(value) && matches(p.fields, as<Ptr<Vector>>(value)->values, env);
+    case PatternKind::push: {
+        if (!is<Ptr<Vector>>(value)) return false;
+        const auto& xs = as<Ptr<Vector>>(value)->values;
+        return !xs.empty() && matches(p.fields, {vector(Values(xs.begin(), xs.end()-1)), xs.back()}, env);
+    }
+    case PatternKind::tuple:
+        return is<Ptr<Tuple>>(value) && matches(p.fields, as<Ptr<Tuple>>(value)->values, env);
+    case PatternKind::record: {
+        if (!is<Ptr<Record>>(value)) return false;
+        const auto& fields = as<Ptr<Record>>(value)->fields;
+        for (std::size_t i = 0; i < p.fields.size(); ++i) {
+            auto it = fields.find(p.keys[i]);
+            if (it == fields.end() || !match(p.fields[i], it->second, env)) return false;
+        }
+        return true;
+    }
+    }
+    return false;
+}
+
+struct Event {
+    std::string name, at;
+    Values arguments;
+    bool never = false;
+    const void* target = nullptr;
+    unsigned skip = 0;
+};
+using Route = std::function<Values(Event)>;
+using Handler = std::function<Values(const Values&, Ptr<Continuation>)>;
+struct Machine {
+    Env& globals;
+    Route route;
+    Values perform(Event event) {
+        if (route) return route(std::move(event));
+        if (event.target || event.skip) fail(event.at, "Unhandled routed effect: " + event.name);
+        if (event.name == "put") {
+            std::cout << raw(event.arguments.at(0)) << '\n';
+            return {};
+        }
+        if (event.name == "read") {
+            std::cout.flush();
+            std::string line;
+            std::getline(std::cin, line);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            return {line};
+        }
+        if (event.name == "exn") fail(event.at, "Exception: " + raw(event.arguments.at(0)));
+        fail(event.at, "Unhandled effect: " + event.name);
+    }
+    [[noreturn]] void exception(const std::string& message, const std::string& at) {
+        perform(Event{"exn", at, {message}, true});
+        fail(at, "Non-returning effect returned");
+    }
+};
+struct RoutedLabel {
+    Ptr<Label> label;
+    const void* previous = nullptr;
+    explicit RoutedLabel(Ptr<Label> value) : label(std::move(value)) {
+        if (label) { previous = label->target; label->target = this; }
+    }
+    ~RoutedLabel() { if (label) label->target = previous; }
+    RoutedLabel(const RoutedLabel&) = delete;
+};
+inline const void* labelTarget(const Value& value, const std::string& at) {
+    const auto& label = as<Ptr<Label>>(value);
+    if (!label->target) fail(at, "Effect label is outside its handler lifetime");
+    return label->target;
+}
+inline bool accepts(Event& event, const RoutedLabel& scope) {
+    if (event.target) return event.target == &scope;
+    if (event.skip) { --event.skip; return false; }
+    return true;
+}
+struct Abort { const void* owner; std::optional<Values> result; };
+template <typename Body>
+std::optional<Values> loop(Machine& parent, Body body, Ptr<Label> label = {}, bool cancelOnly = false) {
+    const RoutedLabel scope(std::move(label));
+    Machine child{parent.globals, [&](Event event) -> Values {
+        if ((event.name == "cancel" || (!cancelOnly && event.name == "break")) && accepts(event, scope))
+            throw Abort{&scope, event.name == "break" ? std::optional<Values>(std::move(event.arguments)) : std::nullopt};
+        return parent.perform(std::move(event));
+    }};
+    try { body(child); }
+    catch (Abort& stop) {
+        if (stop.owner != &scope) throw;
+        return std::move(stop.result);
+    }
+    return std::nullopt;
+}
+inline Values resume(const Value& value, Values arguments, const std::string& at) {
+    const auto& k = as<Ptr<Continuation>>(value);
+    if (k->never) fail(at, "Cannot resume a non-returning effect");
+    if (!k->active || k->used) fail(at, "Continuation is expired or already resumed");
+    k->used = true;
+    return k->resume(std::move(arguments));
+}
+
+// Suspending a worker retains the C++ call frames across a user effect.
+// The driver and worker alternate at each operation. Only arguments and
+// results cross the rendezvous, and abandoning a continuation joins the worker.
+struct Abandoned {};
+class EffectWorker {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::optional<Event> pending;
+    std::optional<Values> reply;
+    bool done = false, cancelled = false;
+    Values result;
+    std::exception_ptr failure;
+    std::thread worker;
+    Values request(Event event) {
+        std::unique_lock lock(mutex);
+        if (cancelled) throw Abandoned{};
+        pending = std::move(event);
+        changed.notify_all();
+        changed.wait(lock, [&]{ return cancelled || reply.has_value(); });
+        if (cancelled) throw Abandoned{};
+        Values values = std::move(*reply);
+        reply.reset();
+        return values;
+    }
+public:
+    template <typename Body>
+    EffectWorker(Env& globals, Body body) : worker([this, &globals, body = std::move(body)] {
+        Machine child{globals, [this](Event event){ return request(std::move(event)); }};
+        try { result = body(child); }
+        catch (...) { failure = std::current_exception(); }
+        std::lock_guard lock(mutex);
+        done = true;
+        changed.notify_all();
+    }) {}
+    ~EffectWorker() {
+        {
+            std::lock_guard lock(mutex);
+            cancelled = true;
+            changed.notify_all();
+        }
+        worker.join();
+    }
+    std::optional<Event> next() {
+        std::unique_lock lock(mutex);
+        changed.wait(lock, [&]{ return done || pending.has_value(); });
+        if (done) {
+            if (failure) std::rethrow_exception(failure);
+            return std::nullopt;
+        }
+        auto event = std::move(pending);
+        pending.reset();
+        return event;
+    }
+    Values finish() { return std::move(result); }
+    void send(Values values) {
+        std::lock_guard lock(mutex);
+        reply = std::move(values);
+        changed.notify_all();
+    }
+};
+template <typename Body>
+Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& handlers, Ptr<Label> label = {}) {
+    const RoutedLabel scope(std::move(label));
+    EffectWorker worker(parent.globals, std::move(body));
+    std::function<Values()> drive = [&]() -> Values {
+        while (auto event = worker.next()) {
+            auto handler = handlers.find(event->name);
+            if (handler == handlers.end() || !accepts(*event, scope)) {
+                worker.send(parent.perform(std::move(*event)));
+                continue;
+            }
+            auto k = std::make_shared<Continuation>();
+            k->never = event->never;
+            k->resume = [&](Values values) {
+                worker.send(std::move(values));
+                return drive();
+            };
+            struct Expire { Ptr<Continuation> k; ~Expire() { k->active = false; k->resume = {}; } } expire{k};
+            return handler->second(event->arguments, k);
+        }
+        return worker.finish();
+    };
+    return drive();
+}
+template <typename Body>
+Values mask(Machine& parent, Body body, const std::string& name, const void* target) {
+    Machine child{parent.globals, [&](Event event) {
+        if (event.name == name && !event.target) {
+            if (target) event.target = target;
+            else ++event.skip;
+        }
+        return parent.perform(std::move(event));
+    }};
+    return body(child);
+}
+template <typename Body>
+Values labelBlock(Machine& parent, Body body) {
+    auto label = std::make_shared<Label>();
+    const RoutedLabel scope(label);
+    Machine child{parent.globals, [&](Event event) {
+        if (event.target == &scope) event.target = nullptr;
+        return parent.perform(std::move(event));
+    }};
+    return body(child, label);
+}
+
+inline Value readBorrow(const Value& value, const std::string& at) {
+    const auto& ref = as<Ptr<Borrow>>(value);
+    if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
+    return ref->owner->value;
+}
+inline void writeBorrow(const Value& value, Value replacement, const std::string& at) {
+    const auto& ref = as<Ptr<Borrow>>(value);
+    if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
+    ref->owner->value = std::move(replacement);
+}
+inline std::optional<Value> findIndex(const Value& value, const Value& index) {
+    if (is<Ptr<Dict>>(value)) {
+        const auto& dict = *as<Ptr<Dict>>(value);
+        if (auto value = dict.get(index)) return *value;
+        return {};
+    }
+    Int pos = as<Int>(index);
+    if (pos < 0) return {};
+    if (is<std::string>(value)) {
+        const auto& text = as<std::string>(value);
+        if (static_cast<UInt>(pos) < text.size()) return static_cast<Byte>(text[static_cast<std::size_t>(pos)]);
+    } else {
+        const auto& xs = as<Ptr<Vector>>(value)->values;
+        if (static_cast<UInt>(pos) < xs.size()) return xs[static_cast<std::size_t>(pos)];
+    }
+    return {};
+}
+inline Value atIndex(Machine& m, const Value& value, const Value& index, const std::string& at) {
+    if (auto item = findIndex(value, index)) return *item;
+    m.exception((is<Ptr<Dict>>(value) ? "Dictionary key not found: " : "Index out of bounds: ") + show(index), at);
+}
+inline Value setIndex(Machine& m, const Value& value, const Value& index, const Value& replacement,
+                      const std::string& at, bool reuse = false) {
+    if (is<Ptr<Dict>>(value)) {
+        auto dict = std::make_shared<Dict>(*as<Ptr<Dict>>(value));
+        dict->set(index, replacement);
+        return dict;
+    }
+    atIndex(m, value, index, at);
+    auto pos = static_cast<std::size_t>(as<Int>(index));
+    if (is<std::string>(value)) {
+        std::string text = as<std::string>(value);
+        text[pos] = static_cast<char>(as<Byte>(replacement));
+        for (std::size_t i = 0; i < text.size();)
+            if (!decode(text, i)) m.exception("String update produces invalid UTF-8", at);
+        return text;
+    }
+    auto xs = as<Ptr<Vector>>(value);
+    if (!reuse) xs = std::make_shared<Vector>(*xs);
+    xs->values[pos] = replacement;
+    return xs;
+}
+inline Value append(const Value& value, const Value& item, bool concat, bool reuse) {
+    auto xs = as<Ptr<Vector>>(value);
+    if (!reuse || (concat && xs == as<Ptr<Vector>>(item))) xs = std::make_shared<Vector>(*xs);
+    if (concat) {
+        const auto& ys = as<Ptr<Vector>>(item)->values;
+        xs->values.insert(xs->values.end(), ys.begin(), ys.end());
+    } else xs->values.push_back(item);
+    return xs;
+}
+inline Value field(const Value& value, const std::string& key) { return as<Ptr<Record>>(value)->fields.at(key); }
+inline Value tupleAt(const Value& value, std::size_t i) { return as<Ptr<Tuple>>(value)->values.at(i); }
+struct UpdatePart {
+    std::string kind, field;
+    Value index;
+    bool optional;
+    std::function<Value(Machine&, const Value&, const Value&)> get;
+    std::function<Value(Machine&, const Value&, const Value&, const Value&)> set;
+};
+inline Value pathRead(Machine& m, const Value& value, const UpdatePart& part, const std::string& at) {
+    if (part.kind == "field") return field(value, part.field);
+    if (part.kind == "tuple-index") return tupleAt(value, static_cast<std::size_t>(as<Int>(part.index)));
+    return part.get ? part.get(m,value,part.index) : atIndex(m,value,part.index,at);
+}
+inline std::optional<Value> pathFind(Machine& m, const Value& value, const UpdatePart& part) {
+    if (!part.get) return findIndex(value,part.index);
+    auto values = handle(m,[&](Machine& child) -> Values {return {part.get(child,value,part.index)};},
+        {{"exn",[](const Values&, Ptr<Continuation>) -> Values {return {};}}});
+    if (values.empty()) return std::nullopt;
+    return std::move(values[0]);
+}
+template <typename Replace>
+Value updatePath(Machine& m, const Value& value, const std::vector<UpdatePart>& path, std::size_t i,
+                 const Replace& replace, bool defaulting, bool updating, bool reuse, const std::string& at) {
+    if (i == path.size()) return replace(value);
+    const auto& part = path[i];
+    const bool leaf = i + 1 == path.size();
+    Value old;
+    if (part.optional || (defaulting && leaf)) {
+        auto found = pathFind(m, value, part);
+        if (part.optional && !found) return value;
+        if (defaulting && leaf && found) return value;
+        if (found) old = *found;
+    } else if (!leaf || updating) old = pathRead(m, value, part, at);
+    auto changed = updatePath(m, old, path, i + 1, replace, defaulting, updating, false, at);
+    if (part.kind == "field") {
+        auto copy = as<Ptr<Record>>(value)->fields;
+        copy[part.field] = std::move(changed);
+        return record(std::move(copy));
+    }
+    if (part.kind == "tuple-index") {
+        auto copy = as<Ptr<Tuple>>(value)->values;
+        copy.at(static_cast<std::size_t>(as<Int>(part.index))) = std::move(changed);
+        return tuple(std::move(copy));
+    }
+    return part.set ? part.set(m,value,part.index,changed) : setIndex(m,value,part.index,changed,at,reuse);
+}
+
+inline Int bits(UInt n) { return std::bit_cast<Int>(n); }
+inline Int intOp(const std::string& op, Int x, Int y, const std::string& at) {
+    auto a = static_cast<UInt>(x), b = static_cast<UInt>(y);
+    if (op == "+") return bits(a+b);
+    if (op == "-") return bits(a-b);
+    if (op == "*") return bits(a*b);
+    if (op == "/" || op == "%") {
+        if (!y) fail(at, "Division by zero");
+        if (x == std::numeric_limits<Int>::min() && y == -1) return op == "/" ? x : 0;
+        return op == "/" ? x/y : x%y;
+    }
+    if (op == "^") {
+        if (y < 0) fail(at, "Integer exponent must be nonnegative");
+        UInt result = 1;
+        for (; b; b >>= 1, a *= a) if (b & 1) result *= a;
+        return bits(result);
+    }
+    fail(at, "Unknown integer operator: " + op);
+}
+inline Value bitOp(Machine& m, const std::string& op, const Value& left, const Value& right, const std::string& at) {
+    if (is<bool>(left)) return op == ".&." ? truth(left) && truth(right) : op == ".|."
+        ? truth(left) || truth(right) : truth(left) != truth(right);
+    bool byte = is<Byte>(left);
+    UInt x = byte ? as<Byte>(left) : static_cast<UInt>(as<Int>(left));
+    UInt y = is<Byte>(right) ? as<Byte>(right) : static_cast<UInt>(as<Int>(right));
+    auto width = byte ? 8u : 64u;
+    UInt result = 0;
+    if (op == ".&.") result = x & y;
+    else if (op == ".|.") result = x | y;
+    else if (op == "xor") result = x ^ y;
+    else {
+        if (y >= width) m.exception("Bit position or shift count is outside 0.." + std::to_string(width-1),at);
+        const UInt mask = UInt{1} << y;
+        if (op == "testBit") return (x & mask) != 0;
+        if (op == "setBit") result = x | mask;
+        else if (op == "clearBit") result = x & ~mask;
+        else if (op == ".<<.") result = x << y;
+        else if (op == ".>>.") result = byte ? x >> y : static_cast<UInt>(bits(x) >> y);
+        else fail(at, "Unknown bit operation: " + op);
+    }
+    if (byte) return static_cast<Byte>(result);
+    return bits(result);
+}
+inline void walkRange(const Range& r, const Visit& visit) {
+    const Int step = r.first > r.last ? -1 : 1;
+    for (Int n = r.first; n != r.last; n += step) visit(n);
+    if (r.inclusive) visit(r.last);
+}
+inline Value binary(const std::string& op, const Value& a, const Value& b,
+                    const std::string& at, bool reuse = false) {
+    if (op == "==") return equal(a,b);
+    if (op == "/=") return !equal(a,b);
+    if (op == "<") return compare(a,b) < 0;
+    if (op == ">") return compare(a,b) > 0;
+    if (op == "<=") return compare(a,b) <= 0;
+    if (op == ">=") return compare(a,b) >= 0;
+    if (op == "&&") return truth(a) && truth(b);
+    if (op == "||") return truth(a) || truth(b);
+    if (op == "cons") {
+        Values xs{a}; const auto& tail = as<Ptr<Vector>>(b)->values;
+        xs.insert(xs.end(), tail.begin(), tail.end());
+        return vector(std::move(xs));
+    }
+    if (op == "vpush" || op == "push" || op == "Push" || op == "::") return append(a,b,false,reuse);
+    if (op == "++" && is<std::string>(a)) return as<std::string>(a)+as<std::string>(b);
+    if (op == "++" || op == "concat") return append(a,b,true,reuse);
+    if (op == ".." || op == "..=" || op == "range") {
+        Range r{as<Int>(a),as<Int>(b),op != ".."};
+        if (op != "range") return r;
+        Values xs;
+        walkRange(r,[&](Value v){ xs.push_back(std::move(v)); });
+        return vector(std::move(xs));
+    }
+    if (is<Int>(a)) return intOp(op,as<Int>(a),as<Int>(b),at);
+    if (is<Byte>(a)) {
+        Int x = as<Byte>(a), y = as<Byte>(b), result;
+        if (op == "^") {
+            result = 1;
+            for (Int i = 0; i < y; ++i) {
+                result *= x;
+                if (result > 255) fail(at, "byte overflow");
+            }
+        } else result = intOp(op,x,y,at);
+        if (result < 0 || result > 255) fail(at, "byte overflow");
+        return static_cast<Byte>(result);
+    }
+    double x = as<double>(a), y = as<double>(b), result;
+    if (op == "+") result = x+y;
+    else if (op == "-") result = x-y;
+    else if (op == "*") result = x*y;
+    else if (op == "/" || op == "%") {
+        if (y == 0) fail(at, "Division by zero");
+        result = op == "/" ? x/y : std::fmod(x,y);
+    } else if (op == "^") result = std::pow(x,y);
+    else fail(at, "Unknown numeric operator: " + op);
+    if (!std::isfinite(result)) fail(at, "Non-finite numeric result");
+    return result;
+}
+inline Value unary(const std::string& op, const Value& value, const std::string& at) {
+    if (op == "not") return !truth(value);
+    if (op == "show") return show(value);
+    if (op == "chars" || op == "bytes") {
+        const auto& text = as<std::string>(value); Values result;
+        if (op == "bytes") for (unsigned char c : text) result.emplace_back(static_cast<Byte>(c));
+        else for (std::size_t pos = 0; pos < text.size();) {
+            auto code = decode(text,pos);
+            if (!code) fail(at, "Invalid UTF-8");
+            result.emplace_back(Char{*code});
+        }
+        return vector(std::move(result));
+    }
+    const auto& xs = as<Ptr<Vector>>(value)->values;
+    if (op == "length") return static_cast<Int>(xs.size());
+    if (xs.empty()) fail(at, op + ": empty list");
+    if (op == "head") return xs.front();
+    return vector(Values(xs.begin()+1,xs.end()));
+}
+inline Value cast(Machine& m, const Value& value, const std::string& target, const std::string& at) {
+    if (target == "string" && is<Char>(value)) return utf8(as<Char>(value).code);
+    if (target == "char" && is<std::string>(value)) {
+        const auto& text = as<std::string>(value);
+        std::size_t pos = 0;
+        auto code = text.empty() ? std::optional<char32_t>{} : decode(text,pos);
+        if (!code || pos != text.size()) m.exception("toChar requires one character",at);
+        return Char{*code};
+    }
+    if (target == "float") return is<double>(value) ? as<double>(value)
+        : is<Byte>(value) ? static_cast<double>(as<Byte>(value))
+        : is<Char>(value) ? static_cast<double>(as<Char>(value).code) : static_cast<double>(as<Int>(value));
+    Int n;
+    if (is<double>(value)) {
+        const auto f = as<double>(value);
+        if (!std::isfinite(f) || f < -0x1p63 || f >= 0x1p63) m.exception("Invalid numeric cast to "+target,at);
+        n = static_cast<Int>(f);
+    } else n = is<Byte>(value) ? as<Byte>(value) : is<Char>(value) ? as<Char>(value).code : as<Int>(value);
+    if (target == "int") return n;
+    if (target == "byte") {
+        if (n < 0 || n > 255) m.exception("Invalid numeric cast to "+target,at);
+        return static_cast<Byte>(n);
+    }
+    if (target == "char") {
+        if (n < 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) m.exception("Invalid numeric cast to "+target,at);
+        return Char{static_cast<char32_t>(n)};
+    }
+    fail(at, "Unsupported conversion to " + target);
+}
+inline Value parseNumber(Machine& m, const Value& value, bool integer, bool strict, const std::string& at) {
+    const auto& text = as<std::string>(value);
+    auto first = text.find_first_not_of(" \t\r\n\f\v");
+    auto last = text.find_last_not_of(" \t\r\n\f\v");
+    auto start = text.data() + (first == std::string::npos ? text.size() : first);
+    auto end = text.data() + (last == std::string::npos ? text.size() : last+1);
+    if (start < end && *start == '+') ++start;
+    std::optional<Value> result;
+    if (integer) {
+        Int n; auto parsed = std::from_chars(start,end,n);
+        if (parsed.ec == std::errc{} && parsed.ptr == end) result = n;
+    } else {
+        double n; auto parsed = std::from_chars(start,end,n,std::chars_format::general);
+        if (parsed.ec == std::errc{} && parsed.ptr == end && std::isfinite(n)) result = n;
+    }
+    if (!strict) return option(result);
+    if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(value),at);
+    return *result;
+}
+inline void walk(Machine& m, const Value& value, const Visit& visit) {
+    if (is<Ptr<Vector>>(value)) {
+        for (const auto& v : as<Ptr<Vector>>(value)->values) visit(v);
+    } else if (is<Range>(value)) walkRange(as<Range>(value),visit);
+    else if (is<Ptr<Stream>>(value)) as<Ptr<Stream>>(value)->walk(m,visit);
+    else if (is<Ptr<Dict>>(value)) {
+        for (const auto& [k,v] : as<Ptr<Dict>>(value)->entries()) visit(tuple({k,v}));
+    } else if (is<Ptr<Collection>>(value)) {
+        for (const auto& v : as<Ptr<Collection>>(value)->values) visit(v);
+    } else throw std::runtime_error("Value is not iterable");
+}
+inline Value stream(std::function<void(Machine&, const Visit&)> body) {
+    return std::make_shared<Stream>(Stream{std::move(body)});
+}
+inline Value fromYield(Ptr<Label> label, std::function<void(Machine&)> body) {
+    return stream([label, body = std::move(body)](Machine& parent, const Visit& visit) {
+        const RoutedLabel scope(label);
+        Machine child{parent.globals,[&](Event event) -> Values {
+            if (event.name == "yield" && accepts(event,scope)) {
+                visit(event.arguments.at(0));
+                return {};
+            }
+            return parent.perform(std::move(event));
+        }};
+        body(child);
+    });
+}
+struct StopIteration { const void* owner; };
+template <typename Body> void untilStopped(Body body) {
+    int owner = 0;
+    try { body([&]{ throw StopIteration{&owner}; }); }
+    catch (StopIteration& stop) { if (stop.owner != &owner) throw; }
+}
+inline Int countValue(Machine& m, const Value& value, const std::string& op, const std::string& at, bool positive = false) {
+    auto count = as<Int>(value);
+    if (count < (positive ? 1 : 0)) m.exception(op + (positive ? ": count must be positive" : ": count must be nonnegative"),at);
+    return count;
+}
+using MapItem = std::function<Value(Machine&, Value)>;
+using Walk = std::function<void(Machine&, const Visit&)>;
+using WalkItem = std::function<void(Machine&, Value, const Visit&)>;
+inline Value transform(Walk source, const std::string& mode, Int count, MapItem fn, Ptr<Label> label,
+                       bool cancelOnly, WalkItem nested) {
+    return stream([=](Machine& parent, const Visit& visit) {
+        if (mode == "take" && !count) return;
+        Int remaining = count;
+        bool skipping = true;
+        untilStopped([&](auto stop){
+            loop(parent,[&](Machine& m) {
+                source(m,[&](Value item) {
+                    if (mode == "take") {
+                        visit(item);
+                        if (!--remaining) stop();
+                    } else if (mode == "skip") {
+                        if (remaining) --remaining; else visit(item);
+                    } else if (mode == "flatten") nested(m,item,visit);
+                    else if (mode == "skipWhile") {
+                        if (skipping && truth(fn(m,item))) return;
+                        skipping = false; visit(item);
+                    } else {
+                        auto mapped = fn(m,item);
+                        if (mode == "map") visit(mapped);
+                        else if (mode == "filter") { if (truth(mapped)) visit(item); }
+                        else if (mode == "takeWhile") { if (!truth(mapped)) stop(); visit(item); }
+                        else if (mode == "flatMap") nested(m,mapped,visit);
+                    }
+                });
+            },label,cancelOnly);
+        });
+    });
+}
+
+inline Value split(const Value& source, const Value& separator) {
+    return stream([text = as<std::string>(source), sep = as<std::string>(separator)](Machine&,const Visit& visit) {
+        if (sep.empty()) {
+            for (std::size_t pos = 0; pos < text.size();) {
+                auto start = pos;
+                if (!decode(text,pos)) throw std::runtime_error("Invalid UTF-8");
+                visit(text.substr(start,pos-start));
+            }
+            return;
+        }
+        for (std::size_t pos=0;;) {
+            auto end = text.find(sep,pos);
+            visit(text.substr(pos,end == std::string::npos ? end : end-pos));
+            if (end == std::string::npos) return;
+            pos = end+sep.size();
+        }
+    });
+}
+using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
+inline Value partition(Walk source, const std::string& mode, Int count, MapItem key, Compare eq, Ptr<Label> label) {
+    return stream([=](Machine& parent,const Visit& visit) {
+        loop(parent,[&](Machine& m){
+            Values pending;
+            Value last;
+            const auto emit = [&] {
+                if (mode == "chunkBy") visit(stream([saved=pending](Machine&,const Visit& next){
+                    for (const auto& value : saved) next(value);
+                }));
+                else visit(vector(pending));
+            };
+            source(m,[&](Value item){
+                if (mode == "chunkBy") {
+                    auto k = key(m,item);
+                    if (!pending.empty() && !(eq ? eq(m,last,k) : equal(last,k))) { emit(); pending.clear(); }
+                    last = std::move(k);
+                    pending.push_back(std::move(item));
+                } else {
+                    pending.push_back(std::move(item));
+                    if (pending.size() == static_cast<UInt>(count)) {
+                        emit();
+                        if (mode == "windows") pending.erase(pending.begin());
+                        else pending.clear();
+                    }
+                }
+            });
+            if (!pending.empty() && mode != "windows") emit();
+        },label);
+    });
+}
+class Cursor {
+    Walk walk;
+    Ptr<EffectWorker> worker;
+    bool waiting = false;
+public:
+    explicit Cursor(Walk source) : walk(std::move(source)) {}
+    std::optional<Value> next(Machine& m) {
+        if (!worker) worker = std::make_shared<EffectWorker>(m.globals,[this](Machine& child) -> Values {
+            walk(child,[&](Value item){ child.perform(Event{"@zip-item","<zip>",{std::move(item)}}); });
+            return {};
+        });
+        else if (waiting) worker->send({});
+        waiting = false;
+        while (auto event = worker->next()) {
+            if (event->name == "@zip-item") { waiting = true; return std::move(event->arguments[0]); }
+            worker->send(m.perform(std::move(*event)));
+        }
+        return {};
+    }
+};
+inline Value zip(Walk left, Walk right, Ptr<Label> label) {
+    return stream([=](Machine& parent,const Visit& visit) {
+        loop(parent,[&](Machine& m){
+            Cursor a(left),b(right);
+            while (auto x = a.next(m)) {
+                auto y = b.next(m);
+                if (!y) break;
+                visit(tuple({std::move(*x),std::move(*y)}));
+            }
+        },label,true);
+    });
+}
+inline Value combinatorics(Walk left, Walk right, Int count, const std::string& mode) {
+    return stream([=](Machine& m,const Visit& visit){
+        Values xs,ys;
+        loop(m,[&](Machine& child){ left(child,[&](Value v){xs.push_back(std::move(v));}); });
+        if (right) {
+            loop(m,[&](Machine& child){ right(child,[&](Value v){ys.push_back(std::move(v));}); });
+            for (const auto& a : xs) for (const auto& b : ys) visit(tuple({a,b}));
+            return;
+        }
+        const auto emit = [&](UInt k) {
+            if (!k) { visit(vector({})); return; }
+            if (xs.empty() || (k > xs.size() && mode != "combinationsWithReplacement")) return;
+            std::vector<std::size_t> selected, next{0};
+            while (!next.empty()) {
+                if (selected.size() == k) {
+                    Values choice;
+                    for (auto i : selected) choice.push_back(xs[i]);
+                    visit(vector(std::move(choice)));
+                    next.pop_back(); selected.pop_back();
+                    continue;
+                }
+                auto i = next.back()++;
+                if (i == xs.size()) {
+                    next.pop_back(); if (!selected.empty()) selected.pop_back();
+                    continue;
+                }
+                if (i > xs.size()) { next.pop_back(); if (!selected.empty()) selected.pop_back(); continue; }
+                if (mode == "permutations" && std::find(selected.begin(),selected.end(),i) != selected.end()) continue;
+                selected.push_back(i);
+                next.push_back(mode == "permutations" ? 0 : mode == "combinationsWithReplacement" ? i : i+1);
+            }
+        };
+        if (mode == "powerset") for (std::size_t k=0; k<=xs.size(); ++k) emit(k);
+        else emit(static_cast<UInt>(count));
+    });
+}
+inline Results<2> collectionOp(const std::string& op, const Value& value, const Value& item,
+                               std::function<bool(const Value&,const Value&)> less, bool reuse) {
+    auto old = as<Ptr<Collection>>(value);
+    const auto& xs = old->values;
+    if (op == "hlength" || op == "qlength") return {static_cast<Int>(xs.size()),{}};
+    if (op == "hisEmpty" || op == "qisEmpty") return {xs.empty(),{}};
+    if (op == "hpeek" || op == "qpeek" || op == "qpeekBack") {
+        return {xs.empty() ? option() : option(op == "qpeekBack" ? xs.back() : xs.front()),{}};
+    }
+    auto result = reuse ? old : std::make_shared<Collection>(*old);
+    auto& changed = result->values;
+    if (op == "qpush" || op == "hpush") {
+        changed.push_back(item);
+        if (op == "hpush") std::push_heap(changed.begin(),changed.end(),less);
+    } else if (op == "qpushFront") changed.insert(changed.begin(),item);
+    else {
+        if (changed.empty()) return {result,option()};
+        Value popped;
+        if (op == "hpop") std::pop_heap(changed.begin(),changed.end(),less);
+        if (op == "qpop") { popped = std::move(changed.front()); changed.erase(changed.begin()); }
+        else { popped = std::move(changed.back()); changed.pop_back(); }
+        return {result,option(popped)};
+    }
+    return {result,{}};
+}
+struct Consumption { Value value; std::optional<Values> broken; };
+inline Consumption consume(Machine& parent, Walk source, const std::string& name, const Value& arg,
+                           MapItem key, Compare less, Ptr<Dict> dict, Ptr<Label> label) {
+    Values collected;
+    std::vector<std::pair<Value,Value>> sorted;
+    std::vector<std::string> joined;
+    Value result;
+    std::optional<Value> best, bestKey;
+    bool flag = name == "all";
+    Int remaining = name == "nth" ? as<Int>(arg) : 0;
+    std::optional<Values> broken;
+    if (remaining >= 0) untilStopped([&](auto stop){
+        broken = loop(parent,[&](Machine& m){
+            source(m,[&](Value item){
+                if (name == "join") joined.push_back(as<std::string>(item));
+                else if (name == "reverse") collected.push_back(item);
+                else if (name == "sort" || name == "sortBy") sorted.emplace_back(item,key ? key(m,item) : item);
+                else if (name == "nth") { if (remaining-- == 0) { best = item; stop(); } }
+                else if (name == "all" || name == "any") {
+                    flag = truth(key(m,item));
+                    if (flag == (name == "any")) stop();
+                } else if (name == "toDict") dict->set(tupleAt(item,0),tupleAt(item,1));
+                else if (name == "counts") {
+                    auto previous = dict->get(item);
+                    dict->set(item, Int{previous ? as<Int>(*previous)+1 : 1});
+                } else if (name == "groupBy") {
+                    auto k = key(m,item);
+                    auto previous = dict->get(k);
+                    if (previous) as<Ptr<Vector>>(*previous)->values.push_back(item);
+                    else dict->set(k,vector({item}));
+                } else {
+                    auto k = key ? key(m,item) : item;
+                    bool maximum = name == "maxi" || name == "maxiBy";
+                    if (!bestKey || (maximum ? !less(m,k,*bestKey) : less(m,k,*bestKey))) {
+                        best = item; bestKey = std::move(k);
+                    }
+                }
+            });
+        },label);
+    });
+    if (dict) result = dict;
+    else if (name == "all" || name == "any") result = flag;
+    else if (name == "join") result = join(joined,as<std::string>(arg));
+    else if (name == "sort" || name == "sortBy") {
+        if (!broken) broken = loop(parent,[&](Machine& m) {
+            std::stable_sort(sorted.begin(),sorted.end(),[&](const auto& a,const auto& b){return less(m,a.second,b.second);});
+        },label);
+        for (auto& pair : sorted) collected.push_back(std::move(pair.first));
+        result = vector(std::move(collected));
+    } else if (name == "reverse") {
+        std::reverse(collected.begin(),collected.end());
+        result = vector(std::move(collected));
+    } else result = option(best);
+    return {std::move(result),std::move(broken)};
+}
+
+} // namespace nyanco

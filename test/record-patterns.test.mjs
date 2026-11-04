@@ -91,6 +91,7 @@ speak {name: ~} = print
   const p=compileModule(entry),output=[];new VM({...p,output:s=>output.push(s),warning:()=>{}}).evaluate('main');assert.deepEqual(output,['{age: 9, name: "module"}','{age: 1, name: "x"}','hello','record={name: "module"}']);native(p,output,dir);
   const service=new LanguageService(),uri='file:///record-patterns.nyan',text='name = "global"\nf {:name} = name';
   assert.deepEqual(service.update(uri,text,1).diagnostics,[]);
-  assert.equal(service.request('textDocument/hover',{textDocument:{uri},position:{line:1,character:13}}),null);
+  const hover=service.request('textDocument/hover',{textDocument:{uri},position:{line:1,character:13}});
+  assert.match(hover.contents.value,/name : 'a/);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
