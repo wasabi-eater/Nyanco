@@ -10,15 +10,17 @@ import {checkExpression, formatType, missingOperands, StaticTypeError} from './t
 import {T, tuple, neverValues, StoppedEmission, items, effectParts, copyEnv, freshTypes} from './native-types.mjs';
 import {transforms, streamTransforms, countTransform} from './iteration.mjs';
 import {patternNames} from './type-syntax.mjs';
+import {hashText} from './hash-map.mjs';
 
 // Fixed-width octal escapes make generated source independent of the compiler's
 // input encoding and preserve embedded zero bytes in Nyanco strings.
-function string(value) {
+function stringLiteral(value) {
   const bytes = Buffer.from(value, 'utf8');
   const escaped = Array.from(bytes, n => n >= 32 && n <= 126 && n !== 34 && n !== 92
     ? String.fromCharCode(n) : '\\' + n.toString(8).padStart(3, '0')).join('');
-  return `std::string("${escaped}", ${bytes.length})`;
+  return `"${escaped}", ${bytes.length}`;
 }
+const string = value => `std::string(${stringLiteral(value)})`;
 const loc = token => string(token ? `${token.file}:${token.line}:${token.col}` : '<entry>');
 const arguments_ = count => Array.from({length: count}, (_, i) => `a${i}`);
 const resultType = count => `Results<${count}>`;
@@ -72,16 +74,56 @@ function literal(node, type = node.numericKind === 'float' ? 'float' : 'int') {
   if (type === 'byte') return `Byte{${n}}`;
   return `bits(UINT64_C(${BigInt.asUintN(64, n)}))`;
 }
-function pattern(node) {
+function pattern(node, constructors) {
   const kind = patternKinds[node.kind];
   if (!kind) throw new StaticTypeError(`Unsupported C++ pattern: ${node.kind}`, node);
-  const name = ['word', 'constructor'].includes(node.kind) ? string(node.value) : '{}';
+  const name = node.kind === 'word' ? string(node.value) : '{}';
   const literals = node.kind === 'literal' ? values([literal(node)]) : '{}';
-  const fields = (node.fields || []).map(pattern).join(', ');
+  const fields = (node.fields || []).map(field => pattern(field,constructors)).join(', ');
   const keys = (node.keys || []).map(string).join(', ');
-  return `Pattern{PatternKind::${kind}, ${name}, ${literals}, {${fields}}, {${keys}}, ${!!node.mutable}}`;
+  const tag = node.kind === 'constructor' ? `, ${constructors.get(node.value).cpp}::tag` : '';
+  return `Pattern{PatternKind::${kind}, ${name}, ${literals}, {${fields}}, {${keys}}, ${!!node.mutable}${tag}}`;
 }
-const patterns = nodes => `{${nodes.map(pattern).join(', ')}}`;
+function adtLayout(definitions) {
+  const families = new Map(), constructors = new Map();
+  let next = 0;
+  function add(type, name, display, arity) {
+    if (!families.has(type)) families.set(type,{id:families.size,members:[]});
+    const family = families.get(type);
+    const member = {family, name, display, arity, cpp:`AdtCtor${next++}`};
+    family.members.push(member);
+    return member;
+  }
+  for (const [name,ctor] of definitions.constructors) {
+    constructors.set(name,add(ctor.typeName,name,ctor.token.sourceName || name,ctor.fields.length));
+  }
+  const runtimeOption = (name, arity) => {
+    const member = constructors.get(name);
+    return member && member.family === families.get('option') && member.arity === arity
+      ? member : add('option',name,name,arity);
+  };
+  const none = runtimeOption('None',0), some = runtimeOption('Some',1);
+  const make = (member, args) => `makeAdt<AdtFamily${member.family.id}>(${member.cpp}{{${args.join(', ')}}})`;
+  const source = [];
+  for (const [type,family] of families) {
+    // Keep the existing structural order for standard options and results.
+    const first = type === 'option' ? 'None' : type === 'result' ? 'Ok' : null;
+    family.members.sort((a,b) => a.name === b.name ? 0 : a.name === first ? -1 :
+      b.name === first ? 1 : a.name < b.name ? -1 : 1);
+    for (const [index,c] of family.members.entries()) {
+      source.push(`struct ${c.cpp} {
+    std::array<Value, ${c.arity}> fields;
+    static constexpr AdtTag tag{${family.id}, ${index}};
+    static constexpr AdtInfo info{std::string_view(${stringLiteral(c.display)}), UINT32_C(${hashText(type+':'+c.name)})};
+};`);
+    }
+    source.push(`using AdtFamily${family.id} = AdtValue<${family.id}, ${family.members.map(c=>c.cpp).join(', ')}>;`);
+  }
+  source.push(`inline Value option(std::optional<Value> value) {
+    return value ? ${make(some,['std::move(*value)'])} : ${make(none,[])};
+}`);
+  return {constructors, make, source:source.join('\n')};
+}
 function unsupported(token, feature = token.value || token.kind) {
   throw new StaticTypeError(`Unsupported by the C++ backend: ${feature}`, token);
 }
@@ -96,6 +138,8 @@ export function transpileCpp(program, {
     definitions.moduleTokens?.(expression, '<entry>') || expression, '<entry>', definitions.constructors
   );
   checkExpression(entry, definitions);
+  const adts = adtLayout(definitions);
+  const patterns = nodes => `{${nodes.map(node=>pattern(node,adts.constructors)).join(', ')}}`;
   const ir = createTypedIR(definitions, {ownership: optimizeVectors});
   const vectorReuse = optimizeVectors ? vectorOwnership(definitions, entry) : new WeakSet();
   const functions = new Map();
@@ -514,20 +558,25 @@ return {option(${args[0]})};
       const constructors = [...definitions.constructors.values()].filter(c => c.typeName === type.name);
       if (constructors.length) {
         ctx.add('const auto& x = *as<Ptr<Adt>>(a);');
-        if (pair) ctx.add('const auto& y = *as<Ptr<Adt>>(b);',`if (x.name != y.name) return ${kind === 'ord' ? 'compare(a,b)' : 'false'};`);
+        if (pair) ctx.add('const auto& y = *as<Ptr<Adt>>(b);',`if (x.tag() != y.tag()) return ${kind === 'ord' ? 'compare(a,b)' : 'false'};`);
         for (const c of constructors) {
           const params = new Map(c.parameters.map((p,i)=>[p,type.args[i]]));
           const fields = c.fields.map(t=>T.syntaxType(t,params));
-          ctx.add(`if (x.name == ${string(c.name)}) {`);
-          const parts = fields.map((t,i)=>sub(t,`x.fields[${i}]`,`y.fields[${i}]`));
+          ctx.add(`if (x.tag() == ${adts.constructors.get(c.name).cpp}::tag) {`);
+          if (fields.length) {
+            ctx.add('const auto xs = x.fields();');
+            if (pair) ctx.add('const auto ys = y.fields();');
+          }
+          const parts = fields.map((t,i)=>sub(t,`xs[${i}]`,`ys[${i}]`));
           if (pair) {
             for (const call of parts) ctx.add(check(call));
             ctx.add(kind === 'eq' ? 'return true;' : 'return 0;');
           } else if (kind === 'hash') {
-            ctx.add('auto hash = hashText(x.type+":"+x.name);');
+            ctx.add('auto hash = x.info().hashSeed;');
             for (const call of parts) ctx.add(`hash=hashMix(hash,${call});`);
             ctx.add('return hash;');
-          } else ctx.add(parts.length ? `return "("+x.display+" "+join({${parts.join(',')}}, " ")+")";` : 'return x.display;');
+          } else ctx.add(parts.length ? `return "("+std::string(x.info().display)+" "+join({${parts.join(',')}}, " ")+")";`
+            : 'return std::string(x.info().display);');
           ctx.add('}');
         }
       }
@@ -879,7 +928,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     const constructor = definitions.constructors.get(name);
     if (constructor) {
       const args = take(stack, constructor.fields.length);
-      push(`adt(${string(constructor.typeName)}, ${string(name)}, ${string(constructor.token.sourceName || name)}, ${values(args)})`);
+      push(adts.make(adts.constructors.get(name),args));
       return stack;
     }
     const operation = definitions.effects.get(name);
@@ -1233,6 +1282,8 @@ fail(at, "Unsupported quotation specialization");
   if (onIR) onIR(ir.serialize());
   return `${runtime}
 namespace nyanco {
+${adts.source}
+
 ${declarations.join('\n')}
 
 ${bodies.join('\n\n')}

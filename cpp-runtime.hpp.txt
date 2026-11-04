@@ -15,13 +15,16 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace nyanco {
@@ -42,7 +45,38 @@ struct Char { char32_t code; };
 struct Vector { Values values; };
 struct Tuple { Values values; };
 struct Record { std::map<std::string, Value> fields; };
-struct Adt { std::string type, name, display; Values fields; };
+struct AdtTag {
+    std::size_t family, alternative;
+    bool operator==(const AdtTag&) const = default;
+};
+struct AdtInfo { std::string_view display; std::uint32_t hashSeed; };
+struct Adt {
+    virtual ~Adt() = default;
+    virtual AdtTag tag() const = 0;
+    virtual std::span<const Value> fields() const = 0;
+    virtual const AdtInfo& info() const = 0;
+};
+template <std::size_t Family, typename... Constructors>
+class AdtValue final : public Adt {
+    std::variant<Constructors...> value;
+public:
+    template <typename Constructor>
+    explicit AdtValue(Constructor constructor) : value(std::move(constructor)) {}
+    AdtTag tag() const override { return {Family,value.index()}; }
+    std::span<const Value> fields() const override {
+        return std::visit([](const auto& constructor) -> std::span<const Value> {
+            return constructor.fields;
+        },value);
+    }
+    const AdtInfo& info() const override {
+        static constexpr AdtInfo alternatives[] = {Constructors::info...};
+        return alternatives[value.index()];
+    }
+};
+template <typename Family, typename Constructor>
+Value makeAdt(Constructor constructor) {
+    return Ptr<Adt>(std::make_shared<Family>(std::move(constructor)));
+}
 struct Range { Int first, last; bool inclusive; };
 struct Collection { std::string kind; Values values; };
 struct DictEntry { Value key, value; std::size_t position; };
@@ -167,12 +201,7 @@ struct BorrowScope {
 inline Value vector(Values values) { return std::make_shared<Vector>(Vector{std::move(values)}); }
 inline Value tuple(Values values) { return std::make_shared<Tuple>(Tuple{std::move(values)}); }
 inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
-inline Value adt(std::string type, std::string name, std::string display, Values fields = {}) {
-    return std::make_shared<Adt>(Adt{std::move(type), std::move(name), std::move(display), std::move(fields)});
-}
-inline Value option(std::optional<Value> value = {}) {
-    return value ? adt("option", "Some", "Some", {*value}) : adt("option", "None", "None");
-}
+inline Value option(std::optional<Value> value = {});
 inline bool truth(const Value& value) { return as<bool>(value); }
 inline bool truth(bool value) { return value; }
 inline std::string utf8(char32_t code) {
@@ -234,7 +263,7 @@ inline std::string join(const std::vector<std::string>& parts, const std::string
     }
     return result;
 }
-inline std::string shown(const Values& values, const std::string& sep) {
+inline std::string shown(std::span<const Value> values, const std::string& sep) {
     std::vector<std::string> parts;
     for (const auto& value : values) parts.push_back(show(value));
     return join(parts, sep);
@@ -282,7 +311,9 @@ inline std::string show(const Value& v) {
     }
     if (is<Ptr<Adt>>(v)) {
         const auto& a = *as<Ptr<Adt>>(v);
-        return a.fields.empty() ? a.display : "(" + a.display + " " + shown(a.fields, " ") + ")";
+        auto fields = a.fields();
+        std::string name(a.info().display);
+        return fields.empty() ? name : "(" + name + " " + shown(fields, " ") + ")";
     }
     if (is<Range>(v)) {
         const auto& r = as<Range>(v);
@@ -302,7 +333,7 @@ inline std::string raw(const Value& v) { return is<std::string>(v) ? as<std::str
 
 template <typename T> int order(const T& a, const T& b) { return a < b ? -1 : b < a ? 1 : 0; }
 inline int compare(const Value& a, const Value& b);
-inline int compareValues(const Values& a, const Values& b) {
+inline int compareValues(std::span<const Value> a, std::span<const Value> b) {
     for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i)
         if (int result = compare(a[i], b[i])) return result;
     return order(a.size(), b.size());
@@ -319,12 +350,10 @@ inline int compare(const Value& a, const Value& b) {
     if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
     if (is<Ptr<Adt>>(a)) {
         const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
-        if (x.name != y.name) {
-            if (x.type == "option") return x.name == "None" ? -1 : 1;
-            if (x.type == "result") return x.name == "Ok" ? -1 : 1;
-            return order(x.name,y.name);
-        }
-        return compareValues(x.fields, y.fields);
+        const auto left = x.tag(), right = y.tag();
+        if (left.family != right.family) return order(left.family,right.family);
+        if (left.alternative != right.alternative) return order(left.alternative,right.alternative);
+        return compareValues(x.fields(),y.fields());
     }
     if (is<Ptr<Record>>(a)) {
         const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
@@ -355,7 +384,7 @@ inline int compare(const Value& a, const Value& b) {
     throw std::runtime_error("Values cannot be ordered");
 }
 inline bool equal(const Value& a, const Value& b);
-inline bool equalValues(const Values& a, const Values& b) {
+inline bool equalValues(std::span<const Value> a, std::span<const Value> b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), equal);
 }
 inline bool equal(const Value& a, const Value& b) {
@@ -366,7 +395,7 @@ inline bool equal(const Value& a, const Value& b) {
     if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
     if (is<Ptr<Adt>>(a)) {
         const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
-        return x.name == y.name && x.type == y.type && equalValues(x.fields, y.fields);
+        return x.tag() == y.tag() && equalValues(x.fields(),y.fields());
     }
     if (is<Ptr<Record>>(a)) {
         const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
@@ -394,7 +423,7 @@ inline std::uint32_t hashText(const std::string& text) {
     return hash;
 }
 inline std::uint32_t hashValue(const Value& v);
-inline std::uint32_t hashValues(std::uint32_t hash, const Values& xs) {
+inline std::uint32_t hashValues(std::uint32_t hash, std::span<const Value> xs) {
     for (const auto& x : xs) hash = hashMix(hash,hashValue(x));
     return hash;
 }
@@ -422,11 +451,11 @@ inline std::uint32_t hashValue(const Value& v) {
     }
     if (is<Range>(v)) {
         const auto& r = as<Range>(v);
-        return hashValues(hashText("range"), {r.first,r.last,r.inclusive});
+        return hashValues(hashText("range"), Values{r.first,r.last,r.inclusive});
     }
     if (is<Ptr<Adt>>(v)) {
         const auto& a = *as<Ptr<Adt>>(v);
-        return hashValues(hashText(a.type + ":" + a.name),a.fields);
+        return hashValues(a.info().hashSeed,a.fields());
     }
     if (is<Ptr<Dict>>(v)) {
         const auto& d = *as<Ptr<Dict>>(v);
@@ -445,9 +474,10 @@ struct Pattern {
     std::vector<Pattern> fields;
     std::vector<std::string> keys;
     bool mutable_ = false;
+    AdtTag constructor{};
 };
 inline bool match(const Pattern&, const Value&, Env&);
-inline bool matches(const std::vector<Pattern>& patterns, const Values& values, Env& env) {
+inline bool matches(const std::vector<Pattern>& patterns, std::span<const Value> values, Env& env) {
     if (patterns.size() != values.size()) return false;
     for (std::size_t i = 0; i < patterns.size(); ++i)
         if (!match(patterns[i], values[i], env)) return false;
@@ -463,14 +493,14 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         if (is<Int>(p.literals[0]) && is<double>(value)) return static_cast<double>(as<Int>(p.literals[0])) == as<double>(value);
         return equal(p.literals[0], value);
     case PatternKind::constructor:
-        return is<Ptr<Adt>>(value) && as<Ptr<Adt>>(value)->name == p.name
-            && matches(p.fields, as<Ptr<Adt>>(value)->fields, env);
+        return is<Ptr<Adt>>(value) && as<Ptr<Adt>>(value)->tag() == p.constructor
+            && matches(p.fields, as<Ptr<Adt>>(value)->fields(), env);
     case PatternKind::vector:
         return is<Ptr<Vector>>(value) && matches(p.fields, as<Ptr<Vector>>(value)->values, env);
     case PatternKind::push: {
         if (!is<Ptr<Vector>>(value)) return false;
         const auto& xs = as<Ptr<Vector>>(value)->values;
-        return !xs.empty() && matches(p.fields, {vector(Values(xs.begin(), xs.end()-1)), xs.back()}, env);
+        return !xs.empty() && matches(p.fields, Values{vector(Values(xs.begin(), xs.end()-1)), xs.back()}, env);
     }
     case PatternKind::tuple:
         return is<Ptr<Tuple>>(value) && matches(p.fields, as<Ptr<Tuple>>(value)->values, env);

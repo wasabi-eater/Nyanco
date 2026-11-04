@@ -83,6 +83,18 @@ test('built-in calls select their operation at C++ compile time', () => {
   assert.doesNotMatch(source,/\b(?:binary|unary)\(const std::string& op|\b(?:op|mode) == "/);
 });
 
+test('ADT constructors use variant alternatives and constructor patterns use their tags', () => {
+  const source = transpileCpp(compile(`data tree 'a = Leaf 'a | Branch (tree 'a) (tree 'a)
+sum (Leaf n) = n
+sum (Branch left right) = (sum left) + (sum right)
+main = sum (Branch (Leaf 2) (Leaf 3))`));
+  assert.match(source, /std::variant<Constructors\.\.\.> value/);
+  assert.match(source, /using AdtFamily\d+ = AdtValue<\d+, AdtCtor\d+, AdtCtor\d+>;/);
+  assert.match(source, /makeAdt<AdtFamily\d+>\(AdtCtor\d+\{\{v\d+, v\d+\}\}\)/);
+  assert.match(source, /PatternKind::constructor, \{\}[^\n]+AdtCtor\d+::tag/);
+  assert.doesNotMatch(source, /struct Adt \{ std::string|x\.name == std::string\("(Leaf|Branch)"/);
+});
+
 test('CLI C++20 emission builds a standalone program with modules, IO and resumable effects', {
   skip: !compiler, timeout: 120000
 }, () => {
@@ -93,6 +105,9 @@ test('CLI C++20 emission builds a standalone program with modules, IO and resuma
     const source = join(dir,'main.nyan');
     writeFileSync(source,`import "./math"
 effect ask : -> int
+data tree 'a = Leaf 'a | Branch (tree 'a) (tree 'a) deriving eq, hash, ord
+sumTree (Leaf n) = n
+sumTree (Branch left right) = (sumTree left) + (sumTree right)
 mixed : int -> int string bool
 mixed x = x, "hi", True
 localCapture x =
@@ -101,6 +116,14 @@ localCapture x =
 main =
     n <- parseInt read
     print (math.square n)
+    tree <- Branch (Leaf n) (Leaf 2)
+    print (sumTree tree)
+    print (show tree)
+    print (tree == (Branch (Leaf n) (Leaf 2)))
+    print (tree > (Leaf n))
+    print ([tree: "branch"].[Branch (Leaf n) (Leaf 2)])
+    print ([n].?[0])
+    print ([n].?[1])
     mixed n; print; print; print
     print (localCapture n)
     1; while {drop; True; False} {drop; 1}; print
