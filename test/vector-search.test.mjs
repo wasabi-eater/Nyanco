@@ -48,6 +48,26 @@ main =
 const expected=['(Ok 1)','(Err 3)','(Err 0)','(Err 4)','(Err 0)','(Ok 0)','(Err 1)','1','3','0','0','3','(Ok 1)','(Err 2)','(Ok 1)','(Ok 1)','(Err 1)','(Ok 1)','500','10','(Err 0)','0','2','(Err "key")','(Ok 1)','99'];
 function run(){const program=compile(source),output=[];new VM({...program,output:text=>output.push(text)}).evaluate('main');return {program,output};}
 
+test('explicit standard ADTs remain usable by search helpers after constructor registration',()=>{
+ const option="data option 'a = None | Some 'a",result="data result 'a 'e = Ok 'a | Err 'e";
+ for(const declarations of [option,result,option+'\n'+result]){
+  const program=compile(declarations+'\nmain = binarySearch [1,3,5] 3; binarySearchBy [1,3,5] 4 {nop}; partitionPoint [1,3,5] {< 4}');
+  assert.equal(format(new VM(program).evaluate('main')),'[(Ok 1), (Err 2), 2]');
+ }
+});
+
+test('unrelated code compiles with option/result declarations that differ from standard ADTs',()=>{
+ for(const [declarations,body,expected] of [
+  ["data option 'a = None | Some int",'Some 3','[(Some 3)]'],
+  ["data result 'a 'e = Error 'e | Ok 'a",'partitionPoint [1,3,5] {< 4}','[2]'],
+  ['data box = Some int','Some 3','[(Some 3)]'],
+  ['data result = Success | Failure','7','[7]'],
+ ]){
+  const program=compile(declarations+'\nmain = '+body);
+  assert.equal(format(new VM(program).evaluate('main')),expected);
+ }
+});
+
 test('vector searches return indices and insertion points with logarithmic callbacks',()=>{
  const {program,output}=run();assert.deepEqual(output,expected);
  assert.match(program.types.get('binarySearch'),/ord 'a/);

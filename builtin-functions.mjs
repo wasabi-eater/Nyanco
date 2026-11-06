@@ -1,4 +1,5 @@
-import {installUnwrap,installOrElse,installContainerFunctions} from './builtin-results.mjs';
+import {installUnwrap,installOrElse,installContainerFunctions,isStandardResult} from './builtin-results.mjs';
+import {isStandardOption} from './builtin-option.mjs';
 import {installOperatorClasses} from './operator-classes.mjs';
 import {parseExpression} from './language.mjs';
 // Ordinary functions retain stack/effect polymorphism and use the same lowering.
@@ -21,7 +22,9 @@ export function withStandardFunctions(definitions){
  add('product',[],'fold (fromInt 1) {*}');
  add('zipWith',['left','right','f'],'map (zip left right) {-> #(a, b); call a b f}');
  add('unzip',['xs'],'pairs <- vector xs; vmap pairs {-> #(a, _); a}, vmap pairs {-> #(_, b); b}');
- add('partitionPoint',['xs','predicate'],`mut lo <- 0
+ // Helpers that pattern-match standard ADTs must wait until constructors are
+ // registered, and must not assume a user-defined option/result has that shape.
+ if(isStandardOption(result))add('partitionPoint',['xs','predicate'],`mut lo <- 0
 mut hi <- length xs
 while {lo < hi} {
     mid <- lo + (hi - lo) / 2
@@ -32,11 +35,13 @@ while {lo < hi} {
     if {lo <<- mid + 1} {hi <<- mid}
 }
 lo`);
+ if(isStandardOption(result)&&isStandardResult(result)){
  add('binarySearchBy',['xs','key','project'],`position <- partitionPoint xs {call _ project; < key}
 xs.?[position]; case
     -> Some item ? if (call item project; == key) {Ok position} {Err position}
     -> None ? Err position`);
  add('binarySearch',['xs','key'],'binarySearchBy xs key {nop}');
+ }
  add('countIf',[],'filter, count');
  add('countsBy',[],'map, counts');
  add('deque',['xs'],'fold xs __emptyDeque {qpush}');
