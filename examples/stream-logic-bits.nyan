@@ -15,7 +15,7 @@ main =
   print (5 .|. 2);
   print (xor 3 5);
   print (1 .<<. 40);
-  print ((toByte 128) .>>. 7);
+  print ((byte 128) .>>. 7);
   print (testBit 8 3);
-  print (setBit (toByte 0) 7);
+  print (setBit (byte 0) 7);
   print (clearBit 15 2)

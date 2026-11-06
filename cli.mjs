@@ -23,9 +23,16 @@ Usage:
   nyanco --types program.nyan   Show inferred function stack effects
   nyanco --type "dup"          Infer an expression without executing it
   nyanco program.nyan --emit-ir ir.json   Write typed intermediate representation
+  nyanco program.nyan --dump-ir          Show readable typed IR (no execution)
+  nyanco program.nyan --emit-ir-text ir.txt Write readable typed IR to a file
   nyanco program.nyan --emit-go main.go   Transpile to standalone Go
   nyanco program.nyan --emit-cpp main.cpp Transpile to standalone C++20
   nyanco program.nyan --build program.exe Build a native executable
+  nyanco program.nyan --procon           Write path-free C++ with buffered IO
+  --no-source-paths            Omit source paths from generated Go and C++
+  --batch-io                   Buffer C++ output across reads (non-interactive)
+  --interactive-io             Flush C++ output before reads (overrides procon default)
+  --rc local|shared            C++ reference counting (procon: local, otherwise: shared)
   nyanco --lsp                 Start Language Server (stdio)
   nyanco --help
 REPL: :help, :quit, :stack, :clear, :words, :type EXPR, :load PATH, :{ ... :}
@@ -45,7 +52,7 @@ async function repl() {
   const rl = createReplInterface({input:stdin,output:stdout});
   const color=Boolean(stdin.isTTY&&stdout.isTTY)&&!('NO_COLOR' in process.env)&&process.env.TERM!=='dumb';
   const lines = rl[Symbol.asyncIterator]();
-  const vm = new VM({input:async()=>{const line=await lines.next();return line.done?'':line.value;}}); let stack = [], block = null;
+  const vm = new VM({input:async()=>{const line=await lines.next();return line.done?'':line.value;}}); let stack = [], block = null, continued = null;
   vm.definitions.moduleTokens=standardTokens;
   const install = async (source, file, module = false) => {
     const previous = vm.definitions;
@@ -57,8 +64,20 @@ async function repl() {
   stdout.write('Nyanco 0.84.0 — static types; :type EXPR for inference\n');
   rl.setPrompt('nyanco> '); if (stdin.isTTY) rl.prompt();
   for await (const line of lines) {
-    const input = line.trim();
+    const source = continued === null ? line : continued + '\n' + line;
+    const input = source.trim();
     try {
+      if (block === null && (continued !== null || !input.startsWith(':'))) {
+        continued = null;
+        try { lex(source, '<repl>'); }
+        catch (error) {
+          if (!error.incompleteContinuation) throw error;
+          continued = source;
+          rl.setPrompt('...> ');
+          if (stdin.isTTY && !rl.closed) rl.prompt();
+          continue;
+        }
+      }
       if (block !== null) {
         if (input === ':}') {
           const source = block.join('\n'); block = null;
@@ -81,13 +100,14 @@ async function repl() {
         await install(input, '<repl>');
         stdout.write('Defined.\n');
       } else if (input) {
-        const next = [...stack]; await vm.evaluateAsync(line, next, '<repl>'); stack = next;
+        const next = [...stack]; await vm.evaluateAsync(source, next, '<repl>'); stack = next;
         stdout.write(format(stack) + '\n');
       }
     } catch (error) { stdout.write(`Error: ${error.message}\n`); }
     rl.setPrompt(block === null ? 'nyanco> ' : '...> '); if (stdin.isTTY && !rl.closed) rl.prompt();
   }
   if (block !== null) stdout.write('Error: unfinished definition block (expected :})\n');
+  if (continued !== null) stdout.write('Error: unfinished line continuation\n');
   rl.close();
 }
 
@@ -95,7 +115,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (!args.length) return repl();
   if (args.length === 1 && args[0] === '--lsp') { const {startServer}=await import('./lsp.mjs'); startServer(); return; }
-  let file, expression, typeExpression, emitGo, emitCpp, emitIR, build, check = false, singleFile = false, showStack = false, showTypes = false;
+  let file, expression, typeExpression, emitGo, emitCpp, emitIR, emitIRText, build, batchIO, referenceCounting, dumpIR = false, check = false, singleFile = false, procon = false, noSourcePaths = false, showStack = false, showTypes = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') { stdout.write(help); return; }
@@ -105,17 +125,27 @@ async function main() {
     } else if (arg === '--type') {
       if(typeExpression !== undefined || args[i+1] === undefined) throw new Error('--type requires one expression');
       typeExpression=args[++i];
-    } else if (arg === '--emit-go' || arg === '--emit-cpp' || arg === '--emit-ir' || arg === '--build') {
+    } else if (arg === '--emit-go' || arg === '--emit-cpp' || arg === '--emit-ir' || arg === '--emit-ir-text' || arg === '--build') {
       const path=args[++i];
-      const existing={'--emit-go':emitGo,'--emit-cpp':emitCpp,'--emit-ir':emitIR,'--build':build};
+      const existing={'--emit-go':emitGo,'--emit-cpp':emitCpp,'--emit-ir':emitIR,'--emit-ir-text':emitIRText,'--build':build};
       if(!path || path.startsWith('-') || existing[arg])throw new Error(`${arg} requires one output path`);
       if(arg==='--emit-go')emitGo=resolve(path);
       else if(arg==='--emit-cpp')emitCpp=resolve(path);
       else if(arg==='--emit-ir')emitIR=resolve(path);
+      else if(arg==='--emit-ir-text')emitIRText=resolve(path);
       else build=resolve(path);
     } else if (arg === '--types') showTypes = true;
+    else if (arg === '--dump-ir') dumpIR = true;
     else if (arg === '--check') check = true;
     else if (arg === '--single-file') singleFile = true;
+    else if (arg === '--procon') procon = true;
+    else if (arg === '--no-source-paths') noSourcePaths = true;
+    else if (arg === '--batch-io') batchIO = true;
+    else if (arg === '--interactive-io') batchIO = false;
+    else if (arg === '--rc') {
+      referenceCounting=args[++i];
+      if(!['local','shared'].includes(referenceCounting))throw new Error('--rc requires local or shared');
+    }
     else if (arg === '--stack') showStack = true;
     else if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`);
     else if (!file) file = arg;
@@ -124,8 +154,12 @@ async function main() {
   if (check && (!file || expression !== undefined)) throw new Error('--check requires a file and cannot be combined with --eval');
   if(typeExpression !== undefined && (check || expression !== undefined || showTypes || showStack)) throw new Error('--type cannot be combined with execution or other check options');
   if(showTypes && (!file || expression !== undefined)) throw new Error('--types requires a file and cannot be combined with --eval');
-  const outputs=[emitGo,emitCpp,emitIR,build].filter(Boolean);
-  if(outputs.length && (check || showTypes || typeExpression!==undefined))throw new Error('Compiled output cannot be combined with --check, --types or --type');
+  const outputs=[emitGo,emitCpp,emitIR,emitIRText,build].filter(Boolean);
+  const readableIR=dumpIR||emitIRText;
+  const generateCpp=emitCpp||procon||(readableIR&&!emitGo&&!build);
+  if(batchIO!==undefined&&!generateCpp)throw new Error(`${batchIO?'--batch-io':'--interactive-io'} requires C++ output (--procon or --emit-cpp)`);
+  if(referenceCounting!==undefined&&!generateCpp)throw new Error('--rc requires C++ output (--procon or --emit-cpp)');
+  if((outputs.length||procon||dumpIR) && (check || showTypes || typeExpression!==undefined))throw new Error('Compiled output cannot be combined with --check, --types or --type');
   const pathKey=p=>process.platform==='win32'?p.toLowerCase():p;
   if(new Set(outputs.map(pathKey)).size!==outputs.length || (file && outputs.map(pathKey).includes(pathKey(resolve(file)))))throw new Error('Input and output paths must be different');
   if (!file && expression === undefined && typeExpression === undefined) throw new Error('Specify a file, --eval or --type');
@@ -146,16 +180,24 @@ async function main() {
     stdout.write(`Types OK: ${file}\n`); return;
   }
   if (expression === undefined && !program.definitions.has('main')) throw new Error('Program has no main definition');
-  if(outputs.length) {
+  if(outputs.length||procon||dumpIR) {
+    const cppToStdout=procon&&!emitCpp;
+    const report=cppToStdout||dumpIR?process.stderr:stdout;
     if(expression!==undefined)vm.infer(expression);
     let ir;
-    const options={expression:expression ?? 'main',showStack:showStack || expression!==undefined};
-    const onIR=emitIR?value=>{ir=value;}:null;
-    const source=emitGo||build||(!emitCpp&&emitIR)?transpileGo(program,{...options,onIR}):null;
-    const cpp=emitCpp?(await import('./cpp-backend.mjs')).transpileCpp(program,{...options,onIR:source?null:onIR}):null;
-    if(emitIR){await writeFile(emitIR,JSON.stringify(ir,null,2)+'\n','utf8');stdout.write(`Typed IR: ${emitIR}\n`);}
-    if(emitGo) { await writeFile(emitGo,source,'utf8');stdout.write(`Go source: ${emitGo}\n`); }
-    if(emitCpp) { await writeFile(emitCpp,cpp,'utf8');stdout.write(`C++ source: ${emitCpp}\n`); }
+    const options={noSourcePaths,batchIO:batchIO??procon,referenceCounting:referenceCounting??(procon?'local':'shared'),expression:expression ?? 'main',showStack:showStack || expression!==undefined};
+    const onIR=emitIR||readableIR?value=>{ir=value;}:null;
+    const source=emitGo||build||(!generateCpp&&emitIR)?transpileGo(program,{...options,onIR:generateCpp?null:onIR}):null;
+    const cpp=generateCpp?(await import('./cpp-backend.mjs')).transpileCpp(program,{...options,noSourcePaths:noSourcePaths||procon,onIR}):null;
+    if(emitIR){await writeFile(emitIR,JSON.stringify(ir,null,2)+'\n','utf8');report.write(`Typed IR: ${emitIR}\n`);}
+    if(readableIR){
+      const {formatTypedIR}=await import('./ir-format.mjs');
+      const text=formatTypedIR(ir,{backend:generateCpp?'C++':'Go',noSourcePaths:noSourcePaths||procon});
+      if(emitIRText){await writeFile(emitIRText,text,'utf8');report.write(`Readable IR: ${emitIRText}\n`);}
+      if(dumpIR)(cppToStdout?process.stderr:stdout).write(text);
+    }
+    if(emitGo) { await writeFile(emitGo,source,'utf8');report.write(`Go source: ${emitGo}\n`); }
+    if(emitCpp) { await writeFile(emitCpp,cpp,'utf8');report.write(`C++ source: ${emitCpp}\n`); }
     if(build) {
       const temp=await mkdtemp(join(dirname(build),'.nyanco-build-'));
       try {
@@ -173,9 +215,10 @@ async function main() {
             await delay(200);
           }
         }
-        stdout.write(`Native executable: ${build}\n`);
+        report.write(`Native executable: ${build}\n`);
       } finally { await rm(temp,{recursive:true,force:true,maxRetries:10,retryDelay:200}); }
     }
+    if(procon&&!emitCpp)stdout.write(cpp);
     return;
   }
   const stack = vm.evaluate(expression ?? 'main');

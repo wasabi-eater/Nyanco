@@ -1,0 +1,5 @@
+adjacent xs = set xs -> letters; scontains letters (byte 'A') && scontains letters (byte 'D')
+main =
+    read -> top
+    read -> bottom
+    if (adjacent (bytes top) || adjacent (bytes bottom) || adjacent [top.[0], bottom.[0]] || adjacent [top.[1], bottom.[1]]) {"Yes"} {"No"}; print

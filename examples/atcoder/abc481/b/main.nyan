@@ -1,0 +1,7 @@
+ints = read; split " "; vmap {parseInt}
+main =
+    ints -> [n k]
+    ints -> a
+    countIf a {== k} -> endpoints
+    0 .. (n - 1); countIf {-> i; (a.[i] < k && k < a.[i + 1]) || (a.[i] > k && k > a.[i + 1])}
+    + endpoints; print

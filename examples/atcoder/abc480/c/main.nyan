@@ -1,0 +1,11 @@
+ints = read; split " "; vmap {parseInt}
+main =
+    ints -> [n k t]
+    ints; filter {<= t}; sort -> times
+    0 -> mut until
+    0 -> mut answer
+    each times do -> event
+        when (event > until) {answer ! + ((event - until + k - 1) / k)}
+        until <<- event + k
+    when (t > until) {answer ! + ((t - until + k - 1) / k)}
+    print answer

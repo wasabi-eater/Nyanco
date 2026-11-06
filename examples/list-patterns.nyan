@@ -24,4 +24,4 @@ describe (_ :: _) =
   "multiple items"
 
 main =
-  (((((([]) :: (1))) :: (2))) :: (3)), -> items, items, sum, print, items, reverseByPattern, print, items, describe, print
+  (((((([]) :: (1))) :: (2))) :: (3)), -> items; items, sum, print, items, reverseByPattern, print, items, describe, print

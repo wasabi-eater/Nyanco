@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ブラウザで Nyanco のコードを編集・実行しながら学べる Language Tour">
+  <title>Nyanco Language Tour</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <a class="skip" href="#lessons">レッスンへ移動</a>
+  <header class="top">
+    <a class="brand" href="#top">
+      <img src="./icon.svg" width="32" height="32" alt="">
+      <span>nyanco</span><small>LANGUAGE TOUR</small>
+    </a>
+    <span class="runtime"><i></i> ブラウザで実行</span>
+  </header>
+  <div class="layout" id="top">
+    <aside>
+      <nav aria-label="レッスン一覧">
+        <p class="eyebrow">目次 <span id="lesson-count"></span></p>
+        <div id="toc"></div>
+      </nav>
+      <div class="shortcut"><kbd>Ctrl</kbd> / <kbd>⌘</kbd> + <kbd>Enter</kbd><p>編集中のコードを実行</p></div>
+    </aside>
+    <main>
+      <section class="hero">
+        <p class="eyebrow"><span class="slash">//</span> INTERACTIVE GUIDE</p>
+        <h1>Nyanco <em>Language Tour</em></h1>
+        <p class="intro">値をスタックに積み、<code>;</code> で処理をつなぐ。メソッドチェーンのように左から右へ読めるサンプルを、ブラウザで書き換えて実行しながら学べます。</p>
+        <a class="begin" href="#stack">最初のレッスンへ <span aria-hidden="true">↓</span></a>
+      </section>
+      <div id="lessons"></div>
+      <noscript>サンプルの編集と実行には JavaScript が必要です。</noscript>
+      <footer><span>NYANCO LANGUAGE TOUR</span><a href="#top">先頭へ戻る ↑</a></footer>
+    </main>
+  </div>
+</body>
+</html>

@@ -4,6 +4,6 @@ main =
   [1, 2] -> original;
   print (push original 3);
   print original;
-  print (toVector (take (map (1 ..= 8) {* 2}) 3));
+  print (vector (take (map (1 ..= 8) {* 2}) 3));
   print (vfilter [1, 2, 3, 4] {_ % 2 == 0});
   print ([1, 2, 3] with {.[1] ! + 10})

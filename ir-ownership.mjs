@@ -12,10 +12,19 @@ export function analyzeOwnership(region,types){
  const escape=id=>{for(const resource of referenced(id))escaped.add(resource);};
  const fresh=id=>resources.set(id,next++);
  const forward=(to,from)=>{if(resources.has(from))resources.set(to,resources.get(from));if(held.has(from))held.set(to,held.get(from));if(callbacks.has(from))callbacks.set(to,callbacks.get(from));};
+ const concatenation=patterns=>(patterns||[]).some(p=>p.kind==='concat-pattern'||concatenation(p.fields));
  for(const i of region.instructions){
   const name=i.name,vector=['vpush','push','Push','::','concat','++'].includes(name),heap=['hpush','hpop'].includes(name);
   const container=i.arguments[0],resource=resources.get(container);
-  if((vector||heap)&&i.op==='call'){
+  const slice=(i.source?.sliceMethod||['sliceBetween','sliceFrom','sliceTo'].includes(name))&&types[i.resultTypes[0]]?.kind==='list';
+  if(slice){
+   i.ownership={mode:'view',reason:'immutable-shared-storage'};
+   i.arguments.forEach(escape);
+   if(resource!==undefined&&i.results[0]!==undefined)resources.set(i.results[0],resource);
+  }else if(i.op==='bind'&&concatenation(i.source?.patterns)){
+   i.ownership={mode:'view',reason:'pattern-shared-storage'};
+   i.arguments.forEach(escape);
+  }else if((vector||heap)&&i.op==='call'){
    const kind=types[i.resultTypes[0]]?.kind;
    const supported=vector?kind==='list':types[i.resultTypes[0]]?.name==='heap';
    const aliased=i.arguments.slice(1).some(id=>resources.get(id)===resource);
@@ -51,8 +60,9 @@ export function analyzeOwnership(region,types){
     }
     if(name==='dip')forward(i.results.at(-1),i.arguments.at(-2));
    }
-  }else if(i.op==='list'||i.op==='call'&&['heap','deque'].includes(name)){
+  }else if(i.op==='list'||i.op==='call'&&(i.allocates||['__emptyHeap','__emptyDeque','__emptySet'].includes(name))){
    if(i.op==='list')for(const resource of resources.values())escaped.add(resource);
+   else i.arguments.forEach(escape);
    if(i.results[0]!==undefined)fresh(i.results[0]);
   }else if(i.op==='bind'){
    if(!i.local||i.mutable)i.arguments.forEach(escape);

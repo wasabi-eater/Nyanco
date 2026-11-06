@@ -26,8 +26,114 @@ template <typename T> bool is(const Value& value) { return value.type() == typei
 
 // @runtime Char
 struct Char { char32_t code; };
-// @runtime Vector
-struct Vector { Values values; };
+// @runtime VectorBase VectorStorage Vector VectorBoxing vectorWritable vectorStorageView
+struct VectorBase {
+    mutable Ptr<VectorBase> nativeCache;
+    virtual ~VectorBase() = default;
+    virtual std::span<const Value> items() const = 0;
+    virtual std::size_t size() const = 0;
+    virtual bool native() const = 0;
+};
+template <typename T> struct VectorBoxing {
+    mutable Values boxed;
+    mutable bool boxedReady = false;
+};
+template <> struct VectorBoxing<Value> {};
+template <typename T> struct VectorStorage final : VectorBase {
+    std::vector<T> values;
+    Ptr<VectorBase> owner;
+    std::span<const T> view;
+    [[no_unique_address]] VectorBoxing<T> boxing;
+    explicit VectorStorage(std::vector<T> data) : values(std::move(data)) {}
+    VectorStorage(const VectorStorage& other) : values(other.scalars().begin(),other.scalars().end()) {}
+    std::span<const T> scalars() const { return owner ? view : std::span<const T>(values); }
+    std::size_t size() const override { return scalars().size(); }
+    bool native() const override { return !std::is_same_v<T,Value>; }
+    std::span<const Value> items() const override {
+        if constexpr (std::is_same_v<T,Value>) return scalars();
+        else {
+            if (!boxing.boxedReady) {
+                boxing.boxed.reserve(size());
+                for (const T& item : scalars()) boxing.boxed.emplace_back(item);
+                boxing.boxedReady = true;
+            }
+            return boxing.boxed;
+        }
+    }
+    void invalidate() {
+        nativeCache.reset();
+        if constexpr (!std::is_same_v<T,Value>) { boxing.boxed.clear();boxing.boxedReady=false; }
+    }
+};
+using Vector = VectorStorage<Value>;
+template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Value value,bool reuse) {
+    auto base = std::move(std::any_cast<Ptr<VectorBase>&>(value));
+    auto* typed = dynamic_cast<VectorStorage<T>*>(base.get());
+    Ptr<VectorStorage<T>> result;
+    if (typed && reuse && base.use_count() == 1 && !typed->owner)
+        result = std::static_pointer_cast<VectorStorage<T>>(std::move(base));
+    else if (typed) result = std::make_shared<VectorStorage<T>>(*typed);
+    else {
+        std::vector<T> data; data.reserve(base->size());
+        for (const auto& item : base->items()) {
+            if constexpr (std::is_same_v<T,Value>) data.push_back(item);
+            else data.push_back(as<T>(item));
+        }
+        result = std::make_shared<VectorStorage<T>>(std::move(data));
+    }
+    result->invalidate();return result;
+}
+template <typename T> inline Ptr<VectorStorage<T>> vectorStorageView(Ptr<VectorStorage<T>> source,std::size_t start,std::size_t count) {
+    auto result=std::make_shared<VectorStorage<T>>(std::vector<T>{});
+    result->owner=source->owner?source->owner:source;
+    result->view=source->scalars().subspan(start,count);
+    return result;
+}
+// @runtime ScalarVector scalarVector scalarData scalarWritable scalarPush scalarConcat
+template <typename T> using ScalarVector = VectorStorage<T>;
+template <typename T> inline Value scalarVector(std::vector<T> data) {
+    Ptr<VectorBase> result = std::make_shared<ScalarVector<T>>(std::move(data));
+    return result;
+}
+template <typename T> inline Value scalarVector(Values data) {
+    std::vector<T> result; result.reserve(data.size());
+    for (const auto& item : data) result.push_back(as<T>(item));
+    return scalarVector<T>(std::move(result));
+}
+template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Value& value) {
+    const auto& base = as<Ptr<VectorBase>>(value);
+    if (auto typed = std::dynamic_pointer_cast<ScalarVector<T>>(base)) return typed;
+    if (auto typed = std::dynamic_pointer_cast<ScalarVector<T>>(base->nativeCache)) return typed;
+    std::vector<T> data; data.reserve(base->size());
+    for (const auto& item : base->items()) data.push_back(as<T>(item));
+    auto result = std::make_shared<ScalarVector<T>>(std::move(data));
+    base->nativeCache = result;
+    return result;
+}
+template <typename T> inline Ptr<ScalarVector<T>> scalarWritable(Value value, bool reuse) {
+    return vectorWritable<T>(std::move(value),reuse);
+}
+template <typename T> inline Value scalarPush(Value source, T item, bool reuse) {
+    auto result = scalarWritable<T>(std::move(source),reuse);
+    result->values.push_back(item);
+    return Ptr<VectorBase>(std::move(result));
+}
+template <typename T> inline Value scalarConcat(Value source, const Value& other, bool reuse) {
+    auto result = scalarWritable<T>(std::move(source),reuse);
+    auto right = scalarData<T>(other);
+    result->values.insert(result->values.end(),right->scalars().begin(),right->scalars().end());
+    return Ptr<VectorBase>(std::move(result));
+}
+// @runtime vectorView
+inline Value vectorView(const Value& value, std::size_t start, std::size_t count) {
+    auto source=as<Ptr<VectorBase>>(value);
+    auto boxed=std::dynamic_pointer_cast<Vector>(source);
+    if(boxed)return Ptr<VectorBase>(vectorStorageView<Value>(std::move(boxed),start,count));
+    auto result=std::make_shared<Vector>(Values{});
+    result->view=source->items().subspan(start,count);
+    result->owner=std::move(source);
+    return Ptr<VectorBase>(std::move(result));
+}
 // @runtime Tuple
 struct Tuple { Values values; };
 // @runtime Record
@@ -73,93 +179,50 @@ Value makeAdt(Constructor constructor) {
 struct Range { Int first, last; bool inclusive; };
 // @runtime Collection
 struct Collection { std::string kind; Values values; };
-// @runtime Dict DictEntry HashNode HashRoot
-struct DictEntry { Value key, value; std::size_t position; };
-struct HashNode;
-using HashRoot = Ptr<const HashNode>;
-struct HashNode {
-    std::uint32_t hash = 0;
-    std::vector<DictEntry> bucket;
-    std::array<HashRoot,2> branches;
-};
-class Dict {
-    HashRoot root;
-    std::size_t count = 0;
-    static unsigned bit(std::uint32_t hash, unsigned depth) { return (hash >> depth) & 1; }
-    static HashRoot merge(const HashRoot& a, const HashRoot& b, unsigned depth) {
-        auto joined = std::make_shared<HashNode>();
-        auto side = bit(a->hash,depth);
-        if (side != bit(b->hash,depth)) {
-            joined->branches[side] = a;
-            joined->branches[1-side] = b;
-        } else joined->branches[side] = merge(a,b,depth+1);
-        return joined;
-    }
-    static void enumerate(const HashRoot& node, std::vector<std::pair<Value,Value>>& result) {
-        if (!node) return;
-        for (const auto& pair : node->bucket) result[pair.position] = {pair.key,pair.value};
-        for (const auto& child : node->branches) enumerate(child,result);
-    }
-    HashRoot insert(const HashRoot& node, std::uint32_t h, DictEntry entry, unsigned depth) {
-        if (!node || (!node->bucket.empty() && node->hash != h)) {
-            auto leaf = std::make_shared<HashNode>();
-            leaf->hash = h;
-            leaf->bucket.push_back(std::move(entry));
-            ++count;
-            return node ? merge(node,leaf,depth) : leaf;
-        }
-        auto next = std::make_shared<HashNode>(*node);
-        if (!next->bucket.empty()) {
-            for (auto& old : next->bucket) if (equal(old.key,entry.key)) {
-                old.value = std::move(entry.value);
-                return next;
-            }
-            next->bucket.push_back(std::move(entry));
-            ++count;
-        } else {
-            auto side = bit(h,depth);
-            next->branches[side] = insert(node->branches[side],h,std::move(entry),depth+1);
-        }
-        return next;
-    }
-public:
-    std::function<std::size_t(const Value&)> hash;
-    std::function<bool(const Value&, const Value&)> equal;
-    std::size_t size() const { return count; }
-    const Value* get(const Value& key) const {
-        const auto h = static_cast<std::uint32_t>(hash(key));
-        auto node = root.get();
-        for (unsigned depth=0; node; ++depth) {
-            if (!node->bucket.empty()) {
-                if (node->hash == h) for (const auto& pair : node->bucket)
-                    if (equal(pair.key,key)) return &pair.value;
-                break;
-            }
-            node = node->branches[bit(h,depth)].get();
-        }
-        return nullptr;
-    }
-    void set(Value key, Value value) {
-        const auto h = static_cast<std::uint32_t>(hash(key));
-        root = insert(root,h,DictEntry{std::move(key),std::move(value),count},0);
-    }
-    std::vector<std::pair<Value,Value>> entries() const {
-        std::vector<std::pair<Value,Value>> result(count);
-        enumerate(root,result);
-        return result;
-    }
-};
+// @include hash-trie
+// @runtime setOp
+template <int Operation> inline Value setOp(Value source,const Value& key) {
+    auto old=std::move(std::any_cast<Ptr<HashSetBase>&>(source));
+    if constexpr(Operation==2)return old->contains(key);
+    auto result=old.use_count()==1?std::move(old):old->clone();
+    if constexpr(Operation==0)result->insertKey(key);else result->erase(key);
+    return result;
+}
 // @runtime Cell Env
 struct Cell { Value value; bool mutable_; bool borrowed = false; };
 struct Env {
-    std::unordered_map<std::string, Ptr<Cell>> bindings;
-    Ptr<Cell> cell(const std::string& name) const { return bindings.at(name); }
+    using Bindings = std::unordered_map<std::string, Ptr<Cell>>;
+    Ptr<Bindings> bindings = std::make_shared<Bindings>();
+    void writable() {
+        if (bindings.use_count() != 1) bindings = std::make_shared<Bindings>(*bindings);
+    }
+    Ptr<Cell> cell(const std::string& name) const {
+        auto found = bindings->find(name);
+        if (found == bindings->end()) throw std::runtime_error("Missing generated binding: " + name);
+        return found->second;
+    }
     Value read(const std::string& name) const { return cell(name)->value; }
+    Value take(const std::string& name) {
+        auto& binding = bindings->at(name);
+        if (bindings.use_count() != 1 || binding.use_count() != 1 || binding->borrowed) return binding->value;
+        Value result = std::move(binding->value);
+        binding->value.reset();
+        return result;
+    }
+    Env select(std::initializer_list<std::string> names) const {
+        Env result;
+        for (const auto& name : names) {
+            auto found = bindings->find(name);
+            if (found != bindings->end()) result.bindings->emplace(name,found->second);
+        }
+        return result;
+    }
     void bind(const std::string& name, Value value, bool mutable_ = false) {
-        bindings[name] = std::make_shared<Cell>(Cell{std::move(value), mutable_});
+        writable();
+        (*bindings)[name] = std::make_shared<Cell>(Cell{std::move(value), mutable_});
     }
     void update(const std::string& name, Value value) { cell(name)->value = std::move(value); }
-    void erase(const std::string& name) { bindings.erase(name); }
+    void erase(const std::string& name) { writable(); bindings->erase(name); }
 };
 // @runtime Quote
 struct Quote { std::size_t site; Env env; std::string self; };
@@ -204,13 +267,38 @@ struct BorrowScope {
 };
 
 // @runtime vector
-inline Value vector(Values values) { return std::make_shared<Vector>(Vector{std::move(values)}); }
+inline Value vector(Values values) { return Ptr<VectorBase>(std::make_shared<Vector>(std::move(values))); }
 // @runtime tuple
 inline Value tuple(Values values) { return std::make_shared<Tuple>(Tuple{std::move(values)}); }
 // @runtime record
 inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
 // @runtime option
 inline Value option(std::optional<Value> value = {});
+// @runtime Queue QueueNode queueOp queueItems
+struct QueueNode {
+    Value value; Ptr<QueueNode> next;
+    QueueNode(Value value,Ptr<QueueNode> next):value(std::move(value)),next(std::move(next)){}
+    ~QueueNode(){while(next&&next.use_count()==1){auto old=std::move(next);next=std::move(old->next);}}
+};
+struct Queue { Ptr<QueueNode> front,back; std::size_t size=0; };
+inline Values queueItems(const Queue& queue){Values out,back;for(auto p=queue.front;p;p=p->next)out.push_back(p->value);for(auto p=queue.back;p;p=p->next)back.push_back(p->value);out.insert(out.end(),back.rbegin(),back.rend());return out;}
+template <int Operation> inline Results<2> queueOp(Value source,const Value& value){
+    auto old=std::move(std::any_cast<Ptr<Queue>&>(source));
+    if constexpr(Operation==6)return {static_cast<Int>(old->size),{}};
+    if constexpr(Operation==7)return {old->size==0,{}};
+    auto result=old.use_count()==1?std::move(old):std::make_shared<Queue>(*old);
+    if constexpr(Operation<2){auto& side=Operation==0?result->back:result->front;side=std::make_shared<QueueNode>(value,side);++result->size;return {result,{}};}
+    else{
+        constexpr bool backwards=Operation==3||Operation==5;
+        auto& side=backwards?result->back:result->front;
+        auto& other=backwards?result->front:result->back;
+        if(!side){for(auto p=other;p;p=p->next)side=std::make_shared<QueueNode>(p->value,side);other.reset();}
+        if(!side)return {Operation<4?Value{result}:option(),option()};
+        Value item=side->value;
+        if constexpr(Operation<4){side=side->next;--result->size;return {result,option(std::move(item))};}
+        else return {option(std::move(item)),{}};
+    }
+}
 // @runtime truth
 inline bool truth(const Value& value) { return as<bool>(value); }
 inline bool truth(bool value) { return value; }
@@ -317,8 +405,8 @@ inline std::string show(const Value& v) {
     }
 // @end-runtime
     if (is<std::string>(v)) return escape(as<std::string>(v), '"');
-// @if-runtime Vector
-    if (is<Ptr<Vector>>(v)) return "[" + shown(as<Ptr<Vector>>(v)->values, ", ") + "]";
+// @if-runtime VectorBase
+    if (is<Ptr<VectorBase>>(v)) return "[" + shown(as<Ptr<VectorBase>>(v)->items(), ", ") + "]";
 // @end-runtime
 // @if-runtime Tuple
     if (is<Ptr<Tuple>>(v)) return "#(" + shown(as<Ptr<Tuple>>(v)->values, " ") + ")";
@@ -330,10 +418,13 @@ inline std::string show(const Value& v) {
         return parts.empty() ? "{:}" : "{" + join(parts, ", ") + "}";
     }
 // @end-runtime
-// @if-runtime Dict
-    if (is<Ptr<Dict>>(v)) {
+// @if-runtime HashSetBase
+    if(is<Ptr<HashSetBase>>(v)){std::vector<std::string> parts;for(const auto& p:as<Ptr<HashSetBase>>(v)->keys())parts.push_back(show(p));return "set ["+join(parts,", ")+"]";}
+// @end-runtime
+// @if-runtime DictBase
+    if (is<Ptr<DictBase>>(v)) {
         std::vector<std::string> parts;
-        for (const auto& [key, value] : as<Ptr<Dict>>(v)->entries()) parts.push_back(show(key) + ": " + show(value));
+        for (const auto& [key, value] : as<Ptr<DictBase>>(v)->entries()) parts.push_back(show(key) + ": " + show(value));
         return parts.empty() ? "[:]" : "[" + join(parts, ", ") + "]";
     }
 // @end-runtime
@@ -350,6 +441,9 @@ inline std::string show(const Value& v) {
         const auto& r = as<Range>(v);
         return "(" + std::to_string(r.first) + (r.inclusive ? " ..= " : " .. ") + std::to_string(r.last) + ")";
     }
+// @end-runtime
+// @if-runtime Queue
+    if(is<Ptr<Queue>>(v))return "deque ["+shown(queueItems(*as<Ptr<Queue>>(v)),", ")+"]";
 // @end-runtime
 // @if-runtime Collection
     if (is<Ptr<Collection>>(v)) {
@@ -395,8 +489,8 @@ inline int compare(const Value& a, const Value& b) {
     if (is<Char>(a)) return order(as<Char>(a).code, as<Char>(b).code);
 // @end-runtime
     if (is<std::string>(a)) return order(as<std::string>(a), as<std::string>(b));
-// @if-runtime Vector
-    if (is<Ptr<Vector>>(a)) return compareValues(as<Ptr<Vector>>(a)->values, as<Ptr<Vector>>(b)->values);
+// @if-runtime VectorBase
+    if (is<Ptr<VectorBase>>(a)) return compareValues(as<Ptr<VectorBase>>(a)->items(), as<Ptr<VectorBase>>(b)->items());
 // @end-runtime
 // @if-runtime Tuple
     if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
@@ -429,9 +523,9 @@ inline int compare(const Value& a, const Value& b) {
         return order(x.inclusive, y.inclusive);
     }
 // @end-runtime
-// @if-runtime Dict
-    if (is<Ptr<Dict>>(a)) {
-        auto x = as<Ptr<Dict>>(a)->entries(), y = as<Ptr<Dict>>(b)->entries();
+// @if-runtime DictBase
+    if (is<Ptr<DictBase>>(a)) {
+        auto x = as<Ptr<DictBase>>(a)->entries(), y = as<Ptr<DictBase>>(b)->entries();
         const auto less = [](const auto& p,const auto& q){return compare(p.first,q.first)<0;};
         std::stable_sort(x.begin(),x.end(),less);
         std::stable_sort(y.begin(),y.end(),less);
@@ -457,8 +551,8 @@ inline bool equal(const Value& a, const Value& b) {
 // @if-runtime Continuation
     if (is<Ptr<Continuation>>(a)) return as<Ptr<Continuation>>(a) == as<Ptr<Continuation>>(b);
 // @end-runtime
-// @if-runtime Vector
-    if (is<Ptr<Vector>>(a)) return equalValues(as<Ptr<Vector>>(a)->values, as<Ptr<Vector>>(b)->values);
+// @if-runtime VectorBase
+    if (is<Ptr<VectorBase>>(a)) return equalValues(as<Ptr<VectorBase>>(a)->items(), as<Ptr<VectorBase>>(b)->items());
 // @end-runtime
 // @if-runtime Tuple
     if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
@@ -477,9 +571,12 @@ inline bool equal(const Value& a, const Value& b) {
         });
     }
 // @end-runtime
-// @if-runtime Dict
-    if (is<Ptr<Dict>>(a)) {
-        const auto& x = *as<Ptr<Dict>>(a); const auto& y = *as<Ptr<Dict>>(b);
+// @if-runtime HashSetBase
+    if(is<Ptr<HashSetBase>>(a)){const auto& x=*as<Ptr<HashSetBase>>(a);const auto& y=*as<Ptr<HashSetBase>>(b);if(x.size()!=y.size())return false;for(const auto& p:x.keys())if(!y.contains(p))return false;return true;}
+// @end-runtime
+// @if-runtime DictBase
+    if (is<Ptr<DictBase>>(a)) {
+        const auto& x = *as<Ptr<DictBase>>(a); const auto& y = *as<Ptr<DictBase>>(b);
         if (x.size() != y.size()) return false;
         for (const auto& [key, value] : x.entries()) {
             auto other = y.get(key);
@@ -525,8 +622,8 @@ inline std::uint32_t hashValue(const Value& v) {
         for (int i=0; i<8; ++i, bits >>= 8) hash = hashMix(hash,static_cast<Byte>(bits));
         return hash;
     }
-// @if-runtime Vector
-    if (is<Ptr<Vector>>(v)) return hashValues(hashText("vector"),as<Ptr<Vector>>(v)->values);
+// @if-runtime VectorBase
+    if (is<Ptr<VectorBase>>(v)) return hashValues(hashText("vector"),as<Ptr<VectorBase>>(v)->items());
 // @end-runtime
 // @if-runtime Tuple
     if (is<Ptr<Tuple>>(v)) return hashValues(hashText("tuple"),as<Ptr<Tuple>>(v)->values);
@@ -550,9 +647,12 @@ inline std::uint32_t hashValue(const Value& v) {
         return hashValues(a.info().hashSeed,a.fields());
     }
 // @end-runtime
-// @if-runtime Dict
-    if (is<Ptr<Dict>>(v)) {
-        const auto& d = *as<Ptr<Dict>>(v);
+// @if-runtime HashSetBase
+    if(is<Ptr<HashSetBase>>(v)){const auto& set=*as<Ptr<HashSetBase>>(v);std::uint32_t sum=0;for(const auto& p:set.keys())sum+=set.hash(p);return hashMix(hashMix(hashText("set"),set.size()),sum);}
+// @end-runtime
+// @if-runtime DictBase
+    if (is<Ptr<DictBase>>(v)) {
+        const auto& d = *as<Ptr<DictBase>>(v);
         std::uint32_t sum = 0;
         for (const auto& [k,x] : d.entries()) sum += hashMix(static_cast<std::uint32_t>(d.hash(k)),hashValue(x));
         return hashMix(hashMix(hashText("dict"),static_cast<std::uint32_t>(d.size())),sum);
@@ -562,7 +662,7 @@ inline std::uint32_t hashValue(const Value& v) {
 }
 
 // @runtime Pattern PatternKind
-enum class PatternKind { word, literal, constructor, vector, push, tuple, record };
+enum class PatternKind { word, literal, constructor, vector, push, tuple, record, alternative, concatenate };
 struct Pattern {
     PatternKind kind;
     std::string name;
@@ -571,6 +671,7 @@ struct Pattern {
     std::vector<std::string> keys;
     bool mutable_ = false;
     AdtTag constructor{};
+    int rest = -1;
 };
 // @runtime match
 inline bool match(const Pattern&, const Value&, Env&);
@@ -584,6 +685,15 @@ inline bool matches(const std::vector<Pattern>& patterns, std::span<const Value>
 // @runtime match
 inline bool match(const Pattern& p, const Value& value, Env& env) {
     switch (p.kind) {
+    case PatternKind::alternative:
+        for (const auto& choice : p.fields) {
+            Env trial;
+            if (!match(choice,value,trial)) continue;
+            env.writable();
+            for (const auto& [name,binding] : *trial.bindings) (*env.bindings)[name] = binding;
+            return true;
+        }
+        return false;
     case PatternKind::word:
         if (p.name != "_") env.bind(p.name, value, p.mutable_);
         return true;
@@ -596,12 +706,26 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         return is<Ptr<Adt>>(value) && as<Ptr<Adt>>(value)->tag() == p.constructor
             && matches(p.fields, as<Ptr<Adt>>(value)->fields(), env);
 // @end-runtime
-// @if-runtime Vector
+// @if-runtime VectorBase
     case PatternKind::vector:
-        return is<Ptr<Vector>>(value) && matches(p.fields, as<Ptr<Vector>>(value)->values, env);
+        return is<Ptr<VectorBase>>(value) && matches(p.fields, as<Ptr<VectorBase>>(value)->items(), env);
+    case PatternKind::concatenate: {
+        if (!is<Ptr<VectorBase>>(value)) return false;
+        const auto xs = as<Ptr<VectorBase>>(value)->items();
+        std::size_t fixed=0, offset=0;
+        for (std::size_t i=0;i<p.fields.size();++i)
+            if (static_cast<int>(i)!=p.rest) fixed+=p.fields[i].fields.size();
+        if (xs.size()<fixed || (p.rest<0 && xs.size()!=fixed)) return false;
+        for (std::size_t i=0;i<p.fields.size();++i) {
+            auto count=static_cast<int>(i)==p.rest ? xs.size()-fixed : p.fields[i].fields.size();
+            if (!match(p.fields[i],vectorView(value,offset,count),env)) return false;
+            offset+=count;
+        }
+        return true;
+    }
     case PatternKind::push: {
-        if (!is<Ptr<Vector>>(value)) return false;
-        const auto& xs = as<Ptr<Vector>>(value)->values;
+        if (!is<Ptr<VectorBase>>(value)) return false;
+        const auto& xs = as<Ptr<VectorBase>>(value)->items();
         return !xs.empty() && matches(p.fields, Values{vector(Values(xs.begin(), xs.end()-1)), xs.back()}, env);
     }
 // @end-runtime
@@ -652,7 +776,9 @@ inline Values Machine::perform(Event event) {
         return {};
     }
     if (event.name == "read") {
+#ifndef NYANCO_BATCH_IO
         std::cout.flush();
+#endif
         std::string line;
         std::getline(std::cin, line);
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -839,8 +965,8 @@ inline void writeBorrow(const Value& value, Value replacement, const std::string
 }
 // @runtime findIndex
 inline std::optional<Value> findIndex(const Value& value, const Value& index) {
-    if (is<Ptr<Dict>>(value)) {
-        const auto& dict = *as<Ptr<Dict>>(value);
+    if (is<Ptr<DictBase>>(value)) {
+        const auto& dict = *as<Ptr<DictBase>>(value);
         if (auto value = dict.get(index)) return *value;
         return {};
     }
@@ -850,7 +976,7 @@ inline std::optional<Value> findIndex(const Value& value, const Value& index) {
         const auto& text = as<std::string>(value);
         if (static_cast<UInt>(pos) < text.size()) return static_cast<Byte>(text[static_cast<std::size_t>(pos)]);
     } else {
-        const auto& xs = as<Ptr<Vector>>(value)->values;
+        const auto& xs = as<Ptr<VectorBase>>(value)->items();
         if (static_cast<UInt>(pos) < xs.size()) return xs[static_cast<std::size_t>(pos)];
     }
     return {};
@@ -858,13 +984,23 @@ inline std::optional<Value> findIndex(const Value& value, const Value& index) {
 // @runtime atIndex
 inline Value atIndex(Machine& m, const Value& value, const Value& index, const std::string& at) {
     if (auto item = findIndex(value, index)) return *item;
-    m.exception((is<Ptr<Dict>>(value) ? "Dictionary key not found: " : "Index out of bounds: ") + show(index), at);
+    m.exception((is<Ptr<DictBase>>(value) ? "Dictionary key not found: " : "Index out of bounds: ") + show(index), at);
+}
+// @runtime sliceVector
+inline Value sliceVector(Machine& m, const Value& value, const Value& first, const Value& last,
+                         bool from, const std::string& at) {
+    const auto size=as<Ptr<VectorBase>>(value)->items().size();
+    const auto start=as<Int>(first), end=from ? static_cast<Int>(size)-1 : as<Int>(last);
+    if (start<0 || static_cast<UInt>(start)>size || end< -1 || end>=static_cast<Int>(size) || (!from && end<0))
+        m.exception("Slice bounds out of range",at);
+    return vectorView(value,static_cast<std::size_t>(start),end<start ? 0 : static_cast<std::size_t>(end-start+1));
 }
 // @runtime setIndex
-inline Value setIndex(Machine& m, const Value& value, const Value& index, const Value& replacement,
+inline Value setIndex(Machine& m, Value value, const Value& index, const Value& replacement,
                       const std::string& at, bool reuse = false) {
-    if (is<Ptr<Dict>>(value)) {
-        auto dict = std::make_shared<Dict>(*as<Ptr<Dict>>(value));
+    if (is<Ptr<DictBase>>(value)) {
+        auto dict = std::move(std::any_cast<Ptr<DictBase>&>(value));
+        if (!reuse || dict.use_count() != 1) dict = dict->clone();
         dict->set(index, replacement);
         return dict;
     }
@@ -877,21 +1013,20 @@ inline Value setIndex(Machine& m, const Value& value, const Value& index, const 
             if (!decode(text, i)) m.exception("String update produces invalid UTF-8", at);
         return text;
     }
-    auto xs = as<Ptr<Vector>>(value);
-    if (!reuse) xs = std::make_shared<Vector>(*xs);
+    auto xs = vectorWritable<Value>(std::move(value),reuse);
     xs->values[pos] = replacement;
-    return xs;
+    return Ptr<VectorBase>(std::move(xs));
 }
 // @runtime append
 template <bool Concat>
-inline Value append(const Value& value, const Value& item, bool reuse) {
-    auto xs = as<Ptr<Vector>>(value);
-    if (!reuse || (Concat && xs == as<Ptr<Vector>>(item))) xs = std::make_shared<Vector>(*xs);
+inline Value append(Value value, const Value& item, bool reuse) {
+    if constexpr (Concat) if(as<Ptr<VectorBase>>(value)==as<Ptr<VectorBase>>(item))reuse=false;
+    auto xs = vectorWritable<Value>(std::move(value),reuse);
     if constexpr (Concat) {
-        const auto& ys = as<Ptr<Vector>>(item)->values;
+        const auto& ys = as<Ptr<VectorBase>>(item)->items();
         xs->values.insert(xs->values.end(), ys.begin(), ys.end());
     } else xs->values.push_back(item);
-    return xs;
+    return Ptr<VectorBase>(std::move(xs));
 }
 // @runtime field
 inline Value field(const Value& value, const std::string& key) { return as<Ptr<Record>>(value)->fields.at(key); }
@@ -921,9 +1056,9 @@ inline std::optional<Value> pathFind(Machine& m, const Value& value, const Updat
 }
 // @runtime updatePath
 template <typename Replace>
-Value updatePath(Machine& m, const Value& value, const std::vector<UpdatePart>& path, std::size_t i,
+Value updatePath(Machine& m, Value value, const std::vector<UpdatePart>& path, std::size_t i,
                  const Replace& replace, bool defaulting, bool updating, bool reuse, const std::string& at) {
-    if (i == path.size()) return replace(value);
+    if (i == path.size()) return replace(std::move(value));
     const auto& part = path[i];
     const bool leaf = i + 1 == path.size();
     Value old;
@@ -933,18 +1068,34 @@ Value updatePath(Machine& m, const Value& value, const std::vector<UpdatePart>& 
         if (defaulting && leaf && found) return value;
         if (found) old = *found;
     } else if (!leaf || updating) old = pathRead(m, value, part, at);
-    auto changed = updatePath(m, old, path, i + 1, replace, defaulting, updating, false, at);
     if (part.kind == "field") {
-        auto copy = as<Ptr<Record>>(value)->fields;
-        copy[part.field] = std::move(changed);
-        return record(std::move(copy));
+        auto result = std::move(std::any_cast<Ptr<Record>&>(value));
+        if (!reuse || result.use_count() != 1) result = std::make_shared<Record>(*result);
+        old.reset();
+        if (!leaf || updating) old = std::move(result->fields.at(part.field));
+        result->fields[part.field] = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
+        return result;
     }
     if (part.kind == "tuple-index") {
-        auto copy = as<Ptr<Tuple>>(value)->values;
-        copy.at(static_cast<std::size_t>(as<Int>(part.index))) = std::move(changed);
-        return tuple(std::move(copy));
+        auto result = std::move(std::any_cast<Ptr<Tuple>&>(value));
+        if (!reuse || result.use_count() != 1) result = std::make_shared<Tuple>(*result);
+        auto& slot = result->values.at(static_cast<std::size_t>(as<Int>(part.index)));
+        old.reset();
+        if (!leaf || updating) old = std::move(slot);
+        slot = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
+        return result;
     }
-    return part.set ? part.set(m,value,part.index,changed) : setIndex(m,value,part.index,changed,at,reuse);
+    if (!part.get && !part.set && is<Ptr<VectorBase>>(value)) {
+        atIndex(m,value,part.index,at);
+        auto result = vectorWritable<Value>(std::move(value),reuse);
+        auto& slot = result->values.at(static_cast<std::size_t>(as<Int>(part.index)));
+        old.reset();
+        if (!leaf || updating || part.optional) old = std::move(slot);
+        slot = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
+        return Ptr<VectorBase>(std::move(result));
+    }
+    auto changed = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
+    return part.set ? part.set(m,value,part.index,changed) : setIndex(m,std::move(value),part.index,changed,at,reuse);
 }
 
 // @runtime bits
@@ -1051,7 +1202,7 @@ inline Value numeric(const Value& a, const Value& b, const std::string& at) {
 // @runtime prepend
 inline Value prepend(const Value& item, const Value& source) {
     Values result{item};
-    const auto& tail = as<Ptr<Vector>>(source)->values;
+    const auto& tail = as<Ptr<VectorBase>>(source)->items();
     result.insert(result.end(),tail.begin(),tail.end());
     return vector(std::move(result));
 }
@@ -1060,9 +1211,9 @@ inline std::string concatStrings(const Value& a, const Value& b) {
     return as<std::string>(a) + as<std::string>(b);
 }
 // @runtime concatValues
-inline Value concatValues(const Value& a, const Value& b, bool reuse) {
+inline Value concatValues(Value a, const Value& b, bool reuse) {
     if (is<std::string>(a)) return concatStrings(a,b);
-    return append<true>(a,b,reuse);
+    return append<true>(std::move(a),b,reuse);
 }
 // @runtime rangeVector
 inline Value rangeVector(Int first, Int last) {
@@ -1070,36 +1221,92 @@ inline Value rangeVector(Int first, Int last) {
     walkRange({first,last,true},[&](Value v){ result.push_back(std::move(v)); });
     return vector(std::move(result));
 }
-// @runtime bytes
-inline Value bytes(const Value& value) {
-    Values result;
-    for (unsigned char c : as<std::string>(value)) result.emplace_back(static_cast<Byte>(c));
-    return vector(std::move(result));
-}
-// @runtime chars
-inline Value chars(const Value& value, const std::string& at) {
-    const auto& text = as<std::string>(value);
-    Values result;
+// @runtime walkChars
+inline void walkChars(const std::string& text, const std::string& at, const Visit& visit) {
     for (std::size_t pos = 0; pos < text.size();) {
         auto code = decode(text,pos);
         if (!code) fail(at, "Invalid UTF-8");
-        result.emplace_back(Char{*code});
+        visit(Char{*code});
     }
+}
+// @runtime walkBytes
+inline void walkBytes(const std::string& text, const std::string&, const Visit& visit) {
+    for (unsigned char c : text) visit(static_cast<Byte>(c));
+}
+// @runtime textVector
+template <auto WalkText>
+inline Value textVector(const Value& value, const std::string& at) {
+    Values result;
+    WalkText(as<std::string>(value),at,[&](Value item){ result.push_back(std::move(item)); });
     return vector(std::move(result));
 }
 // @runtime vectorLength
 inline Int vectorLength(const Value& value) {
-    return static_cast<Int>(as<Ptr<Vector>>(value)->values.size());
+    return static_cast<Int>(as<Ptr<VectorBase>>(value)->size());
 }
+// @runtime scalarAt scalarFind scalarSetAt scalarSlice scalarOrder
+template <typename T> inline std::optional<Value> scalarFind(const Value& source,Int index) {
+    auto data = scalarData<T>(source);
+    if (index < 0 || static_cast<UInt>(index) >= data->size()) return {};
+    return Value{data->scalars()[static_cast<std::size_t>(index)]};
+}
+template <typename T> inline T scalarAt(Machine& m,const Value& source,Int index,const std::string& at) {
+    auto data = scalarData<T>(source);
+    if (index < 0 || static_cast<UInt>(index) >= data->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
+    return data->scalars()[static_cast<std::size_t>(index)];
+}
+template <typename T> inline Value scalarSetAt(Machine& m,Value source,Int index,T value,bool reuse,const std::string& at) {
+    if (index < 0 || static_cast<UInt>(index) >= as<Ptr<VectorBase>>(source)->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
+    auto data = scalarWritable<T>(std::move(source),reuse);
+    data->values[static_cast<std::size_t>(index)] = value;
+    return Ptr<VectorBase>(std::move(data));
+}
+template <typename T> inline Value scalarSlice(Machine& m,const Value& source,Int start,Int end,bool from,const std::string& at) {
+    auto data = scalarData<T>(source);
+    const auto size = static_cast<Int>(data->size());
+    if (from) end = size - 1;
+    if (start < 0 || start > size || end < -1 || end >= size || (!from && end < 0)) m.exception("Slice bounds out of range",at);
+    auto result = vectorStorageView<T>(std::move(data),static_cast<std::size_t>(start),end < start ? 0 : static_cast<std::size_t>(end-start+1));
+    return Ptr<VectorBase>(std::move(result));
+}
+template <typename T> inline Value scalarOrder(Value source,bool reverse,bool reuse) {
+    auto data = scalarWritable<T>(std::move(source),reuse);
+    if (reverse) std::reverse(data->values.begin(),data->values.end());
+    else std::stable_sort(data->values.begin(),data->values.end());
+    return Ptr<VectorBase>(std::move(data));
+}
+// @runtime cellScalarSet cellDictSet
+// The compiler only emits these for primitive indexing and replacements with
+// no callbacks or target-cell reads. All user evaluation and bounds checks
+// finish before the cell's value is consumed and immediately replaced.
+template <typename T,typename Replace>
+void cellScalarSet(Machine& m,const Ptr<Cell>& cell,Int index,const Replace& replace,bool updating,const std::string& at){
+    Value old;
+    if(updating)old=scalarAt<T>(m,cell->value,index,at);
+    auto value=replace(std::move(old));
+    if(index<0||static_cast<UInt>(index)>=as<Ptr<VectorBase>>(cell->value)->size())m.exception("Index out of bounds: "+show(Value{index}),at);
+    cell->value=scalarSetAt<T>(m,std::move(cell->value),index,as<T>(value),true,at);
+}
+template <typename Replace>
+void cellDictSet(Machine& m,const Ptr<Cell>& cell,const Value& key,const Replace& replace,bool updating,bool defaulting,const std::string& at){
+    const auto found=as<Ptr<DictBase>>(cell->value)->get(key);
+    if(defaulting&&found)return;
+    if(updating&&!found)m.exception("Dictionary key not found: "+show(key),at);
+    auto value=replace(found?*found:Value{});
+    cell->value=setIndex(m,std::move(cell->value),key,value,at,true);
+}
+// @runtime cellSetOp cellQueuePush
+template <int Operation> void cellSetOp(const Ptr<Cell>& cell,const Value& key){cell->value=setOp<Operation>(std::move(cell->value),key);}
+template <int Operation> void cellQueuePush(const Ptr<Cell>& cell,const Value& key){cell->value=queueOp<Operation>(std::move(cell->value),key)[0];}
 // @runtime vectorHead
 inline Value vectorHead(const Value& value, const std::string& at) {
-    const auto& xs = as<Ptr<Vector>>(value)->values;
+    const auto& xs = as<Ptr<VectorBase>>(value)->items();
     if (xs.empty()) fail(at, "head: empty list");
     return xs.front();
 }
 // @runtime vectorTail
 inline Value vectorTail(const Value& value, const std::string& at) {
-    const auto& xs = as<Ptr<Vector>>(value)->values;
+    const auto& xs = as<Ptr<VectorBase>>(value)->items();
     if (xs.empty()) fail(at, "tail: empty list");
     return vector(Values(xs.begin()+1,xs.end()));
 }
@@ -1143,10 +1350,9 @@ inline Value cast(Machine& m, const Value& value, const std::string& at) {
         }
     }
 }
-// @runtime parseNumber
+// @runtime parseNumber parseNumberText
 template <typename Number, bool Strict>
-inline Value parseNumber(Machine& m, const Value& value, const std::string& at) {
-    const auto& text = as<std::string>(value);
+inline Value parseNumberText(Machine& m, std::string_view text, const std::string& at) {
     auto first = text.find_first_not_of(" \t\r\n\f\v");
     auto last = text.find_last_not_of(" \t\r\n\f\v");
     auto start = text.data() + (first == std::string::npos ? text.size() : first);
@@ -1162,15 +1368,19 @@ inline Value parseNumber(Machine& m, const Value& value, const std::string& at) 
         if (parsed.ec == std::errc{} && parsed.ptr == end && std::isfinite(n)) result = n;
     }
     if constexpr (Strict) {
-        if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(value),at);
+        if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(Value{std::string(text)}),at);
         return *result;
     } else return option(result);
 }
+template <typename Number, bool Strict>
+inline Value parseNumber(Machine& m, const Value& value, const std::string& at) {
+    return parseNumberText<Number,Strict>(m,as<std::string>(value),at);
+}
 // @runtime walk
 inline void walk(Machine& m, const Value& value, const Visit& visit) {
-// @if-runtime Vector
-    if (is<Ptr<Vector>>(value)) {
-        for (const auto& v : as<Ptr<Vector>>(value)->values) visit(v);
+// @if-runtime VectorBase
+    if (is<Ptr<VectorBase>>(value)) {
+        for (const auto& v : as<Ptr<VectorBase>>(value)->items()) visit(v);
         return;
     }
 // @end-runtime
@@ -1180,11 +1390,17 @@ inline void walk(Machine& m, const Value& value, const Visit& visit) {
 // @if-runtime Stream
     if (is<Ptr<Stream>>(value)) { as<Ptr<Stream>>(value)->walk(m,visit); return; }
 // @end-runtime
-// @if-runtime Dict
-    if (is<Ptr<Dict>>(value)) {
-        for (const auto& [k,v] : as<Ptr<Dict>>(value)->entries()) visit(tuple({k,v}));
+// @if-runtime HashSetBase
+    if(is<Ptr<HashSetBase>>(value)){for(const auto& p:as<Ptr<HashSetBase>>(value)->keys())visit(p);return;}
+// @end-runtime
+// @if-runtime DictBase
+    if (is<Ptr<DictBase>>(value)) {
+        for (const auto& [k,v] : as<Ptr<DictBase>>(value)->entries()) visit(tuple({k,v}));
         return;
     }
+// @end-runtime
+// @if-runtime Queue
+    if(is<Ptr<Queue>>(value)){for(const auto& item:queueItems(*as<Ptr<Queue>>(value)))visit(item);return;}
 // @end-runtime
 // @if-runtime Collection
     if (is<Ptr<Collection>>(value)) {
@@ -1197,6 +1413,13 @@ inline void walk(Machine& m, const Value& value, const Visit& visit) {
 // @runtime stream
 inline Value stream(std::function<void(Machine&, const Visit&)> body) {
     return std::make_shared<Stream>(Stream{std::move(body)});
+}
+// @runtime textStream
+template <auto WalkText>
+inline Value textStream(const Value& value, const std::string& at) {
+    return stream([text = as<std::string>(value), at](Machine&, const Visit& visit) {
+        WalkText(text,at,visit);
+    });
 }
 // @runtime fromYield
 inline Value fromYield(Ptr<Label> label, std::function<void(Machine&)> body) {
@@ -1284,6 +1507,27 @@ inline Value split(const Value& source, const Value& separator) {
         }
     });
 }
+// @runtime SplitInput splitParts
+struct SplitInput { std::string text, separator; };
+template <typename VisitPart>
+inline void splitParts(const SplitInput& input, const VisitPart& visit) {
+    const auto& text = input.text;
+    const auto& sep = input.separator;
+    if (sep.empty()) {
+        for (std::size_t pos=0;pos<text.size();) {
+            auto start=pos;
+            if (!decode(text,pos)) throw std::runtime_error("Invalid UTF-8");
+            visit(std::string_view(text).substr(start,pos-start));
+        }
+        return;
+    }
+    for (std::size_t pos=0;;) {
+        auto end=text.find(sep,pos);
+        visit(std::string_view(text).substr(pos,end==std::string::npos?end:end-pos));
+        if (end==std::string::npos) return;
+        pos=end+sep.size();
+    }
+}
 // @runtime Compare
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
 // @runtime Partition partition
@@ -1353,6 +1597,15 @@ inline Value zip(Walk left, Walk right, Ptr<Label> label) {
         },label,true);
     });
 }
+// @runtime zipVectors
+inline Value zipVectors(Value left,Value right,Ptr<Label> label){
+    return stream([left=std::move(left),right=std::move(right),label](Machine& parent,const Visit& visit){
+        loop(parent,[&](Machine&){
+            const auto& xs=as<Ptr<VectorBase>>(left)->items();const auto& ys=as<Ptr<VectorBase>>(right)->items();
+            for(std::size_t i=0;i<std::min(xs.size(),ys.size());i++)visit(tuple({xs[i],ys[i]}));
+        },label);
+    });
+}
 // @runtime Combinatorics combinatorics
 enum class Combinatorics { permutations, combinations, combinationsWithReplacement, powerset, cartesianProduct };
 template <Combinatorics Mode>
@@ -1397,16 +1650,16 @@ inline Value combinatorics(Walk left, Walk right, Int count) {
 enum class CollectionOp { qpush, qpushFront, qpop, qpopBack, qpeek, qpeekBack, qlength, qisEmpty,
                           hpush, hpop, hpeek, hlength, hisEmpty };
 template <CollectionOp Op>
-inline Results<2> collectionOp(const Value& value, const Value& item,
+inline Results<2> collectionOp(Value value, const Value& item,
                                std::function<bool(const Value&,const Value&)> less, bool reuse) {
-    auto old = as<Ptr<Collection>>(value);
+    auto old = std::move(std::any_cast<Ptr<Collection>&>(value));
     const auto& xs = old->values;
     if constexpr (Op == CollectionOp::hlength || Op == CollectionOp::qlength) return {static_cast<Int>(xs.size()),{}};
     if constexpr (Op == CollectionOp::hisEmpty || Op == CollectionOp::qisEmpty) return {xs.empty(),{}};
     if constexpr (Op == CollectionOp::hpeek || Op == CollectionOp::qpeek || Op == CollectionOp::qpeekBack) {
         return {xs.empty() ? option() : option(Op == CollectionOp::qpeekBack ? xs.back() : xs.front()),{}};
     }
-    auto result = reuse ? old : std::make_shared<Collection>(*old);
+    auto result = reuse && old.use_count() == 1 ? std::move(old) : std::make_shared<Collection>(*old);
     auto& changed = result->values;
     if constexpr (Op == CollectionOp::qpush || Op == CollectionOp::hpush) {
         changed.push_back(item);
@@ -1424,10 +1677,10 @@ inline Results<2> collectionOp(const Value& value, const Value& item,
 }
 // @runtime Consumption Consume consume
 struct Consumption { Value value; std::optional<Values> broken; };
-enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, toDict, counts, groupBy };
+enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, dict, counts, groupBy };
 template <Consume Mode>
 inline Consumption consume(Machine& parent, Walk source, const Value& arg,
-                           MapItem key, Compare less, Ptr<Dict> dict, Ptr<Label> label) {
+                           MapItem key, Compare less, Ptr<DictBase> dict, Ptr<Label> label) {
     Values collected;
     std::vector<std::pair<Value,Value>> sorted;
     std::vector<std::string> joined;
@@ -1446,14 +1699,14 @@ inline Consumption consume(Machine& parent, Walk source, const Value& arg,
                 else if constexpr (Mode == Consume::all || Mode == Consume::any) {
                     flag = truth(key(m,item));
                     if (flag == (Mode == Consume::any)) stop();
-                } else if constexpr (Mode == Consume::toDict) dict->set(tupleAt(item,0),tupleAt(item,1));
+                } else if constexpr (Mode == Consume::dict) dict->set(tupleAt(item,0),tupleAt(item,1));
                 else if constexpr (Mode == Consume::counts) {
                     auto previous = dict->get(item);
                     dict->set(item, Int{previous ? as<Int>(*previous)+1 : 1});
                 } else if constexpr (Mode == Consume::groupBy) {
                     auto k = key(m,item);
                     auto previous = dict->get(k);
-                    if (previous) as<Ptr<Vector>>(*previous)->values.push_back(item);
+                    if (previous) std::static_pointer_cast<Vector>(as<Ptr<VectorBase>>(*previous))->values.push_back(item);
                     else dict->set(k,vector({item}));
                 } else {
                     auto k = Mode == Consume::maxiBy || Mode == Consume::miniBy ? key(m,item) : item;
@@ -1465,7 +1718,7 @@ inline Consumption consume(Machine& parent, Walk source, const Value& arg,
             });
         },label);
     });
-    if constexpr (Mode == Consume::toDict || Mode == Consume::counts || Mode == Consume::groupBy) result = dict;
+    if constexpr (Mode == Consume::dict || Mode == Consume::counts || Mode == Consume::groupBy) result = dict;
     else if constexpr (Mode == Consume::all || Mode == Consume::any) result = flag;
     else if constexpr (Mode == Consume::join) result = join(joined,as<std::string>(arg));
     else if constexpr (Mode == Consume::sort || Mode == Consume::sortBy) {

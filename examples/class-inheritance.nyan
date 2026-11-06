@@ -11,13 +11,13 @@ render : named 'a => 'a -> string
 render = show
 
 asFloat : num 'a => 'a -> float / {exn}
-asFloat = toFloat
+asFloat = float
 
 main =
   print (render (Person "Ada"));
   print (name (Person "Bob"));
   print (asFloat 42);
-  print (toChar 65);
-  print (toChar 128512);
-  print (bytes "日本😀");
-  print (chars "日本😀")
+  print (char 65);
+  print (char 128512);
+  print (vbytes "日本😀");
+  print (vchars "日本😀")

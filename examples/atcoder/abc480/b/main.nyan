@@ -1,0 +1,16 @@
+ints = read; split " "; vmap {parseInt}
+distance a b = if (length a /= length b) {2} {zip a b; countIf {-> #(x, y); x /= y}}
+main =
+    ints -> [n m]
+    repeatWith {read; vbytes}; vtake n -> names
+    vreplicate n 0 -> mut votes
+    each (0 .. m) do -> _
+        read; vbytes -> vote
+        filter (0 .. n) {-> i; names.[i] == vote}; vector -> exact
+        if (length exact == 1) {
+            votes.[exact.[0]] ! + 1
+        } {
+            filter (0 .. n) {-> i; distance names.[i] vote == 1}; vector -> near
+            when (length near == 1) {votes.[near.[0]] ! + 1}
+        }
+    votes; each {print}

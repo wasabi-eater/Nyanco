@@ -9,4 +9,4 @@ total r =
   ((r, .x) + (r, .y))
 
 main =
-  {name: ("Alice"), age: (20)}, -> person, person, .name, print, {name: ("Bob"), active: (True)}, nameOf, print, {x: (3), y: (4), label: ("point")}, total, print, [{name: ("A")}, {name: ("B")}], {.name}, vmap, print, {address: ({city: ("Tokyo")})}, .address, .city, print
+  {name: ("Alice"), age: (20)}, -> person; person, .name, print, {name: ("Bob"), active: (True)}, nameOf, print, {x: (3), y: (4), label: ("point")}, total, print, [{name: ("A")}, {name: ("B")}], {.name}, vmap, print, {address: ({city: ("Tokyo")})}, .address, .city, print

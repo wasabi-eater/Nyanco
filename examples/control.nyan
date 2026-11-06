@@ -1,4 +1,4 @@
 -- Nyanco 0.38 prefix
 
 main =
-  True, {"when ran", print}, when, False, {"not reached", print}, when, 0, {dup, ( < (3))}, {dup, print, ( + (1))}, while, drop, 0, 1, {dup, ( <= (3))}, {-> sum n, ((sum) + (n)), ((n) + (1))}, while, drop, print
+  True, {"when ran", print}, when, False, {"not reached", print}, when, 0, {dup, ( < (3))}, {dup, print, ( + (1))}, while, drop, 0, 1, {dup, ( <= (3))}, {-> sum n; ((sum) + (n)), ((n) + (1))}, while, drop, print

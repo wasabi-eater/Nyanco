@@ -55,7 +55,7 @@ collect = toVector
 data code = Code int
 instance toChar code where
   toChar (Code n) = toChar n
-main = print (sameOrdered (Ordered 3) (Ordered 3)); print (differentOrdered [1] [2]); print (collect [4,5]); print (collect (Seq [1,2,3])); print (toChar (Code 66)); print (render (Person "Ada")); print (name (Person "Bob")); print (readChecked (Box 7)); print (cast 3); print (bytes "日本😀"); print (toChar 65); print (toChar 128512); print (toChar 'あ'); print (handle {toChar 55296} {exn: {-> msg k; 'x'}})`;
+main = print (sameOrdered (Ordered 3) (Ordered 3)); print (differentOrdered [1] [2]); print (collect [4,5]); print (collect (Seq [1,2,3])); print (toChar (Code 66)); print (render (Person "Ada")); print (name (Person "Bob")); print (readChecked (Box 7)); print (cast 3); print (vbytes "日本😀"); print (toChar 65); print (toChar 128512); print (toChar 'あ'); print (handle {toChar 55296} {exn: {-> msg k; 'x'}})`;
 test('inheritance carries methods and associated types through diamonds and generic annotations',()=>{
  assert.deepEqual(run(source).output,['True','True','[4, 5]','[1, 2, 3]',"'B'",'person:Ada','Bob','7','3','[230, 151, 165, 230, 156, 172, 240, 159, 152, 128]',"'A'","'😀'","'あ'","'x'"]);
  assert.deepEqual(run('class show \'a => named \'a where\n  name : \'a -> string\ndata p = P\ninstance show p where\n  show P = "p"\ninstance named p where\n  name P = "name"\nmain = show P; name P').stack,['p','name']);
@@ -66,7 +66,7 @@ f : child 'a => 'a -> string
 f = show
 main = f 3`).stack,['3']);
  for(const n of [-1,55296,57343,1114112])assert.throws(()=>run('main = toChar '+n),/Invalid numeric cast/);
- assert.deepEqual(run('main = bytes ""').stack,[[]]);
+ assert.deepEqual(run('main = vbytes ""').stack,[[]]);
 });
 test('invalid superclass graphs and incomplete instances fail statically',()=>{
  for(const s of ['class missing \'a => child \'a where','class b \'a => a \'a where\nclass a \'a => b \'a where','class show \'b => child \'a where'])assert.throws(()=>compile(s),/superclass|inheritance|parameter/i);
@@ -109,7 +109,7 @@ instance streem (box 'a) where
   each (Box xs) f = each xs f
 instance child (box 'a) where
   item : int`),/Cannot unify|Type mismatch|rigid/i);
- assert.match(new VM().infer('+'),/add/);assert.match(new VM().infer('toInt'),/toInt/);assert.match(new VM().infer('bytes'),/\[byte\]/);
+ assert.match(new VM().infer('+'),/add/);assert.match(new VM().infer('toInt'),/toInt/);assert.match(new VM().infer('vbytes'),/\[byte\]/);
 });
 test('native superclass dictionaries and character/byte conversions match VM',()=>{
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-inheritance-'));

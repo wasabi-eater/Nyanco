@@ -4,6 +4,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {compile,lex,recordShorthands,leftDeclarationAt,declarationGroups,LanguageError} from './language.mjs';
 import {standardModule,standardModuleNames} from './std-modules.mjs';
+import {tokenLine} from './source-layout.mjs';
 
 const space=kind=>['data','type','class'].includes(kind)?'type':kind==='effect'?'both':'value';
 const identifier=/^[a-zA-Z_][a-zA-Z0-9_']*$/;
@@ -113,11 +114,11 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
       return;
     }
     if(kind==='class'||kind==='effect'){
-      const header=group.filter(t=>t.line===first.line),arrow=header.findIndex(t=>t.value==='=>'),own=kind==='class'&&arrow>=0?arrow+1:1;
+      const header=group.filter(t=>tokenLine(t)===tokenLine(first)),arrow=header.findIndex(t=>t.value==='=>'),own=kind==='class'&&arrow>=0?arrow+1:1;
       declare(mod,header[own],kind,visibility);
       if(header.at(-1)?.value==='where'){
         const body=group.slice(header.length),indent=body[0]?.col;
-        for(let i=0;i<body.length;i++)if(body[i].col===indent&&body[i].value!=='type'){
+        for(let i=0;i<body.length;i++)if(body[i].col===indent&&tokenLine(body[i])!==tokenLine(body[i-1])&&body[i].value!=='type'){
           const member=body[i].kind==='('?body[i+1]:body[i];
           if(identifier.test(member?.value))declare(mod,member,kind==='class'?'method':'operation',visibility);
         }
@@ -132,8 +133,8 @@ export function compileModule(entry,{overlays=new Map(),previous=new Map(),globa
     const declaration=leftDeclarationAt(group,0);
     if(declaration>=0){if(visibility!=='private')fail('Visibility requires a function, type, class, or effect declaration',first);for(const [i,t] of group.slice(0,declaration).entries())if(t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value)&&group[i+1]?.value!==':')declare(mod,t,'variable');return;}
     if(visibility!=='private')fail('Visibility requires a function, type, class, or effect declaration',first);
-    let depth=0,binding=false;
-    for(const [i,t] of group.entries()){if(!depth&&t.value==='->'){binding=true;continue;}if(!depth&&[';',','].includes(t.kind))binding=false;if(binding&&group[i+1]?.value!==':'&&t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value))declare(mod,t,'variable');if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
+    let depth=0,bindingLine;
+    for(const [i,t] of group.entries()){if(!depth&&t.value==='->'){bindingLine=tokenLine(t);continue;}if(!depth&&([';',';;'].includes(t.kind)||tokenLine(t)!==bindingLine))bindingLine=undefined;if(bindingLine!==undefined&&group[i+1]?.value!==':'&&t.kind==='word'&&identifier.test(t.value)&&!['mut','_'].includes(t.value)&&!/^[A-Z]/.test(t.value))declare(mod,t,'variable');if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
   }
   const root=load(rootDir),tokens=[];
   function rewrite(group,mod,unit){

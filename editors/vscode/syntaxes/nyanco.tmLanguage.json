@@ -20,12 +20,16 @@
           "include": "#string"
         },
         {
+          "name": "constant.character.escape.line-continuation.nyanco",
+          "match": "\\\\[ \\t]*$"
+        },
+        {
           "name": "keyword.control.nyanco",
           "match": "\\b(?:case|otherwise|where|handle|borrow|mask|end)\\b(?!')"
         },
         {
           "name": "keyword.declaration.nyanco",
-          "match": "\\b(?:pub|open|import|as|data|class|instance|effect|type|mut|with|deriving)\\b(?!')"
+          "match": "\\b(?:pub|open|import|as|data|class|instance|effect|type|mut|with|below|do|deriving)\\b(?!')"
         },
         {
           "name": "constant.language.boolean.nyanco",
@@ -33,7 +37,7 @@
         },
         {
           "name": "storage.type.nyanco",
-          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict|deque|heap|mutref|continuation)\\b(?!')"
+          "match": "\\b(?:int|float|byte|char|string|bool|vector|stream|range|option|result|dict|deque|heap|set|mutref|continuation)\\b(?!')"
         },
         {
           "name": "entity.name.type.parameter.nyanco",

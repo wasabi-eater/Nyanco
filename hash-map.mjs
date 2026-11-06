@@ -32,6 +32,16 @@ class Dictionary {
 }
 export const emptyDict=()=>new Dictionary();
 export const dictGet=(dict,key,hash,equal)=>pairAt(dict.root,key,hash>>>0,equal);
+export function dictBucket(dict,hash){let node=dict.root,depth=0;hash>>>=0;while(node&&!node.bucket)node=bit(hash,depth++)?node.one:node.zero;return node?.hash===hash?node.bucket:[];}
+export function dictDelete(dict,key,hash,equal){
+ hash>>>=0;if(!pairAt(dict.root,key,hash,equal))return dict;
+ const remove=(node,depth)=>{
+  if(node.bucket){const bucket=node.bucket.filter(p=>!equal(p.key,key));return bucket.length?{hash:node.hash,bucket}:null;}
+  const side=bit(hash,depth)?'one':'zero',next={...node,[side]:remove(node[side],depth+1)};
+  return next.zero||next.one?next:null;
+ };
+ return new Dictionary(remove(dict.root,0),dict.size-1);
+}
 export function dictSet(dict,key,value,hash,equal){
   hash>>>=0;const old=pairAt(dict.root,key,hash,equal);
   return new Dictionary(insert(dict.root,{key,value,index:old?.index??dict.size},hash,equal),dict.size+(old?0:1));

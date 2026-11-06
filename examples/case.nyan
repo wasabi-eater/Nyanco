@@ -3,7 +3,7 @@
 data fuga  = Fuga int
 
 runFuga =
-  -> (Fuga x), x
+  -> (Fuga x); x
 
 absolute =
   case
@@ -30,4 +30,4 @@ sum =
   end
 
 main =
-  -7, absolute, print, -8, absoluteStack, print, 9, absoluteGuard, print, 42, Fuga, runFuga, print, [1, 2, 3], sum, print, [10, 20], -> [a b], (((a) + (b))), print
+  -7, absolute, print, -8, absoluteStack, print, 9, absoluteGuard, print, 42, Fuga, runFuga, print, [1, 2, 3], sum, print, [10, 20], -> [a b]; (((a) + (b))), print

@@ -16,7 +16,7 @@ function references(source) {
 }
 
 const headers = new Map(Object.entries({
-  algorithm: 'equal find min pop_heap push_heap reverse stable_sort',
+  algorithm: 'equal find min pop_heap push_heap reverse sort stable_sort',
   any: 'any any_cast',
   array: 'array',
   bit: 'bit_cast',
@@ -28,10 +28,11 @@ const headers = new Map(Object.entries({
   exception: 'current_exception exception exception_ptr rethrow_exception',
   functional: 'function',
   ios: 'ios',
+  initializer_list: 'initializer_list',
   iostream: 'cerr cin cout',
   limits: 'numeric_limits',
   map: 'map',
-  memory: 'make_shared shared_ptr',
+  memory: 'make_shared shared_ptr dynamic_pointer_cast static_pointer_cast',
   mutex: 'lock_guard mutex unique_lock',
   optional: 'nullopt optional',
   span: 'span',
@@ -69,7 +70,7 @@ function parts(text, excluded = []) {
 }
 function loadRuntime() {
   if (runtime) return runtime;
-  const source = readFileSync(new URL('./cpp-runtime.hpp.txt',import.meta.url),'utf8');
+  const source = readFileSync(new URL('./cpp-runtime.hpp.txt',import.meta.url),'utf8').replace('// @include hash-trie',readFileSync(new URL('./cpp-hash-trie.hpp.txt',import.meta.url),'utf8'));
   const sections = [...source.matchAll(/^\/\/ @runtime ([\w! ]+)\r?$/gm)];
   if (!sections.length) throw new Error('C++ runtime has no fragments');
   runtime = sections.map((section,i) => {

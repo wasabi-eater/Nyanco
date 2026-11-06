@@ -25,6 +25,6 @@ export function* heapPop(h,less){
  return [{kind:'heap',items},value,true];
 }
 export const collectionOperations={
- deque:0,qpush:2,qpushFront:2,qpop:1,qpopBack:1,qpeek:1,qpeekBack:1,qlength:1,qisEmpty:1,
- heap:0,hpush:2,hpop:1,hpeek:1,hlength:1,hisEmpty:1,
+ __emptyDeque:0,qpush:2,qpushFront:2,qpop:1,qpopBack:1,qpeek:1,qpeekBack:1,qlength:1,qisEmpty:1,
+ __emptyHeap:0,hpush:2,hpop:1,hpeek:1,hlength:1,hisEmpty:1,
 };

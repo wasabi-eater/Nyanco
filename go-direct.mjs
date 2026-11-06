@@ -16,9 +16,8 @@ import {T,tuple,neverValues,StoppedEmission,items,effectParts,copyEnv,freshTypes
 
 const str=JSON.stringify;
 const lit=(v,type='int',source=null)=>v?.kind==='scalar'?`Char(${v.value.codePointAt(0)})`:typeof v==='string'?str(v):typeof v==='boolean'?String(v):`${type==='float'?'float64':type==='byte'?'uint8':'int64'}(${source??v})`;
-const location=n=>str(n?`${n.file}:${n.line}:${n.col}`:'<empty>');
-
-export function transpileDirect(program,{expression='main',showStack=false,entryNodes=null,optimizeVectors=true,onIR=null}={}) {
+export function transpileDirect(program,{expression='main',showStack=false,entryNodes=null,optimizeVectors=true,onIR=null,noSourcePaths=false}={}) {
+  const location=n=>str(n?`${noSourcePaths?'':n.file+':'}${n.line}:${n.col}`:'<empty>');
   const definitions=withStandardFunctions(withOption(Object.assign(new Map(program.definitions),{...program.definitions,effects:ioEffects(program.definitions.effects)}))),entry=entryNodes||parseExpression(definitions.moduleTokens?.(expression,'<entry>')||expression,'<entry>',program.definitions.constructors);
   checkExpression(entry,definitions);
   const vectorReuse=optimizeVectors?vectorOwnership(definitions,entry):new WeakSet();
@@ -49,6 +48,8 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     if(p.kind==='literal')return `literalPattern(${lit(p.value,p.numericKind==='float'?'float':'int',p.numberSource)})`;
     if(p.kind==='word')return `${p.mutable?"mutablePattern":"variablePattern"}(${str(p.value)})`;
     const fields=p.fields.map(pattern).join(',');
+    if(p.kind==='or-pattern')return `orPattern(${fields})`;
+    if(p.kind==='concat-pattern')return `concatPattern(${p.rest},[]int{${p.fields.map((part,i)=>i===p.rest?-1:part.fields.length)}},${fields})`;
     if(p.kind==='constructor')return `constructorPattern(${str(p.value)}${fields?','+fields:''})`;
     return `${p.kind==='push-pattern'?'pushPattern':'listPattern'}(${fields})`;
   }
@@ -189,6 +190,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         values.push(ctx.value(`m.copyUpdate(${original},${pathValue},${replacement},${at},${(optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n)))})`));
       }
       else if(n.kind==='list-index'){
+        if(n.sliceMethod){const xs=values.pop(),args=[xs,...n.fields.map(f=>child(f.body,[],holes)[0])];values.push(sliceCall(n.sliceMethod,args,info.indexGet,ctx,at));continue;}
         const xs=values.pop(),index=child(n.body,[],holes)[0];
         if(!n.optional)values.push(indexCall('at',[xs,index],info.indexGet,ctx,at));
         else {const inner=context(),value=indexCall('at',[xs,index],info.indexGet,inner,at);
@@ -266,7 +268,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         else values.push(value);
         if(n.ephemeral)ctx.lines.push(`delete(${env}.values,${str(n.value)});delete(${env}.locals,${str(n.value)})`);
       }
-      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialHash && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
+      else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialHash && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialSlice && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
         let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
         const target=lookupInstance(definitions.classes.get(m.className),(info.effect.dispatchTypes||[type]).map(t=>{t=T.prune(t);if(t.numericLiterals){T.unify(t,{tag:'atom',name:'int'},n);t=T.prune(t);}return t;}))?.implementations.get(n.value);
@@ -332,6 +334,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     const target=definitions.classes.get(name==='at'?'indexGet':'indexSet')?.instances.get(instanceKey(type))?.implementations.get(name);
     if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,args,1)[0];}
     return ctx.value(name==='at'?`m.listIndex(${args},${at})`:`m.indexSetOwned(${args},${at},${reuse})`);
+  }
+  function sliceCall(name,args,effect,ctx,at){
+    const type=T.prune(effect.dispatchType),target=definitions.classes.get('slice').instances.get(instanceKey(type))?.implementations.get(name);
+    if(target){const spec=named(target,effect);return ctx.call(`m.${spec.fn}`,args,1)[0];}
+    return ctx.value(`m.sliceVector(${args[0]},${name==='sliceTo'?'int64(0)':args[1]},${name==='sliceFrom'?'int64(0)':args.at(-1)},${name==='sliceFrom'},${at})`);
   }
   function comparisonFunction(type,order=false){
     type=T.prune(type);const key=(order?'ord:':'eq:')+formatType(type);if(comparisonNames.has(key))return comparisonNames.get(key);
@@ -445,6 +452,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else {const result=`collected${next++}`,br=`breakResult${next++}`;ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${stream}.(*Stream).walk(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);}
       return;
     }
+    if(['sliceBetween','sliceFrom','sliceTo'].includes(name)){const args=v.splice(-(name==='sliceBetween'?3:2));v.push(sliceCall(name,args,info.effect,ctx,at));return;}
     if(['at','setAt'].includes(name)){const args=v.splice(-(name==='at'?2:3));v.push(indexCall(name,args,info.effect,ctx,at));return;}
     if(combinationNames.has(name)){
       const arg=name==='powerset'?null:pop(),source=pop(),walk=walker(ctx,source,topTypes.at(arg?-2:-1),at),rows=`choices${next++}`;
@@ -455,7 +463,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     }
     if(name==='hash'){const value=pop(),type=T.prune(topTypes.at(-1)),target=definitions.classes.get('hash')?.instances.get(instanceKey(type))?.implementations.get('hash');if(target){const effect=T.instantiate(types.functions.get(target));T.unify(effect.input,T.stack(T.EMPTY,type));const spec=named(target,effect);v.push(ctx.call(`m.${spec.fn}`,[value],1)[0]);}else v.push(ctx.value(`int64(${hashFunction(type)}(m,${value}))`));return;}
     if(Object.hasOwn(collectionOperations,name)){
-      if(name==='deque'||name==='heap'){v.push(ctx.value(`&Collection{kind:${str(name)}}`));return;}
+      if(name==='__emptyDeque'||name==='__emptyHeap'){v.push(ctx.value(`&Collection{kind:${str(name==='__emptyDeque'?'deque':'heap')}}`));return;}
       const pushing=['qpush','qpushFront','hpush'].includes(name),value=pushing?pop():'nil',source=pop();
       let less='nil';if(name==='hpush'||name==='hpop'){const item=pushing?topTypes.at(-1):T.prune(topTypes.at(-1)).args[0],cmp=comparisonFunction(item,true);less=`func(a,b any)bool{return ${cmp}(m,a,b)<0}`;}
       const outputs=ctx.call('m.collectionOp',[str(name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);v.push(outputs[0]);if(['qpop','qpopBack','hpop'].includes(name))v.push(outputs[1]);return;
@@ -476,8 +484,13 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       if(target!==name){const spec=named(target,info.effect);v.push(...ctx.call(`m.${spec.fn}`,[value],1));}
       else v.push(ctx.value(`m.numericCast(${value},${str(conversion.destination)},${at})`));return;
     }
-    if(name==='bytes'){v.push(ctx.value(`byteValues(${pop()},${at})`));return;}
-    if(name==='chars'){v.push(ctx.value(`chars(${pop()},${at})`));return;}
+    if(name==='vbytes'||name==='vchars'){
+      v.push(ctx.value(`${name}(${pop()},${at})`));return;
+    }
+    if(name==='bytes'||name==='chars'){
+      const source=pop(),walk=name==='chars'?'walkChars':'walkBytes';
+      v.push(ctx.value(`&Stream{func(_ *Machine,visit func(any)){${walk}(${source},visit,${at})}}`));return;
+    }
     if(name==='parseInt'){v.push(ctx.value(`m.parseInteger(${pop()},${at})`));return;}
     if(name==='toNum'||name==='parseFloat'){v.push(ctx.value(`m.parseNumber(${pop()},${name==='toNum'},${at})`));return;}
     if(name==='fromYield') {
@@ -524,11 +537,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=ctx.value(`newDict(${hasher(T.prune(info.output).item.args[0])})`),br=`breakResult${next++}`;
       ctx.lines.push(`${br}:=m.loop(func(m *Machine){${walk}(m,func(key any){value,found:=${result}.(*Dict).get(key);count:=int64(0);if found{count=value.(int64)};${result}=${result}.(*Dict).set(key,count+1)})},${at},${label})`);v.push(result);returnedBreak(br);return;
     }
-    if(name==='toDict'){
+    if(name==='dict'){
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=ctx.value(`newDict(${hasher(T.prune(info.output).item.args[0])})`),br=`breakResult${next++}`;
       ctx.lines.push(`${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){pair:=item.(*Tuple).items;${result}=${result}.(*Dict).set(pair[0],pair[1])})},${at},${label})`);v.push(result);returnedBreak(br);return;
     }
-    if(name==='toVector') {
+    if(name==='vector') {
       const source=pop(),walk=walker(ctx,source,topTypes.at(-1),at),result=`collected${next++}`,br=`breakResult${next++}`;
       ctx.lines.push(`${result}:=[]any{};${br}:=m.loop(func(m *Machine){${walk}(m,func(item any){${result}=append(${result},item)})},${at},${label})`);v.push(ctx.value(result));returnedBreak(br);return;
     }

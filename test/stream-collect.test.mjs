@@ -25,6 +25,8 @@ instance streem bag where
 const source=custom+`main =
   print (fold (map (1 ..= 5) {* 2}) 0 {+});
   print (fold (Bag [1,2,3]) 0 {+});
+  print (count (Bag [1,2,3]));
+  print (count (fromYield {yield 1; yield 2; cancel; yield 3}));
   print (fold (fromYield {yield 1; yield 2; yield 3}) 10 {when ($ == 3) {cancel}; +});
   print (reverse (map (1 ..= 4) {* 2}));
   print (sort (Bag [3,1,2,1]));
@@ -40,13 +42,18 @@ const source=custom+`main =
   print ([1,2].?[0]);
   print ([1,2].?[3])`;
 test('collectors accept streem instances, preserve stable order and stop on cancel',()=>{
- assert.deepEqual(run(source).output,['30','6','13','[8, 6, 4, 2]','[1, 1, 2, 3]','[{id: "b", score: 1}, {id: "a", score: 2}, {id: "c", score: 2}]','3','1','2','[3, 2, 1]','[1, 3]','[2, 1]','[]','[(Key 3), (Key 2), (Key 1)]','[3, 2, 1]','6','[]','(Some 1)','None']);
+ assert.deepEqual(run(source).output,['30','6','3','2','13','[8, 6, 4, 2]','[1, 1, 2, 3]','[{id: "b", score: 1}, {id: "a", score: 2}, {id: "c", score: 2}]','3','1','2','[3, 2, 1]','[1, 3]','[2, 1]','[]','[(Key 3), (Key 2), (Key 1)]','[3, 2, 1]','6','[]','(Some 1)','None']);
  assert.deepEqual(run('main = 100; fold (1 ..= 3) 0 {+}').stack,[100,6]);
  assert.deepEqual(run('main = [3,1,2] -> xs; sort xs; xs').stack,[[1,2,3],[3,1,2]]);
 });
 test('collector types include key effects and latent producer effects',()=>{
  const p=compile('f xs = sortBy xs {print $; nop}');assert.match(p.types.get('f'),/ord/);assert.match(p.types.get('f'),/io/);
  assert.match(compile('f = fold (fromYield {print "hi"; yield 1}) 0 {+}').types.get('f'),/io/);
+ const vm=new VM();
+ assert.equal(vm.infer('count []'),'..s -> ..s int');
+ assert.equal(vm.infer('count (fromYield {yield read})'),'..s -> ..s int / {io}');
+ assert.deepEqual(run('main = 100; count [{1}, {2}]; count []').stack,[100,2,0]);
+ assert.deepEqual(run('main = count (fromYield {yield 1; 99; break})').stack,[99]);
  assert.deepEqual(run('main = sort [{x: 2}, {x: 1}]').stack[0].map(r=>r.fields.x),[1,2]);
  assert.throws(()=>compile('main = sort [{x: {1}}]'),/instance/i);
  assert.throws(()=>compile('main = sortBy [1] {dup}'),/unify|stack/i);

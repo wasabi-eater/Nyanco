@@ -1,0 +1,12 @@
+ints = read; split " "; vmap {parseInt}
+prefix p pp ends x =
+    partitionPoint ends {<= x} -> blocks
+    pp.[blocks + 1] + p.[x - blocks * (blocks + 1) / 2]
+main =
+    ints -> [n q]
+    ints; vscan 0 {+} -> p
+    vscan p 0 {+} -> pp
+    1 ..= n; vmap {_ * (_ + 1) / 2} -> ends
+    each (0 .. q) do -> _
+        ints -> [l r]
+        prefix p pp ends r - prefix p pp ends (l - 1); print

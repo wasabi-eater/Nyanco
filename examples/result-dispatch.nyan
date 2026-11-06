@@ -28,5 +28,5 @@ main =
   print boxed;
   print (getZero; + 1);
   print (call {getZero}; + 2);
-  print (toVector (map [1,2] {drop; getZero}); head; + 3);
-  print (toVector (fromYield {produce}); head; + 4)
+  print (vector (map [1,2] {drop; getZero}); head; + 3);
+  print (vector (fromYield {produce}); head; + 4)

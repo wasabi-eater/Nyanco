@@ -25,7 +25,8 @@ const body=`main =
  print (7 / 2); print ((0 - 7) / 2); print (7.0 / 2.0);
  print (b + 5); print (f / 2);
  print (toInt 3.9); print (toFloat 3 / 2); print (toByte 42);
- print (chars "日本😀"); print ('あ' < '😀');
+ print (vchars "日本😀"); print ('あ' < '😀');
+ print (toVector (take (chars "😀あ") 1)); print (nth (bytes "あ") 1); print (count (bytes "日本😀"));
  print ("あ".[0]); print ("あ".[1]); print ("あ".[2]);
  print ("あ".?[3]); print ("abc" with {.[1] = 100});
  print ((Box [1,2]).[1]); print ((Box [1,2]) with {.[1] ! + 10});
@@ -37,7 +38,8 @@ test('numeric inference separates scalar types and contextual integer literals',
  const vm=new VM();assert.match(vm.infer('3'),/->.*int/);assert.match(vm.infer('3.0'),/->.*float/);assert.match(vm.infer("'あ'"),/->.*char/);assert.match(vm.infer('"a".[0]'),/->.*byte/);assert.match(vm.infer('+'),/add 'a/);
  assert.match(compile(defs).types.get('b'),/byte/);assert.match(compile(defs).types.get('f'),/float/);
  for(const expr of ['toByte 1 + toInt 2','toInt 1 + toFloat 2','toFloat 1 == toInt 1',"'a' + 'b'",'3 // 2'])assert.throws(()=>run('main = '+expr),/unify|instance|removed/i,expr);
- assert.deepEqual(run('one = 1\nmain = toByte 2 + one').stack,[{kind:'scalar',type:'byte',value:3}]);
+ assert.deepEqual(run('main = toByte 2 + 1').stack,[{kind:'scalar',type:'byte',value:3}]);
+ assert.throws(()=>compile('one = 1\nmain = toByte 2 + one'),/Cannot unify byte with int/);
  assert.throws(()=>compile("instance indexGet string where\n  key : int\n  item : byte\n  at s i = toByte 0"),/already exists/);
  assert.throws(()=>compile('bad : -> byte\nbad = 256'),/byte literal/);
  assert.throws(()=>run('main = 9223372036854775808'),/64-bit/);
@@ -45,8 +47,22 @@ test('numeric inference separates scalar types and contextual integer literals',
  assert.throws(()=>run('main = toInt 1 -> x; toFloat 2 + x'),/unify/);
 });
 test('UTF-8 indexing, character vectors, classes and persistent updates agree with native',()=>{
- const {output}=run(defs+body);assert.deepEqual(output,['3','-3','3.5','255','1.5','3','1.5','42',"['日', '本', '😀']",'True','227','129','130','None','adc','2','(Box [1, 12])','(Box [9, 2])','0','invalid UTF-8']);assert.equal(native(defs+body),output.join('\n')+'\n');
+ const {output}=run(defs+body);assert.deepEqual(output,['3','-3','3.5','255','1.5','3','1.5','42',"['日', '本', '😀']",'True',"['😀']",'(Some 129)','10','227','129','130','None','adc','2','(Box [1, 12])','(Box [9, 2])','0','invalid UTF-8']);assert.equal(native(defs+body),output.join('\n')+'\n');
 });
+test('text streams retain their scalar types across REPL evaluations',()=>{
+ const vm=new VM();
+ vm.evaluate('chars "a😀" -> letters; bytes "あ" -> octets');
+ assert.match(vm.infer('letters'),/stream char/);
+ assert.match(vm.infer('octets'),/stream byte/);
+ for(let i=0;i<2;i++){
+  assert.deepEqual(vm.evaluate('toVector letters'),vm.evaluate('vchars "a😀"'));
+  assert.deepEqual(vm.evaluate('toVector octets'),vm.evaluate('vbytes "あ"'));
+ }
+ assert.deepEqual(vm.evaluate('toVector (chars ""); toVector (bytes "")'),[[],[]]);
+ const boundary='a'.repeat(4095)+'😀b';
+ assert.deepEqual(vm.evaluate(`toVector (bytes "${boundary}")`)[0].map(v=>v.value),[...Buffer.from(boundary)]);
+});
+
 test('native integers preserve signed 64-bit values and truncate division',()=>{
  assert.equal(native('main = print 9223372036854775807; print (-9223372036854775808); print (9223372036854775807 - 1); print (toInt 9223372036854775807)'), '9223372036854775807\n-9223372036854775808\n9223372036854775806\n9223372036854775807\n');
 });

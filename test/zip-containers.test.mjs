@@ -7,6 +7,53 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 const run=source=>{const p=compile(source),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});return {p,output,vm,stack:vm.evaluate('main')};};
+const zipFunctions=`data bag 'a = Bag ['a]
+instance streem (bag 'a) where
+  item : 'a
+  each (Bag xs) f = each xs f
+main =
+  zipWith [1,2,3] [10,20] {-}; toVector; print
+  zipWith (Bag [1,2]) (10..=12) {+}; toVector; print
+  zipWith (repeat 3) [1,2] {*}; toVector; print
+  [#(1,"a"),#(2,"b")]; unzip -> xs,ys
+  print xs; print ys
+  []; unzip; print; print
+  Bag [#(3,True),#(4,False)]; unzip; print; print
+  mut visits <- 0
+  deferred <- zipWith [1,2] [3,4] {visits ! + 1; +}
+  print visits
+  deferred; take 1; toVector; print
+  print visits
+  deferred; toVector; print
+  print visits
+  zipWith [] (fromYield {visits ! + 100; yield 1}) {+}; toVector; print
+  print visits
+  fromYield {yield #(1,2); cancel; yield #(3,4)}; unzip; print; print
+  fromYield {visits ! + 1; yield #(3,4)}; unzip; print; print; print visits
+  catch {zipWith [1] [2] {exn "callback"}; toVector}; print
+  catch {unzip (fromYield {exn "producer"}); #(_1, _)}; print
+  99; [#(1,2)]; unzip; print; print; print
+`;
+const zipExpected=['[-9, -18]','[11, 13]','[3, 6]','[1, 2]','["a", "b"]','[]','[]','[True, False]','[3, 4]','0','[4]','1','[4, 6]','3','[]','3','[2]','[1]','[4]','[3]','4','(Err "callback")','(Err "producer")','[2]','[1]','99'];
+
+test('zipWith is lazy and unzip returns two ordered vectors in one traversal',()=>{
+ const {output,vm}=run(zipFunctions);assert.deepEqual(output,zipExpected);
+ assert.match(vm.infer('zipWith [1] [2] {print; nop}'),/stream int.*io/);
+ assert.match(vm.infer('unzip (fromYield {#(read, 1); yield})'),/io/);
+ assert.doesNotMatch(vm.infer('unzip [#(1,2)]'),/exn/);
+ assert.throws(()=>vm.infer('unzip [1,2]'),/unify/);
+ assert.throws(()=>vm.infer('unzip [#(1,2,3)]'),/unify|arity/);
+ assert.throws(()=>vm.infer('zipWith [1] [2] {dup}'),/unify|shape/);
+});
+
+test('Go executes zipWith and multiple-result unzip with lazy effects',()=>{
+ const {p}=run(zipFunctions),dir=mkdtempSync(join(tmpdir(),'nyanco-zip-functions-'));
+ try{
+  const file=join(dir,'main.go');writeFileSync(file,transpileGo(p));
+  const result=spawnSync('go',['run',file],{encoding:'utf8',windowsHide:true,timeout:120000});
+  assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,zipExpected.join('\n')+'\n');
+ }finally{assert.equal(dirname(dir),tmpdir());assert.ok(dir.startsWith(join(tmpdir(),'nyanco-zip-functions-')));rmSync(dir,{recursive:true,force:true});}
+});
 const source=`effect ask : -> int
 main =
  print (vzip [1,2] ["a"]); print (toVector (zip (1 ..= 3) [4,5]));

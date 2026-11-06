@@ -79,14 +79,14 @@ test('class and instance declarations reject incomplete, duplicate and invalid i
 });
 
 test('multiple class constraints on one value are retained',()=>{
-  const vm=new VM(compile(source+`\nclass 'a count where
-  count : 'a -> int
-instance count int where
-  count = nop
-both = dup describe; swap count`));
+  const vm=new VM(compile(source+`\nclass 'a size where
+  size : 'a -> int
+instance size int where
+  size = nop
+both = dup describe; swap size`));
   assert.deepEqual(vm.evaluate('3 both'),['3',3]);
-  assert.match(vm.infer('both'),/'a count, 'a describe =>/);
-  assert.throws(()=>vm.evaluate('True both'),/No instance: count bool/);
+  assert.match(vm.infer('both'),/'a describe, 'a size =>/);
+  assert.throws(()=>vm.evaluate('True both'),/No instance: size bool/);
 });
 
 test('REPL can add instances after class definitions without changing older programs',()=>{

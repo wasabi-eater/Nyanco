@@ -10,4 +10,4 @@ calculation =
   "calculating", log, ask, ( + (1))
 
 main =
-  {calculation}, {ask: ({-> k, 41, k, resume}), log: ({-> message k, message, print, k, resume})}, handle, print, {"aborted", fail, ( + (100))}, {fail: ({-> message k, message, print, 0})}, handle, print
+  {calculation}, {ask: ({-> k; 41, k, resume}), log: ({-> message k; message, print, k, resume})}, handle, print, {"aborted", fail, ( + (100))}, {fail: ({-> message k; message, print, 0})}, handle, print

@@ -6,6 +6,7 @@ import {typeSyntax} from './type-syntax.mjs';
 import {operatorSpecs,standardOperatorClasses,primitiveOperatorClass,operatorFallback,builtinInstance,installOperatorClasses} from './operator-classes.mjs';
 // Layout-based type class declarations are expanded into ordinary checked functions.
 import {LanguageError} from './language.mjs';
+import {tokenLine} from './source-layout.mjs';
 export function expandClasses(groups,definitions,previous,builtins,globals) {
   const classes=new Map([...definitions.classes||previous.classes||[]].map(([n,c])=>[n,{...c,methods:new Map(c.methods),instances:new Map(c.instances)}]));
   const methods=new Map(definitions.methods||previous.methods||[]),ordinary=[],pending=[];
@@ -14,8 +15,8 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     if(!tokens.length)return [];
     const indent=tokens[0].col,out=[];let depth=0;
     for(const t of tokens) {
-      if(!depth && t.col===indent && (!out.length || t.line>out.at(-1).at(-1).line))out.push([]);
-      if(!out.length || t.col<indent)fail('Invalid class/instance member indentation',t);
+      if(!depth && t.col===indent && (!out.length || tokenLine(t)>tokenLine(out.at(-1).at(-1))))out.push([]);
+      if(!out.length || t.col<indent&&tokenLine(t)!==tokenLine(out.at(-1).at(-1)))fail('Invalid class/instance member indentation',t);
       out.at(-1).push(t);
       if(['(','[','{'].includes(t.kind))depth++;
       if([')',']','}'].includes(t.kind))depth--;
@@ -25,7 +26,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
   for(const group of groups) {
     const first=group[0];
     if(first.value!=='class' && first.value!=='instance'){ordinary.push(group);continue;}
-    const header=group.filter(t=>t.line===first.line),body=group.slice(header.length);
+    const header=group.filter(t=>tokenLine(t)===tokenLine(first)),body=group.slice(header.length);
     if(header.length<4 || header.at(-1).value!=='where' || body[0]?.col<=(first.declarationCol||first.col))fail('Expected class Name \'a where or instance Name Type where with indented members',first);
     const classPostfix=false;
     let name=lowerName(header[classPostfix?2:1].value),arg=header[classPostfix?1:2].value;
@@ -116,6 +117,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     if((c.castClass||c.numClass)&&head.tag==='atom'&&(['int','float','byte'].includes(head.name)||c.castClass&&head.name==='char'))fail('Built-in numeric instance already exists',token);
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);
     if(c.indexClass&&(head.tag==='adt'&&head.name==='dict'||head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
+    if(c.sliceClass&&head.tag==='list')fail('Built-in slice instance already exists',token);
     if(name==='streem' && ['vector','range','dict','deque','heap'].includes(target))fail('Built-in streem instance already exists',token);
     if([...c.instances.values()].some(i=>instanceHeads(i).every((t,n)=>t.tag==='param'||heads[n].tag==='param'||instanceKey(t)===instanceKey(heads[n]))))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
     const instance={target,head,heads,context,implementations:new Map(),token};c.instances.set(target,instance);
@@ -138,7 +140,9 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
       let depth=0,sep=-1;
       for(let i=0;i<part.length;i++){const t=part[i];if(!depth && ['=','|'].includes(t.value)){sep=i;break;}if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;}
       if(part[0]?.kind==='(' && part[2]?.kind===')'){part.splice(0,3,part[1]);sep-=2;}
-      if(c.conversion&&part[0]?.value==='from')part[0]={...part[0],value:c.name};
+      if(c.conversion&&['from',c.name].includes(part[0]?.value))part[0]={...part[0],value:[...c.methods.keys()][0]};
+      const legacy=part[0]?.value,converted=legacy?.startsWith('to')?legacy.slice(2).toLowerCase():null;
+      if(!c.methods.has(legacy)&&c.methods.get(converted)?.className===legacy)part[0]={...part[0],value:converted};
       const method=part[0];
       if(sep<1 || !c.methods.has(method.value))fail('Instance must define a method declared by its class',method||part[0]);
       const owner=classes.get(c.methods.get(method.value).className);if(owner!==c&&(lookupInstance(owner,ancestorArguments(classes,c,heads,owner.name))?.implementations.has(method.value)||!owner.showClass&&(owner.intoClass?builtinConversion(ancestorArguments(classes,c,heads,owner.name)):builtinInstance(owner,head))))fail('Inherited method already has a superclass instance: '+method.value,method);
@@ -170,7 +174,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     const identity=c.name+':'+instance.target;if(seen.has(identity))return;seen.add(identity);
     const bindings=new Map(classParameters(c).map((p,i)=>[p,instanceHeads(instance)[i]]));
     for(const sc of superConstraints(c)){const parent=classes.get(sc.name),heads=sc.args.map(t=>substitute(t,bindings)),key=relationKey(heads);let inherited=lookupInstance(parent,heads);
-      const implementations=c.conversion&&parent.intoClass?new Map([['from',instance.implementations.get(c.name)]]):new Map([...parent.methods.keys()].map(m=>[m,instance.implementations.get(m)]));
+      const implementations=c.conversion&&parent.intoClass?new Map([['from',instance.implementations.get([...c.methods.keys()][0])]]):new Map([...parent.methods.keys()].map(m=>[m,instance.implementations.get(m)]));
       const hasImplementation=[...implementations.values()].some(Boolean),builtin=parent.intoClass?builtinConversion(heads):builtinInstance(parent,heads[0]);
       if(!inherited&&!hasImplementation&&(builtin||heads[0]?.tag==='adt'&&definitions.dataTypes.get(heads[0].name)?.deriving?.includes(parent.name)))continue;
       if(!inherited){inherited={...instance,target:key,head:heads[0],heads,implementations,signatures:new Map()};parent.instances.set(key,inherited);}

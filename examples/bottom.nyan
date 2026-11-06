@@ -14,4 +14,4 @@ reciprocal n =
   ((1) / (n))
 
 main =
-  4, reciprocal, print, {0, reciprocal}, {fail: ({-> message k, message, print, 0})}, handle, print
+  4, reciprocal, print, {0, reciprocal}, {fail: ({-> message k; message, print, 0})}, handle, print

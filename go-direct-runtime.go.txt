@@ -129,8 +129,41 @@ func literalPattern(value any) Pattern { return func(v any,e *Env) bool { if x,o
 func recordPattern(keys []string,ps ...Pattern) Pattern {return func(v any,e *Env) bool {r,ok:=v.(*Record);if !ok{return false};for i,p:=range ps{x,found:=r.fields[keys[i]];if !found||!p(x,e){return false}};return true}}
 func tuplePattern(ps ...Pattern) Pattern {return func(v any,e *Env) bool {t,ok:=v.(*Tuple);return ok && listPattern(ps...)(t.items,e)}}
 func listPattern(ps ...Pattern) Pattern { return func(v any,e *Env) bool { xs,ok:=v.([]any);if !ok || len(xs)!=len(ps) { return false };for i,p:=range ps { if !p(xs[i],e) { return false } };return true } }
+func concatPattern(rest int, sizes []int, ps ...Pattern) Pattern {
+ return func(v any,e *Env) bool {
+  xs,ok:=v.([]any);if !ok{return false};fixed:=0
+  for _,n:=range sizes{if n>=0{fixed+=n}}
+  if len(xs)<fixed || rest<0 && len(xs)!=fixed{return false}
+  offset:=0
+  for i,p:=range ps{n:=sizes[i];if i==rest{n=len(xs)-fixed};end:=offset+n;if !p(xs[offset:end:end],e){return false};offset=end}
+  return true
+ }
+}
+func(m *Machine) sliceVector(value,startValue,endValue any,from bool,loc string) any {
+ xs:=value.([]any);start:=startValue.(int64);end:=endValue.(int64)
+ if from{end=int64(len(xs))-1}
+ if start<0||start>int64(len(xs))||end< -1||end>=int64(len(xs))||!from&&end<0 {
+  m.perform("exn",[]any{"Slice bounds out of range"},loc,true);fail(loc,"Non-returning effect returned")
+ }
+ stop:=end+1;if stop<start{stop=start};return xs[start:stop:stop]
+}
 func pushPattern(prefix,last Pattern) Pattern { return func(v any,e *Env) bool { xs,ok:=v.([]any);return ok && len(xs)>0 && prefix(append([]any{},xs[:len(xs)-1]...),e) && last(xs[len(xs)-1],e) } }
 func constructorPattern(name string,ps ...Pattern) Pattern { return func(v any,e *Env) bool { a,ok:=v.(*ADT);if !ok || a.constructor!=name { return false };return listPattern(ps...)(a.fields,e) } }
+func orPattern(ps ...Pattern) Pattern {
+ return func(v any,e *Env) bool {
+  for _,p:=range ps {
+   trial:=fresh()
+   if !p(v,trial) { continue }
+   for name,value:=range trial.values {
+    if e.locals[name] { fail("pattern","Variable already declared: "+name) }
+    e.values[name]=value
+    e.locals[name]=true
+   }
+   return true
+  }
+  return false
+ }
+}
 func matches(ps []Pattern,args []any,e *Env) bool { for i,p:=range ps { if !p(args[i],e) { return false } }; return true }
 
 
@@ -228,14 +261,16 @@ func(m *Machine) numericCast(value any,target,loc string) any {
  if math.IsNaN(n)||math.IsInf(n,0)||target=="byte"&&(math.Trunc(n)<0||math.Trunc(n)>=256)||target=="int"&&(n< -9223372036854775808.0||n>=9223372036854775808.0)||target=="char"&&(math.Trunc(n)<0||math.Trunc(n)>0x10ffff||math.Trunc(n)>=0xd800&&math.Trunc(n)<=0xdfff){m.perform("exn",[]any{"Invalid numeric cast to "+target},loc,true);fail(loc,"Non-returning effect returned")}
  switch target{case "char":return Char(n);case "float":return n;case "byte":return uint8(n);case "int":if _,ok:=value.(int64);ok{return value};return int64(n)};return nil
 }
-func chars(value any,loc string) []any {s:=stringValue(value,loc);out:=[]any{};for _,r:=range s{out=append(out,Char(r))};return out}
+func walkChars(value any,visit func(any),loc string) {for _,r:=range stringValue(value,loc){visit(Char(r))}}
+func walkBytes(value any,visit func(any),loc string) {s:=stringValue(value,loc);for i:=0;i<len(s);i++{visit(uint8(s[i]))}}
+func vchars(value any,loc string) []any {out:=[]any{};walkChars(value,func(item any){out=append(out,item)},loc);return out}
 
 func charText(c Char) string {
  special:=map[Char]string{0:"\\0",9:"\\t",10:"\\n",13:"\\r",39:"\\'",92:"\\\\"}
  value,ok:=special[c];if !ok{if c<32||c==127{value=fmt.Sprintf("\\u{%x}",c)}else{value=string(rune(c))}};return "'"+value+"'"
 }
 
-func byteValues(value any,loc string) []any {s:=stringValue(value,loc);out:=make([]any,len(s));for i:=range out{out[i]=uint8(s[i])};return out}
+func vbytes(value any,loc string) []any {s:=stringValue(value,loc);out:=make([]any,len(s));for i:=range out{out[i]=uint8(s[i])};return out}
 
 func optionValue(value any,found bool) any {if found{return &ADT{"option","Some",[]any{value}}};return &ADT{"option","None",nil}}
 func(m *Machine) bitOperation(name string,a,b any,loc string) any {

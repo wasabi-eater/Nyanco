@@ -1,9 +1,9 @@
 -- Nyanco 0.38 prefix
 data distance = Distance float
 instance into int distance where
-  from n = Distance (toFloat n)
+  from n = Distance (float n)
 instance into distance int where
-  from (Distance n) = toInt n
+  from (Distance n) = int n
 
 makeDistance : int -> distance / {exn}
 makeDistance = fromInt
@@ -17,6 +17,6 @@ floats xs = vmap xs {from}
 main =
   print (makeDistance 42);
   print (asInt (makeDistance 42));
-  print (toInt (makeDistance 7));
+  print (int (makeDistance 7));
   print (floats [1,2,3]);
-  print (toInt 'あ')
+  print (int 'あ')

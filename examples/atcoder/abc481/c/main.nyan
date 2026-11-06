@@ -1,0 +1,13 @@
+main =
+    read; parseInt -> q
+    [:] -> mut accounts
+    0 -> mut next
+    each (0 .. q) do -> _
+        read -> name
+        accounts.?[name]; case
+            -> Some id ? print id
+            -> None ?
+                next ! + 1
+                accounts.[name] <<- next
+                print next
+        end

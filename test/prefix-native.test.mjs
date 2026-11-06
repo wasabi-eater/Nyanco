@@ -44,7 +44,7 @@ main =
   3 4; _, _; print; print; print;
   {x: 9} -> r; print r.x;
   #(3, "x") -> t; print t.0;
-  0 -> mut count, count ! (+ 2), print count;
+  0 -> mut count; count ! (+ 2), print count;
   [] -> mut logs;
   handle {print 42; print True} {put: {-> text k; logs ! (:: text); resume k}};
   print logs;

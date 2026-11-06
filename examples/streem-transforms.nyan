@@ -5,12 +5,12 @@ instance streem (box 'a) where
     each (Box xs) f = each xs f
 
 main =
-    print (toVector (take (map (1 ..= 10) {* 2}) 3));
+    print (vector (take (map (1 ..= 10) {* 2}) 3));
     print (vtakeWhile [1,2,3,1] {< 3});
     print (vskipWhile [1,2,3,1] {< 3});
     print (vflatMap (Box [1,2]) {-> n; Box [n,n + 10]});
-    print (toVector (flatten (Box [Box [1,2],Box [3]])));
-    print (toVector (@mapped map [1,2,3] {
+    print (vector (flatten (Box [Box [1,2],Box [3]])));
+    print (vector (@mapped map [1,2,3] {
         when ($ == 2) {cancel@mapped};
         * 10
     }));

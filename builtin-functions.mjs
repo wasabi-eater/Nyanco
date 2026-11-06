@@ -10,8 +10,41 @@ export function withStandardFunctions(definitions){
  installUnwrap(result,add);
  if(!result.classes.has('or')){const classes=new Map(result.classes),methods=new Map(result.methods);installOperatorClasses(classes,methods);result.classes.set('or',classes.get('or'));result.methods.set('.|.',methods.get('.|.'));}
  installOrElse(result,add);installContainerFunctions(result,add);
- add('toDeque',['xs'],'fold xs deque {qpush}');
- add('toHeap',['xs'],'fold xs heap {hpush}');
+ // Conversion classes keep their toX names; their methods name the target type.
+ // The old function names remain ordinary compatibility aliases.
+ for(const type of ['int','float','byte','char'])add('to'+type[0].toUpperCase()+type.slice(1),[],type);
+ for(const type of ['vector','dict','set','deque','heap'])add('to'+type[0].toUpperCase()+type.slice(1),[],type);
+ add('repeat',['value'],'fromYield {while {True} {yield value}}');
+ add('repeatWith',['next'],'fromYield {while {True} {call next; yield}}');
+ add('count',[],'fold 0 {drop; + 1}');
+ add('sum',[],'fold (fromInt 0) {+}');
+ add('product',[],'fold (fromInt 1) {*}');
+ add('zipWith',['left','right','f'],'map (zip left right) {-> #(a, b); call a b f}');
+ add('unzip',['xs'],'pairs <- vector xs; vmap pairs {-> #(a, _); a}, vmap pairs {-> #(_, b); b}');
+ add('partitionPoint',['xs','predicate'],`mut lo <- 0
+mut hi <- length xs
+while {lo < hi} {
+    mid <- lo + (hi - lo) / 2
+    xs.?[mid]; case
+        -> Some item ? call item predicate
+        -> None ? False
+    end
+    if {lo <<- mid + 1} {hi <<- mid}
+}
+lo`);
+ add('binarySearchBy',['xs','key','project'],`position <- partitionPoint xs {call _ project; < key}
+xs.?[position]; case
+    -> Some item ? if (call item project; == key) {Ok position} {Err position}
+    -> None ? Err position`);
+ add('binarySearch',['xs','key'],'binarySearchBy xs key {nop}');
+ add('countIf',[],'filter, count');
+ add('countsBy',[],'map, counts');
+ add('deque',['xs'],'fold xs __emptyDeque {qpush}');
+ add('heap',['xs'],'fold xs __emptyHeap {hpush}');
+ add('set',['xs'],'fold xs __emptySet {sinsert}');
+ add('sunion',['xs','ys'],'fold ys xs {sinsert}');
+ add('sintersection',['xs','ys'],'filter xs {scontains ys _}; set');
+ add('sdifference',['xs','ys'],'filter xs {scontains ys _; not}; set');
  add('loop',[],'while {True} _');
  // The outer loop also catches break during initialization. The inner loop
  // ends on break/cancel in cont; the final cancel prevents initialization restarting.

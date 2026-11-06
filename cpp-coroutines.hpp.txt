@@ -1,0 +1,111 @@
+// @runtime Task TaskControl EffectRequest
+// Lazy, move-only tasks. Symmetric transfer keeps native call-stack depth
+// bounded across awaited calls; an effect request returns to the local driver.
+struct TaskControl {
+    std::coroutine_handle<> current;
+    std::optional<Event> event;
+    std::optional<Values> reply;
+};
+struct TaskPromiseBase {
+    // Frames of similar sizes recur at effect/iterator boundaries. Pooling
+    // avoids a general-purpose heap allocation for every awaited operation.
+    static std::pmr::unsynchronized_pool_resource& frames() {
+        static thread_local std::pmr::unsynchronized_pool_resource pool;
+        return pool;
+    }
+    static void* operator new(std::size_t size) { return frames().allocate(size); }
+    static void operator delete(void* memory,std::size_t size) noexcept { frames().deallocate(memory,size); }
+    TaskControl* control = nullptr;
+    std::coroutine_handle<> parent = std::noop_coroutine();
+    std::exception_ptr failure;
+    std::suspend_always initial_suspend() noexcept { return {}; }
+    struct Final {
+        bool await_ready() noexcept { return false; }
+        template <typename P> std::coroutine_handle<> await_suspend(std::coroutine_handle<P> h) noexcept { return h.promise().parent; }
+        void await_resume() noexcept {}
+    };
+    Final final_suspend() noexcept { return {}; }
+    void unhandled_exception() noexcept { failure = std::current_exception(); }
+};
+template <typename T> struct TaskPromise;
+template <typename T> class Task {
+public:
+    using promise_type = TaskPromise<T>;
+    using Handle = std::coroutine_handle<promise_type>;
+    Handle handle;
+    explicit Task(Handle h) : handle(h) {}
+    Task(Task&& other) noexcept : handle(std::exchange(other.handle, {})) {}
+    Task(const Task&) = delete;
+    ~Task() { if (handle) handle.destroy(); }
+    struct Awaiter {
+        Handle child;
+        explicit Awaiter(Handle h) : child(h) {}
+        Awaiter(Awaiter&& other) noexcept : child(std::exchange(other.child,{})) {}
+        Awaiter(const Awaiter&) = delete;
+        ~Awaiter() { if (child) child.destroy(); }
+        bool await_ready() noexcept { return false; }
+        template <typename P> std::coroutine_handle<> await_suspend(std::coroutine_handle<P> caller) noexcept {
+            child.promise().control = caller.promise().control;
+            child.promise().parent = caller;
+            return child;
+        }
+        T await_resume() {
+            if (child.promise().failure) std::rethrow_exception(child.promise().failure);
+            if constexpr (!std::is_void_v<T>) return std::move(*child.promise().result);
+        }
+    };
+    Awaiter operator co_await() && noexcept { return Awaiter{std::exchange(handle,{})}; }
+};
+template <typename T> struct TaskPromise : TaskPromiseBase {
+    std::optional<T> result;
+    Task<T> get_return_object() { return Task<T>{std::coroutine_handle<TaskPromise>::from_promise(*this)}; }
+    void return_value(T value) { result.emplace(std::move(value)); }
+};
+template <> struct TaskPromise<void> : TaskPromiseBase {
+    Task<void> get_return_object() { return Task<void>{std::coroutine_handle<TaskPromise>::from_promise(*this)}; }
+    void return_void() noexcept {}
+};
+struct EffectRequest {
+    Event event;
+    TaskControl* control = nullptr;
+    bool await_ready() noexcept { return false; }
+    template <typename P> void await_suspend(std::coroutine_handle<P> h) {
+        control = h.promise().control;
+        control->event.emplace(std::move(event));
+        control->current = h;
+    }
+    Values await_resume() { auto values=std::move(*control->reply);control->reply.reset();return values; }
+};
+template <typename T> T runTask(Task<T> task) {
+    TaskControl control;
+    task.handle.promise().control=&control;
+    task.handle.resume();
+    if (!task.handle.done()) fail("<coroutine>","Unhandled suspended effect");
+    if (task.handle.promise().failure) std::rethrow_exception(task.handle.promise().failure);
+    if constexpr (!std::is_void_v<T>) return std::move(*task.handle.promise().result);
+}
+
+// @runtime CoroutineWorker
+class CoroutineWorker {
+    TaskControl control;
+    Machine child;
+    Task<Values> task;
+    bool started=false;
+    static Task<Values> request(Event event) { co_return co_await EffectRequest{std::move(event)}; }
+public:
+    template <typename Body> CoroutineWorker(Env& globals, Body body)
+        : child{globals,request}, task(start(std::move(body),child)) { task.handle.promise().control=&control; }
+    template <typename Body> static Task<Values> start(Body body,Machine& child) { co_return co_await body(child); }
+    std::optional<Event> next() {
+        if (!started) { started=true;control.current=task.handle; }
+        if (!task.handle.done()) control.current.resume();
+        if (task.handle.done()) {
+            if (task.handle.promise().failure) std::rethrow_exception(task.handle.promise().failure);
+            return {};
+        }
+        if (!control.event) fail("<coroutine>","Suspended computation produced no event");
+        auto event=std::move(control.event);control.event.reset();return event;
+    }
+    Values finish() { return std::move(*task.handle.promise().result); }
+    void send(Values values) { control.reply.emplace(std::move(values)); }
+};

@@ -1,0 +1,14 @@
+effect ask : -> int
+
+plusOne = ask; + 1
+
+main =
+    handle {plusOne; * 2} {
+        ask: {-> k; resume 10 k; + 100}
+    }
+    print
+    handle {
+        zip (fromYield {yield ask; yield 2}) (10 .. 20)
+        take 2; vector
+    } {ask: {-> k; resume 3 k}}
+    print

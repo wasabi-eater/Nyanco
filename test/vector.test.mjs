@@ -7,6 +7,39 @@ import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 function run(source,optimizeVectors=true){const p=compile(source),out=[],vm=new VM({...p,optimizeVectors,output:s=>out.push(s),warning:()=>{}});return {p,vm,out,stack:vm.evaluate('main')};}
+test('vector patterns destructure exact-length values in arrow bindings',()=>{
+ const vm=new VM();
+ vm.evaluate('[1, 2, 3, 4] -> [a b c d]');
+ assert.deepEqual(vm.evaluate('a, b, c, d'),[1,2,3,4]);
+ assert.deepEqual(run('main = [[1,2], [3,4]] -> [[a, _], [b, c,],]; a,b,c').stack,[1,3,4]);
+ assert.deepEqual(run('main = [a, b] <- [1,2]; a,b').stack,[1,2]);
+ assert.deepEqual(run('main = #(1, "x") -> #(a, b); a,b').stack,[1,'x']);
+ assert.deepEqual(run('main = 1, 2 -> x, mut y; y ! + 3; x,y').stack,[1,5]);
+ assert.deepEqual(run('main = 1, #(2, 3) -> x, #(y, z)\n  x,y,z').stack,[1,2,3]);
+ assert.throws(()=>vm.evaluate('[1,2] -> [first, second, third]'),/pattern did not match/);
+ assert.deepEqual(run('sum = case -> x, y ? x + y\nmain = sum 1 2').stack,[3]);
+ assert.throws(()=>compile('main = [1,2] -> [a,, b]'),/Expected a literal/);
+ assert.throws(()=>compile('main = 1 -> x, print x'),/pattern variable|bind built-ins/);
+});
+test('or patterns bind the successful alternative in declarations and case',()=>{
+ const source=`data side = Left int | Right int
+unpack (Left x || Right x) = x
+choose = case
+  -> [x, 0] || [0, x] | x > 1 ? x
+  otherwise drop; 9
+main =
+  unpack (Left 4), unpack (Right 5)
+  choose [0, 3], choose [0, 1]
+  [0, 6] -> ([k, 0] || [0, k]); k
+  #(0, 2) -> (#(~, 0) || #(0, ~))
+  True || False`;
+ assert.deepEqual(run(source).stack,[4,5,3,9,6,2,true]);
+ assert.throws(()=>compile('f (x || _) = x'),/same names/);
+ assert.throws(()=>compile('f (~ || _) = nop'),/same number/);
+ assert.throws(()=>compile('f (mut x || x) = x'),/mutability/);
+ assert.throws(()=>compile('f : #(int string) -> int\nf (#(x, _) || #(_, x)) = x'),/unify/);
+ assert.throws(()=>run('main = [1,2] -> ([x,0] || [0,x]); x'),/pattern did not match/);
+});
 test('vector push has array order and reuses uniquely owned temporary storage',()=>{
  const {stack,vm}=run('main = [0,1,2]; push 3; push 4');assert.deepEqual(stack,[[0,1,2,3,4]]);assert.equal(vm.vectorUpdates.inPlace,2);assert.equal(vm.vectorUpdates.copied,0);
  assert.equal(run('main = [1] -> xs; push xs 2').vm.vectorUpdates.inPlace,1);
@@ -54,7 +87,10 @@ test('Go performs proven updates directly and matches the copying implementation
  ([1] -> xs; {xs} -> q; print (push xs 2); print (call q));
  ([1] -> xs; map xs {+ 1} -> ys; print (push xs 9); print (toVector ys));
  ([1] -> mut xs; xs -> old; xs ! push 2; print old; print xs);
- ([1] -> xs; [xs] -> nested; print (push xs 2); print nested)`;
+ ([1] -> xs; [xs] -> nested; print (push xs 2); print nested);
+ [1,2,3,4] -> [a, b, c, d]; print [a,b,c,d];
+ [0,5] -> ([item,0] || [0,item]); print item;
+ #(0,6) -> (#(~,0) || #(0,~)); print`;
  const {p,out}=run(source),code=transpileGo(p),slow=transpileGo(p,{optimizeVectors:false});
  assert.match(code,/vectorAppend\(v\d+,v\d+,false,/);assert.doesNotMatch(slow,/vectorAppend\(v\d+,v\d+,false,/);
  const dir=mkdtempSync(join(tmpdir(),'nyanco-vector-'));

@@ -6,6 +6,28 @@ import {LanguageService,applyChanges} from '../lsp.mjs';
 const uri='file:///example.nyan';
 const hints=(service,start=0,end=1000)=>service.request('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:start,character:0},end:{line:end,character:1000}}});
 
+test('formatting honors indentation, preserves layout and returns a UTF-16 edit',()=>{
+  const service=new LanguageService();
+  const source=['main  =','   xs <- [1,2]','   xs;each do -> x','        print(x*2) -- 😀  ','   print   "{3 * 4}"'].join('\r\n');
+  const expected=['main =','  xs <- [1, 2]','  xs; each do -> x','    print (x * 2)  -- 😀  ','  print "{3 * 4}"'].join('\r\n')+'\r\n';
+  const options={tabSize:2,insertSpaces:true,insertFinalNewline:true};
+  const format=(text,settings=options)=>{
+    service.update(uri,text,1);
+    return service.request('textDocument/formatting',{textDocument:{uri},options:settings});
+  };
+  const [edit]=format(source);
+  assert.deepEqual(edit.range,{start:{line:0,character:0},end:{line:4,character:'   print   "{3 * 4}"'.length}});
+  assert.equal(applyChanges(source,[{range:edit.range,text:edit.newText}]),expected);
+  assert.deepEqual(format(expected),[]);
+  assert.equal(format('main=catch below\n   parseInt  "7"',{tabSize:4,insertSpaces:false})[0].newText,'main = catch below\n\tparseInt "7"');
+  assert.equal(format('abs = case -> n | n<0 ? 0-n\n           -> n ? n',{tabSize:2})[0].newText,'abs = case -> n | n < 0 ? 0 - n\n           -> n ? n');
+  assert.deepEqual(format('main = [1,2'),[]);
+  const ranges='ranges n = 0 .. n, 0 ..= n\r\n';
+  assert.equal(format('ranges n=0..n,0..=n')[0].newText,ranges.replaceAll('\r\n','\n'));
+  assert.deepEqual(format(ranges),[]);
+  assert.equal(format('main={x:1}.x; [1,2].[0]')[0].newText,'main = {x: 1}.x; [1, 2].[0]\n');
+});
+
 test('line-end hints show solved stacks in evaluation order and omit empty results',()=>{
   const service=new LanguageService(),source='main =\n    1\n    dup\n    +\n    print\n    2; print\n    -- comment\n';
   const doc=service.update(uri,source,1);assert.deepEqual(doc.diagnostics,[]);
@@ -65,6 +87,19 @@ test('hover preserves annotated numeric parameters inside a function while speci
   service.update(uri,'main = print 1',2);
   assert.match(hover(0,8).split('この項の型')[1],/int ->/);
 });
+test('hover shows int for the standard count and its use inside main',()=>{
+  const service=new LanguageService();
+  const main=`main = read; chars; filter {_ == 'o'}; count; if (% 2 == 0) {"even"} {"odd"}; print`;
+  const doc=service.update(uri,main,1);
+  assert.deepEqual(doc.diagnostics,[]);
+  assert.equal(doc.program.types.get('main'),'..s -> ..s / {io}');
+  const hover=word=>service.request('textDocument/hover',{textDocument:{uri},position:{line:0,character:main.indexOf(word)}}).contents.value;
+  assert.match(hover('main'),/main : \.\.s -> \.\.s \/ \{io\}/);
+  assert.match(hover('count').split('この項の型')[0],/-> \.\.s int/);
+  assert.match(hover('count').split('この項の型')[1],/-> \.\.s int/);
+  assert.match(hover('%').split('この項の型')[1],/% : int int -> int/);
+});
+
 test('hover shows polymorphic definitions and separately instantiated occurrences',()=>{
   const service=new LanguageService();
   const source="square x = x * x\ninteger : -> int\ninteger = square 4\ndecimal : -> float\ndecimal = square 1.5";
@@ -181,10 +216,14 @@ test('signature lenses show one inferred type per unannotated function',()=>{
   const lenses=()=>service.request('textDocument/codeLens',{textDocument:{uri}});
   assert.deepEqual(lenses().map(lens=>[lens.range.start.line,lens.command.title,lens.command.command]),[
     [2,'flag : ..s bool -> ..s bool',''],
+    [4,'Run','nyanco.runFile'],
     [4,'main : ..s -> ..s / {io}',''],
     [5,"local : ..s 'a -> ..s 'a",''],
   ]);
-  service.update(uri,'main = missing',2);
+  assert.deepEqual(lenses().find(lens=>lens.command.title==='Run').command.arguments,[uri]);
+  service.update(uri,'main : -> int\nmain = 1',2);
+  assert.deepEqual(lenses().map(lens=>lens.command.title),['Run']);
+  service.update(uri,'main = missing',3);
   assert.deepEqual(lenses(),[]);
 });
 
@@ -212,13 +251,19 @@ test('stdio lifecycle, fragmented Unicode frames, updates, and shutdown',{timeou
   send('textDocument/hover',{},0);assert.equal((await next()).error.code,-32002);
   send('initialize',{},1);const capabilities=(await next()).result.capabilities;assert.equal(capabilities.positionEncoding,'utf-16');assert.equal(capabilities.inlayHintProvider,true);
   assert.deepEqual(capabilities.codeLensProvider,{resolveProvider:false});
+  assert.equal(capabilities.documentFormattingProvider,true);
   send('initialized');
   send('textDocument/didOpen',{textDocument:{uri,version:1,languageId:'nyanco',text:'main = "猫😀"'}});
   assert.deepEqual((await next()).params.diagnostics,[]);
   send('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:0,character:0},end:{line:1,character:0}}},10);
   assert.deepEqual((await next()).result.map(h=>[h.position,h.label]),[[{line:0,character:'main = "猫😀"'.length},': ..s string']]);
+  send('textDocument/formatting',{textDocument:{uri},options:{tabSize:2,insertSpaces:true,insertFinalNewline:true}},12);
+  assert.deepEqual((await next()).result,[{
+    range:{start:{line:0,character:0},end:{line:0,character:'main = "猫😀"'.length}},
+    newText:'main = "猫😀"\n'
+  }]);
   send('textDocument/codeLens',{textDocument:{uri}},11);
-  assert.deepEqual((await next()).result.map(lens=>lens.command.title),['main : ..s -> ..s string']);
+  assert.deepEqual((await next()).result.map(lens=>lens.command.title),['Run','main : ..s -> ..s string']);
   send('textDocument/didChange',{textDocument:{uri,version:2},contentChanges:[{text:'main = unknownName'}]});
   assert.equal((await next()).params.diagnostics[0].severity,1);
   send('textDocument/didChange',{textDocument:{uri,version:3},contentChanges:[{range:{start:{line:0,character:7},end:{line:0,character:18}},text:'1'}]});

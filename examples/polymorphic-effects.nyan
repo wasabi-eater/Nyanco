@@ -11,4 +11,4 @@ instance add 'a => add (box 'a) where
     (((x) + (y))), Box
 
 main =
-  ((((1, Box)) + ((2, Box)))), print, {1, yield, True, yield, "hello", yield, 42}, {yield: ({-> value k, value, print, k, resume})}, handle, print, {"round trip", relay}, {relay: ({-> value k, value, k, resume})}, handle, print
+  ((((1, Box)) + ((2, Box)))), print, {1, yield, True, yield, "hello", yield, 42}, {yield: ({-> value k; value, print, k, resume})}, handle, print, {"round trip", relay}, {relay: ({-> value k; value, k, resume})}, handle, print

@@ -13,7 +13,7 @@ main =
     @outer handle {
         handle {ask@outer; print; mask ask {ask}; print; ask; print} {ask: {-> k; resume 2 k}}
     } {ask: {-> k; resume 1 k}};
-    print (toVector (@outer fromYield {
+    print (vector (@outer fromYield {
         yield 1;
         each (fromYield {yield@outer 2; yield 3}) {yield}
     }))

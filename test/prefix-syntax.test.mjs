@@ -108,7 +108,7 @@ last = case
 });
 
 test('mutable updates end at semicolons and comma-separated declarations keep their scope',()=>{
-  const v=vm();assert.deepEqual(v.evaluate('0 -> mut x, x <<- 3; x ! (+ 2); x'),[5]);
+  const v=vm();assert.deepEqual(v.evaluate('0 -> mut x; x <<- 3; x ! (+ 2); x'),[5]);
 });
 
 test('value-headed sequences warn without changing evaluation, callable heads do not',()=>{

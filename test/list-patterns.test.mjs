@@ -21,7 +21,7 @@ test('empty and Push patterns infer recursive homogeneous list functions',()=>{
   assert.deepEqual(vm.evaluate('[] sum; [1 2 3] sum'),[0,6]);
   assert.throws(()=>vm.evaluate('[True] sum'),StaticTypeError);
   const size=compile('[] size = 0\n(xs :: _) size = 1 + (xs size)');
-  assert.equal(size.types.get('size'),"'b num => ..s ['a] -> ..s 'b / {exn}");
+  assert.equal(size.types.get('size'),"..s ['a] -> ..s int");
   assert.deepEqual(new VM(size).evaluate('[True False] size'),[2]);
 });
 

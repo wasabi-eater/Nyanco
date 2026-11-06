@@ -1,0 +1,14 @@
+instance toInt bool where
+    int = if {1} {0}
+
+convert : toByte 'a => 'a -> byte / {exn}
+convert = byte
+
+main =
+    byte 'x'; print
+    3; float; + 0.5; print
+    int True; print
+    char 128512; print
+    [0, 1, 2]; set; sinsert 3; vector; sort; print
+    deque []; qpush 2; qpushFront 1; heap; vector; sort; print
+    dict [#(0, "zero"), #(1, "one")]; .[1]; print

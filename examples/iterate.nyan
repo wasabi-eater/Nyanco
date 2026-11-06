@@ -1,6 +1,6 @@
 -- Nyanco 0.38 prefix
 main =
-  print (toVector (take (iterate {1,0} {_1 + _, _1}) 10));
-  print (toVector (iterate {0} {when ($ >= 3) {cancel}; + 1}));
-  print (toVector (iterate {cancel} {+ 1}));
+  print (vector (take (iterate {1,0} {_1 + _, _1}) 10));
+  print (vector (iterate {0} {when ($ >= 3) {cancel}; + 1}));
+  print (vector (iterate {cancel} {+ 1}));
   0; loop {when ($ >= 3) {cancel}; + 1}; print

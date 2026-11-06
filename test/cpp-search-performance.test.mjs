@@ -1,0 +1,142 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {compile,VM} from '../language.mjs';
+import {transpileCpp} from '../cpp-backend.mjs';
+import {mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,dirname} from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+
+const source=`main =
+    read; split " "; vmap {parseInt} -> [h w n q];
+    0 .. n; map {-> _; read; split " "; vmap {parseInt}; -> [~ ~]; #(_1, _)}; unzip -> mut r mut c;
+    r ! sort; c ! sort
+    each (0 .. q) do -> _
+        read; split " "; vmap {parseInt} -> [ty f t];
+        if (ty == 1) {r} {c}; partitionPoint _ {<= t} - partitionPoint _ {< f}; print
+`;
+const sample='5 7 5 6\n1 1\n2 3\n2 5\n4 3\n5 7\n1 2 4\n2 3 5\n1 3 3\n2 1 7\n1 2 2\n2 7 7\n';
+const compiler=process.platform==='win32'?'cl':'c++';
+const available=!spawnSync(compiler,[compiler==='cl'?'/h':'--version'],{stdio:'ignore',windowsHide:true}).error;
+function native(source,check,flags=[]){
+  const dir=mkdtempSync(join(tmpdir(),'nyanco-native-search-'));
+  try{
+    const file=join(dir,'main.nyan'),cpp=join(dir,'main.cpp'),exe=join(dir,process.platform==='win32'?'main.exe':'main');
+    writeFileSync(file,source);
+    const emission=spawnSync(process.execPath,[fileURLToPath(new URL('../cli.mjs',import.meta.url)),file,'--procon',...flags],{encoding:'utf8',windowsHide:true,timeout:15000});
+    assert.equal(emission.status,0,emission.stderr);writeFileSync(cpp,emission.stdout);
+    const args=compiler==='cl'?['/nologo','/std:c++20','/EHsc','/utf-8','/O2',cpp,'/Fe:'+exe]:['-std=c++20','-O2','-pthread',cpp,'-o',exe];
+    const built=spawnSync(compiler,args,{cwd:dir,encoding:'utf8',windowsHide:true,timeout:120000});
+    assert.equal(built.status,0,built.stdout+built.stderr);
+    check(input=>{
+      const result=spawnSync(exe,[],{input,encoding:'utf8',windowsHide:true,timeout:20000,maxBuffer:16*1024*1024});
+      assert.equal(result.status,0,result.stderr);
+      return result.stdout.replaceAll('\r\n','\n');
+    });
+  }finally{
+    assert.equal(dirname(dir),tmpdir());assert.ok(dir.startsWith(join(tmpdir(),'nyanco-native-search-')));
+    rmSync(dir,{recursive:true,force:true});
+  }
+}
+
+test('known pure partition predicates compile to scalar loops with inline quotations',()=>{
+  let ir;
+  const code=transpileCpp(compile('main = [1,3,3,5]; partitionPoint {<= 3}; print'),{onIR:value=>ir=value});
+  assert.match(code,/while \(v\d+ < v\d+\)/);
+  assert.match(code,/scalars\(\)\[static_cast<std::size_t>\(v\d+\)\]/);
+  assert.doesNotMatch(code,/No matching pattern for partitionPoint|make_shared<Quote>/);
+  assert.ok(ir.regions.some(r=>r.owner?.kind==='inline-quotation'));
+});
+
+test('one-use split and numeric vmap fuse; shared streams keep their representation',()=>{
+  const fused=transpileCpp(compile('main = "1,2,3"; split ","; vmap {parseInt}; print'));
+  assert.match(fused,/SplitInput v\d+\{/);
+  assert.match(fused,/parseNumberText<Int,true>/);
+  const shared=transpileCpp(compile('main = "1,2"; split ","; dup; vmap {parseInt}; print; toVector; print'));
+  assert.doesNotMatch(shared,/SplitInput v\d+\{/);
+  assert.ok(transpileCpp(compile('main = read; print'),{batchIO:true}).startsWith('#define NYANCO_BATCH_IO 1\n'));
+  assert.ok(!transpileCpp(compile('main = read; print')).startsWith('#define NYANCO_BATCH_IO'));
+});
+
+test('procon defaults to buffered IO and explicit IO modes override the default',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'nyanco-io-default-'));
+  try{
+    const file=join(dir,'main.nyan'),out=join(dir,'main.cpp');writeFileSync(file,'main = print "ready"; read; print');
+    const emit=flags=>{
+      const result=spawnSync(process.execPath,[fileURLToPath(new URL('../cli.mjs',import.meta.url)),file,...flags],{encoding:'utf8',windowsHide:true,timeout:15000});
+      assert.equal(result.status,0,result.stderr);return result.stdout;
+    };
+    const batch='#define NYANCO_BATCH_IO 1\n';
+    assert.ok(emit(['--procon']).startsWith(batch));
+    assert.ok(emit(['--procon','--batch-io']).startsWith(batch));
+    assert.ok(!emit(['--procon','--interactive-io']).startsWith(batch));
+    assert.ok(!emit(['--interactive-io','--procon']).startsWith(batch));
+    assert.ok(!emit(['--procon','--batch-io','--interactive-io']).startsWith(batch));
+    assert.ok(emit(['--procon','--interactive-io','--batch-io']).startsWith(batch));
+    emit(['--procon','--emit-cpp',out]);assert.ok(readFileSync(out,'utf8').startsWith(batch));
+    emit(['--emit-cpp',out]);assert.ok(!readFileSync(out,'utf8').startsWith(batch));
+    emit(['--emit-cpp',out,'--batch-io']);assert.ok(readFileSync(out,'utf8').startsWith(batch));
+  }finally{
+    assert.equal(dirname(dir),tmpdir());assert.ok(dir.startsWith(join(tmpdir(),'nyanco-io-default-')));
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('fused numeric parsing preserves delimiters, aliases, UTF-8 and errors with batch IO',{skip:!available},()=>{
+  const text=`main =
+    " 1 , +2 , -3 "; split ","; vmap {parseInt}; print
+    "1.5|2e2|-3.25"; split "|"; vmap {parseFloat}; print
+    "12"; split ""; vmap {parseInt}; print
+    catch {"1,,3"; split ","; vmap {parseInt}}; print
+    catch {"猫"; split ""; vmap {parseInt}}; print
+    "1,2"; split ","; dup; vmap {parseInt}; print; toVector; print
+    "3,4"; split "," -> parts
+    vmap parts {parseInt}; print; toVector parts; print
+    "5,6"; split ","; vmap _ {parseInt}, toVector _; print; print
+    read; split ","; vmap {parseInt}; print
+`;
+  const output=[];new VM({...compile(text),input:()=> '7,8',output:line=>output.push(line)}).evaluate('main');
+  native(text,run=>assert.equal(run('7,8\n'),output.join('\n')+'\n'),['--batch-io']);
+});
+
+test('user-defined search functions retain their definitions',{skip:!available},()=>{
+  native('partitionPoint xs predicate = 42\nunzip xs = xs, xs\nmain = print (partitionPoint [1,2] {< 2}); [1,2]; unzip; print; print',run=>{
+    assert.equal(run(''),'42\n[1, 2]\n[1, 2]\n');
+  });
+});
+
+test('fast search threads stack state and falls back for cancellation and IO',{skip:!available},()=>{
+  const text=`main =
+    0; partitionPoint [1,2,3] {swap; + 1; swap; < 3}; print; print
+    partitionPoint [1,2,3] {drop; cancel}; print
+    catch {partitionPoint [1,2,3] {exn "predicate"}}; print
+    partitionPoint [1,2,3] {print $; < 3}; print
+`;
+  const program=compile(text),output=[];
+  new VM({...program,output:line=>output.push(line)}).evaluate('main');
+  native(text,run=>assert.equal(run(''),output.join('\n')+'\n'));
+});
+
+test('Band Count sample, random cases and maximum-size input run unchanged',{skip:!available},()=>{
+  native(source,run=>{
+    assert.equal(run(sample),'3\n3\n0\n5\n2\n1\n');
+    let seed=12345;
+    const random=max=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%max+1;};
+    const points=Array.from({length:200},()=>[random(1000000000),random(1000000000)]);
+    const lines=[`1000000000 1000000000 ${points.length} 1000`,...points.map(p=>p.join(' '))],expected=[];
+    for(let i=0;i<1000;i++){
+      const type=random(2),a=random(1000000000),b=random(1000000000),lo=Math.min(a,b),hi=Math.max(a,b);
+      lines.push(`${type} ${lo} ${hi}`);expected.push(points.filter(p=>lo<=p[type-1]&&p[type-1]<=hi).length);
+    }
+    assert.equal(run(lines.join('\n')+'\n'),expected.join('\n')+'\n');
+    const count=300000,large=[`${count} ${count*2} ${count} ${count}`],answers=[];
+    for(let i=0;i<count;i++){const r=i*104729%count+1;large.push(`${r} ${r*2}`);}
+    for(let i=0;i<count;i++){
+      const type=i%2+1,lo=i*7919%count+1,hi=Math.min(type*count,lo+10000);
+      large.push(`${type} ${lo} ${hi}`);
+      answers.push(type===1?hi-lo+1:Math.floor(hi/2)-Math.ceil(lo/2)+1);
+    }
+    assert.equal(run(large.join('\n')+'\n'),answers.join('\n')+'\n');
+  });
+});

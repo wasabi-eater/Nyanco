@@ -36,12 +36,12 @@ export function createTypedIR(definitions,{ownership=true,inference:provided=nul
   const standardShow=(t,seen=new Set())=>{t=T.prune(t);if(seen.has(t))return true;seen.add(t);if(definitions.classes?.get('show')?.instances.get(instanceKey(t)))return false;if(primitive(t))return true;if(t.tag==='list')return standardShow(t.item,seen);return false;};
   if(source.kind==='interpolation'&&(info.formatTypes||[]).every(t=>standardShow(t)))return 'borrow';
   if(['binary','comparison-chain'].includes(source.kind)&&(info.operatorEffects||[]).every(e=>row(e.input).values.every(primitive)))return 'borrow';
-  if(source.kind==='list-index'&&info.indexGet){const container=T.prune(row(info.indexGet.input).values.at(-2));if(container.tag==='list'||container.tag==='atom'&&container.name==='string')return 'borrow';}
+  if(source.kind==='list-index'&&!source.sliceMethod&&info.indexGet){const container=T.prune(row(info.indexGet.input).values.at(-2));if(container.tag==='list'||container.tag==='atom'&&container.name==='string')return 'borrow';}
   if(source.kind==='field'||source.kind==='tuple-index')return 'borrow';
   if(source.kind!=='word'||info.env?.has(source.value))return null;
   if(['when','if','call','dip','fold','while'].includes(source.value)&&!definitions.methods?.has(source.value))return 'callback';
-  if(source.value==='each'&&definitions.methods?.get('each')?.specialEach){const sourceType=T.prune(row(info.input).values.at(-2));if(sourceType.tag==='list'||sourceType.tag==='adt'&&['heap','deque','dict'].includes(sourceType.name)||sourceType.tag==='atom'&&sourceType.name==='range')return 'callback';}
-  if(['length','head','tail','print','put','not','hlength','hpeek','hisEmpty','qlength','qpeek','qpeekBack','qisEmpty'].includes(source.value)&&!definitions.methods?.has(source.value))return 'borrow';
+  if(source.value==='each'&&definitions.methods?.get('each')?.specialEach){const sourceType=T.prune(row(info.input).values.at(-2));if(sourceType.tag==='list'||sourceType.tag==='adt'&&['heap','deque','dict','set'].includes(sourceType.name)||sourceType.tag==='atom'&&sourceType.name==='range')return 'callback';}
+  if(['length','head','tail','print','put','not','hlength','hpeek','hisEmpty','qlength','qpeek','qpeekBack','qisEmpty','slength','sisEmpty'].includes(source.value)&&!definitions.methods?.has(source.value))return 'borrow';
   if(source.value==='at'&&info.effect){const container=T.prune(row(info.effect.input).values.at(-2));if(container.tag==='list'||container.tag==='atom'&&container.name==='string')return 'borrow';}
   if(source.value==='show'&&row(info.input).values.every(t=>standardShow(t)))return 'borrow';
   return null;
@@ -118,6 +118,7 @@ export function createTypedIR(definitions,{ownership=true,inference:provided=nul
     const captured=[...new Set(instruction.regions.flatMap(r=>r.captures.map(c=>c.external)))];
     instruction.captureArguments=captured;instruction.arguments=[...instruction.arguments,...captured.filter(id=>!instruction.arguments.includes(id))];
     instruction.retention=retentionContract(source,info,instruction.regions);
+    if(op==='call'&&(!definitions.has(name)&&['vector','dict'].includes(name)||definitions.get(name)?.[0]?.token.file==='<standard>'&&['set','deque','heap'].includes(name)))instruction.allocates=true;
     instructions.push(instruction);result.never=after.never;result.outputRow=type(after.tail);
    }
   };
@@ -138,7 +139,7 @@ export function createTypedIR(definitions,{ownership=true,inference:provided=nul
  }
  function instructions(nodes,trace,options){
   const plan=plans.get(trace)||lower(nodes,trace,options);
-  return nodes.map(source=>({op:source.kind,source,typing:trace.get(source),ownership:plan.lookup.get(source)?.ownership}));
+  return nodes.map(source=>({op:source.kind,source,typing:trace.get(source),ownership:plan.lookup.get(source)?.ownership,ir:plan.lookup.get(source)}));
  }
  function describe(trace,owner,input=[],output=[]){const plan=plans.get(trace);if(plan)plan.region.owner={...owner,parameterTypes:input.map(type),returnTypes:output.map(type)};}
  function serialize(){return structuredClone({version:1,types,regions:regions.map(r=>({...r,instructions:r.instructions.map(({regions,...i})=>({...i,regions:regions.map(r=>r.id)}))}))});}

@@ -1,7 +1,7 @@
 import {createTypedIR} from './typed-ir.mjs';
 import {emptyDeque,queuePush,queuePop,collectionItems,heapPush,heapPop,collectionOperations} from './collections.mjs';
 import {derivingSources} from './deriving.mjs';
-import {emptyDict,dictGet,dictSet,dictEntries,dictHashedEntries,hashMix,hashText,scalarHash} from './hash-map.mjs';
+import {emptyDict,dictGet,dictSet,dictEntries,dictHashedEntries,dictBucket,dictDelete,hashMix,hashText,scalarHash} from './hash-map.mjs';
 import {bitOperation,bitOperators,bitFunctions} from './bit-values.mjs';
 import {scalar,scalarType,scalarValue,numericBinary,charText} from './numeric-values.mjs';
 import {withStandardFunctions} from './builtin-functions.mjs';
@@ -15,6 +15,8 @@ import {typeName} from './type-names.mjs';
 import {runtimeTypeKey} from './operator-classes.mjs';
 import {expandClasses} from './type-classes.mjs';
 import { typeSyntax, patternNames } from './type-syntax.mjs';
+import {tokenLine,tokenEndLine} from './source-layout.mjs';
+import {vectorView,canMutateVector} from './vector-view.mjs';
 
 export class LanguageError extends Error {
   constructor(message, token) {
@@ -27,8 +29,8 @@ export class LanguageError extends Error {
 
 export function lex(source, file = '<input>', startLine=1, startCol=1) {
   const tokens = [];
-  let i = 0, line = startLine, col = startCol;
-  const advance = () => { const c = source[i++]; if (c === '\n') { line++; col = 1; } else col++; return c; };
+  let i = 0, line = startLine, col = startCol, logicalLine = startLine;
+  const advance = () => { const c = source[i++]; if (c === '\n') { line++; logicalLine = line; col = 1; } else col++; return c; };
   function stringToken(token) {
     advance();let raw='',chunks=[],parts=[];
     const flush=()=>{try{const value=JSON.parse('"'+raw+'"');if(/[\uD800-\uDFFF]/u.test(value))throw new Error('Invalid Unicode scalar');chunks.push(value);}catch{throw new LanguageError('Invalid string escape or literal newline',token);}raw='';};
@@ -56,7 +58,20 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
     if(source.startsWith('//',i))throw new LanguageError('// has been removed; use / for integer division',{file,line,col});
     if (/\s/.test(c)) { advance(); continue; }
     if (source.startsWith('--', i)) { while (i < source.length && source[i] !== '\n') advance(); continue; }
-    const token = { file, line, col, kind: 'word', value: '' };
+    if (c === '\\') {
+      const continuation = source.slice(i).match(/^\\[ \t]*(\r?\n|$)/);
+      if (!continuation) throw new LanguageError('Line continuation must be followed by a newline', {file,line,col});
+      if (!continuation[1]) {
+        const error = new LanguageError('Expected a newline after line continuation', {file,line,col});
+        error.incompleteContinuation = true;
+        throw error;
+      }
+      const continuedLine = logicalLine;
+      for (let j = 0; j < continuation[0].length; j++) advance();
+      logicalLine = continuedLine;
+      continue;
+    }
+    const token = { file, line, col, logicalLine, kind: 'word', value: '' };
     if(source.startsWith(';;',i)){token.kind=';;';token.value=advance()+advance();}
     else if ('[]{}();,#'.includes(c)) { token.kind = c; token.value = advance(); }
     else if(c==="'" && /^'(?:[^'\\\r\n]|\\(?:[nrt0'"\\]|u\{[0-9a-fA-F]+\}))'/u.test(source.slice(i))){
@@ -80,7 +95,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
         if (!Number.isFinite(token.value)) throw new LanguageError('Number must be finite', token);
       } else if (['True', 'False'].includes(token.value)) { token.kind = 'literal'; token.value = token.value === 'True'; }
     }
-    token.endLine=line;token.endCol=col;tokens.push(token);
+    token.endLine=line;token.endCol=col;token.endLogicalLine=logicalLine;tokens.push(token);
   }
   return tokens;
 }
@@ -108,7 +123,7 @@ export function leftDeclarationAt(tokens,start){
  let depth=0;
  for(let j=start;j<tokens.length;j++){
   const t=tokens[j];
-  if(!depth){if([';',';;',')',']','}'].includes(t.kind)||['=','->','->>','<<-','!','??<-','with','|','?',':'].includes(t.value))return -1;if(t.line>first.line&&t.line!==tokens[j-1]?.line)return -1;if(t.value==='<-')return j;}
+  if(!depth){if([';',';;',')',']','}'].includes(t.kind)||['=','->','->>','<<-','!','??<-','with','|','?',':'].includes(t.value))return -1;if(tokenLine(t)>tokenLine(first)&&tokenLine(t)!==tokenLine(tokens[j-1]))return -1;if(t.value==='<-')return j;}
   if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;
  }
  return -1;
@@ -123,15 +138,54 @@ const isOperator = t => t?.kind === 'word' && OPERATORS.has(t.value);
 const isShortCircuit=t=>['&&','||'].includes(t?.value);
 const isComparison = t => t?.kind === 'word' && ['<','<=','>','>=','==','/='].includes(t.value);
 
+// Lower indentation-based quotations before grouping declarations and adding
+// newline separators. Explicit delimiters shield their contents from dedents.
+function layoutQuotations(tokens) {
+  if(!tokens.some(t=>t.kind==='word'&&t.value==='do'))return tokens;
+  const result=[],blocks=[];
+  let depth=0,line,indent,previous;
+  function close(block) {
+    if(block.bodyIndent===undefined)throw new LanguageError('Expected an indented body after do',block.token);
+    const {file,moduleID,endLine,endCol}=previous;
+    result.push({file,moduleID,kind:'}',value:'}',line:endLine,col:endCol,endLine,endCol,logicalLine:tokenEndLine(previous),endLogicalLine:tokenEndLine(previous)});
+  }
+  for(let i=0;i<tokens.length;i++) {
+    const t=tokens[i],closing=[')',']','}'].includes(t.kind);
+    if(tokenLine(t)!==line){line=tokenLine(t);indent=t.col;}
+    while(blocks.at(-1)?.depth===depth) {
+      const block=blocks.at(-1);
+      if(closing||tokenLine(t)>tokenLine(block.token)&&line!==tokenLine(previous)&&t.col<(block.bodyIndent??block.headerIndent+1)) {
+        close(blocks.pop());
+        continue;
+      }
+      if(tokenLine(t)>tokenLine(block.token))block.bodyIndent??=t.col;
+      break;
+    }
+    if(t.kind==='word'&&t.value==='do'&&tokens[i+1]?.value!==':') {
+      const next=tokens[i+1];
+      if(next&&tokenLine(next)===tokenLine(t)&&next.value!=='->')throw new LanguageError('Expected a newline or -> after do',next);
+      blocks.push({token:t,depth,headerIndent:indent});
+      result.push({...t,kind:'{',value:'{',layoutQuote:true});
+    } else {
+      result.push(t);
+      if(['(','[','{'].includes(t.kind))depth++;
+      if(closing)depth--;
+    }
+    previous=t;
+  }
+  while(blocks.length)close(blocks.pop());
+  return result;
+}
+
 let nextStackCapture=0;
 function parseTokens(tokens, inherited = null, constructors = new Map()) {
-  tokens=recordShorthands(tokens);
+  tokens=recordShorthands(layoutQuotations(tokens));
   // Layout separators belong to expression bodies, not declaration headers.
   // Keep the separator on the previous line so case/local-definition layout
   // continues to use the original token positions.
   tokens=tokens.flatMap((token,index)=>{
     const previous=tokens[index-1];
-    if(!previous || token.line<=(previous.endLine??previous.line) ||
+    if(!previous || tokenLine(token)<=tokenEndLine(previous) ||
       [';',';;','(','[','{'].includes(previous.kind) ||
       previous.kind==='word'&&['=','?','case','otherwise','|',':'].includes(previous.value))return [token];
     return [{...previous,kind:';',value:';',line:previous.endLine??previous.line,col:previous.endCol??previous.col,layout:true},token];
@@ -149,7 +203,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       clean.push(t);segments.at(-1).push(t);
       if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;
     }
-    const patterns=left?segments.flatMap(part=>{const parsed=parsePatterns(part,constructors);if(parsed.length!==1)throw new LanguageError('Separate declaration patterns with commas',part[0]||token);return parsed;}):parsePatterns(clean,constructors),names=patternNames(patterns);
+    const patterns=left?segments.flatMap(part=>{const parsed=parsePatterns(part,constructors);if(parsed.length!==1)throw new LanguageError('Separate declaration patterns with commas',part[0]||token);return parsed;}):parsePatterns(clean,constructors,{bindingCommas:true}),names=patternNames(patterns);
     if(!patterns.length)throw new LanguageError('Declaration requires at least one pattern',token);
     if(new Set(names).size!==names.length)throw new LanguageError('Duplicate pattern variable',token);
     if([...mutableNames].some(n=>!names.includes(n)))throw new LanguageError('mut must precede a pattern variable',token);
@@ -158,6 +212,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
   }
   function scope(end, opener, context = null) {
     const nodes = [];
+    let below;
     // Parentheses share this lexical clause. References discovered later
     // belong to its entry capture; only quotation bodies start fresh clauses.
     const startClause=t=>{context.capture={...t,kind:'capture',slots:[]};nodes.push(context.capture);};
@@ -166,7 +221,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
     const done = () => i >= tokens.length || tokens[i].kind === end;
     const definitionAt=start=>{
       let depth=0;
-      for(let k=start;k<tokens.length && (depth||tokens[k].line===tokens[start]?.line||tokens[k].line===tokens[k-1]?.line);k++) {
+      for(let k=start;k<tokens.length && (depth||tokenLine(tokens[k])===tokenLine(tokens[start])||tokenLine(tokens[k])===tokenLine(tokens[k-1]));k++) {
         const t=tokens[k];
         if(!depth && ([';',';;',','].includes(t.kind) || t.kind==='word' && ['->','->>','<-','<<-','!'].includes(t.value) || [')',']','}'].includes(t.kind)))break;
         if(!depth&&t.kind==='word'&&t.value==='with')return -1;
@@ -214,8 +269,8 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         const t=tokens[i];
         if(!depth) {
           if(t.value==='end' && nested.length){nested.pop();i++;continue;}
-          while(nested.length && t.line>nested.at(-1).line && t.col<nested.at(-1).col)nested.pop();
-          if([')',']','}'].includes(t.kind) || !nested.length && (t.value==='end' || t.line>first.line && t.col<indent))break;
+          while(nested.length && tokenLine(t)>tokenLine(nested.at(-1)) && t.col<nested.at(-1).col)nested.pop();
+          if([')',']','}'].includes(t.kind) || !nested.length && (t.value==='end' || tokenLine(t)>tokenLine(first) && t.col<indent))break;
           if(t.value==='case' && tokens[i+1])nested.push(tokens[i+1]);
         }
         if(['(','[','{'].includes(t.kind))depth++;
@@ -228,10 +283,10 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       block.forEach((t,j)=>{
         if(!depth) {
           if(t.value==='end' && inner.length){inner.pop();return;}
-          while(inner.length && t.line>inner.at(-1).line && t.col<inner.at(-1).col)inner.pop();
+          while(inner.length && tokenLine(t)>tokenLine(inner.at(-1)) && t.col<inner.at(-1).col)inner.pop();
           if(t.value==='case' && block[j+1]){inner.push(block[j+1]);return;}
         }
-        if(!depth && !inner.length && ['->','|','otherwise'].includes(t.value) && (j===0 || (t.col===indent || t.value==='|' && t.col>indent) && t.line>block[j-1].line || t.line===first.line && branchThen && t.value!=='->')){starts.push(j);branchThen=false;}
+        if(!depth && !inner.length && ['->','|','otherwise'].includes(t.value) && (j===0 || (t.col===indent || t.value==='|' && t.col>indent) && tokenLine(t)>tokenLine(block[j-1]) || tokenLine(t)===tokenLine(first) && branchThen && t.value!=='->')){starts.push(j);branchThen=false;}
         if(!depth && !inner.length && t.kind==='word' && t.value==='?')branchThen=true;
         if(['(','[','{'].includes(t.kind))depth++;
         if([')',']','}'].includes(t.kind))depth--;
@@ -252,7 +307,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           if([')',']','}'].includes(t.kind))depth--;
         }
         if(then<0 || then===part.length-1)throw new LanguageError('case branch requires ? and a body',head);
-        const patterns=head.value==='->'?parsePatterns(part.slice(1,bar<0?then:bar),constructors):previous;
+        const patterns=head.value==='->'?parsePatterns(part.slice(1,bar<0?then:bar),constructors,{bindingCommas:true}):previous;
         if(head.value==='->')previous=patterns;
         const condition=head.value==='|'?part.slice(1,then):bar<0?null:part.slice(bar+1,then);
         if(condition && !condition.length)throw new LanguageError('Empty case guard',head);
@@ -287,6 +342,23 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         return [{...t,kind:'tuple',body:scope(')',t,context)}];
       }
       if(t.kind==='word' && ['.','.?'].includes(t.value) && tokens[i]?.kind==='[') {
+        let end=i+1,depth=0,colon=-1;
+        for(;end<tokens.length;end++){
+          const part=tokens[end];
+          if(!depth&&part.kind===']')break;
+          if(!depth&&part.value===':'){if(colon>=0)throw new LanguageError('Slice accepts one colon',part);colon=end;}
+          if(['(','[','{'].includes(part.kind))depth++;
+          if([')',']','}'].includes(part.kind))depth--;
+        }
+        if(colon>=0){
+          if(end>=tokens.length)throw new LanguageError('Missing ] in slice',t);
+          if(t.value==='.?')throw new LanguageError('Use .[start:end] for slicing',t);
+          const left=tokens.slice(i+1,colon).filter(p=>!p.layout),right=tokens.slice(colon+1,end).filter(p=>!p.layout);
+          if(!left.length&&!right.length)throw new LanguageError('Slice requires at least one bound; .[:] is not allowed',t);
+          const fields=[left,right].filter(part=>part.length).map(part=>({body:parseTokens(part,context,constructors)}));
+          i=end+1;
+          return [{...t,kind:'list-index',sliceMethod:left.length?(right.length?'sliceBetween':'sliceFrom'):'sliceTo',fields}];
+        }
         i++;return [{...t,kind:'list-index',optional:t.value==='.?',body:scope(']',t,context)}];
       }
       if(t.kind==='word' && /^\.\d+$/.test(t.value)) {
@@ -295,7 +367,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         return [{...t,kind:'tuple-index',index}];
       }
       if(t.kind==='word' && /^\.[a-zA-Z_]/.test(t.value))return [{...t,kind:'field',name:t.value.slice(1)}];
-      if(t.kind==='{' && (tokens[i]?.value===':' || tokens[i+1]?.value===':')) {
+      if(t.kind==='{' && !t.layoutQuote && (tokens[i]?.value===':' || tokens[i+1]?.value===':')) {
         const fields=[],names=new Set();
         if(tokens[i]?.value===':'){i++;if(tokens[i++]?.kind!=='}')throw new LanguageError('Expected } after {:',t);}
         else while(true) {
@@ -345,6 +417,11 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       if (['(', '[', '{'].includes(t.kind)) {
         const body = scope({ '(': ')', '[': ']', '{': '}' }[t.kind], t, t.kind!=='{'?context:{parents:[context,...context.parents||[]]});
         return [{ ...t, kind: { '(': 'scope', '[': 'list', '{': 'quote' }[t.kind], body }];
+      }
+      if(t.kind==='word' && t.value==='below') {
+        if(below)throw new LanguageError('Only one below is allowed per call',t);
+        below=t;
+        return [t];
       }
       if (t.kind === 'word' && /^(?:_+|\$+)\d*$/.test(t.value)) return [slot(t)];
       if (isOperator(t)) throw new LanguageError('Unexpected binary operator', t);
@@ -449,7 +526,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
     const initializer=operator=>{
       const start=i;let depth=0;
       while(i<tokens.length&&(depth||tokens[i].kind!==end)){
-        const t=tokens[i];if(!depth&&([';',';;'].includes(t.kind)||t.line>operator.line))break;
+        const t=tokens[i];if(!depth&&([';',';;'].includes(t.kind)||tokenLine(t)>tokenLine(operator)))break;
         if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind)){if(!depth)break;depth--;}i++;
       }
       if(start===i)throw new LanguageError('Initializer requires a value',operator);
@@ -469,15 +546,15 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       const eq=definitionAt(i);
       if(eq>=0) {
         const first=tokens[i],name=tokens[i],operator=tokens[eq];
-        if(!name || name.kind!=='word' || !identifier.test(name.value) || ['_','mut','case','?','otherwise','end','mask','with'].includes(name.value) || BUILTINS.has(name.value) || constructors.has(name.value))throw new LanguageError('Expected a local function name before =',name||first);
-        const patterns=parsePatterns(tokens.slice(i+1,eq),constructors,true);i=eq+1;
+        if(!name || name.kind!=='word' || !identifier.test(name.value) || ['_','mut','case','?','otherwise','end','mask','with','below'].includes(name.value) || BUILTINS.has(name.value) || constructors.has(name.value))throw new LanguageError('Expected a local function name before =',name||first);
+        const patterns=parsePatterns(tokens.slice(i+1,eq),constructors,{mutableParameters:true});i=eq+1;
         let scan=i,scanDepth=0,explicitEnd=false;
         while(scan<tokens.length){const t=tokens[scan++];if(!scanDepth && t.kind===';;'){explicitEnd=true;break;}if(!scanDepth&&[')',']','}'].includes(t.kind))break;if(['(','[','{'].includes(t.kind))scanDepth++;if([')',']','}'].includes(t.kind))scanDepth--;}
-        const start=i,multiline=tokens[i]?.line>operator.line,caseBody=tokens[i]?.kind==='word' && tokens[i]?.value==='case';let depth=0,cases=0;
+        const start=i,multiline=tokenLine(tokens[i])>tokenLine(operator),caseBody=tokens[i]?.kind==='word' && tokens[i]?.value==='case';let depth=0,cases=0;
         while(i<tokens.length) {
           const t=tokens[i];
           const closingCase=caseBody && t.kind==='word' && t.value==='end' && cases>0;
-          if(!depth && (t.kind===';;' || [')',']','}'].includes(t.kind) || !explicitEnd && (!multiline && !caseBody && [';',','].includes(t.kind) || !closingCase && t.line>operator.line && t.col<=first.col)))break;
+          if(!depth && (t.kind===';;' || [')',']','}'].includes(t.kind) || !explicitEnd && (!multiline && !caseBody && [';',','].includes(t.kind) || !closingCase && tokenLine(t)>tokenLine(operator) && t.col<=first.col)))break;
           if(!depth && caseBody && t.kind==='word') {
             if(t.value==='case')cases++;
             if(closingCase && --cases===0){i++;break;}
@@ -511,12 +588,12 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           rhs.unshift(...prefix,{...operator,kind:';',value:';'});
         }
         nodes.push({...targets[0],kind:'update',name:names[0],names,targetTokens:targets,body:parseTokens(rhs,operator.value==='!'&&!access?{parents:context.parents}:context,constructors)});
-        if(i<tokens.length && ![';',';;',','].includes(tokens[i].kind) && tokens[i].line>operator.line)startClause(tokens[i]);
+        if(i<tokens.length && ![';',';;',','].includes(tokens[i].kind) && tokenLine(tokens[i])>tokenLine(operator))startClause(tokens[i]);
         continue;
       }
       if(tokens[i].value==='->>'){
         const arrow=tokens[i++],parts=[];let depth=0;
-        while(i<tokens.length&&(depth||!done()&&![';',';;'].includes(tokens[i].kind)&&tokens[i].line===arrow.line)){
+        while(i<tokens.length&&(depth||!done()&&![';',';;'].includes(tokens[i].kind)&&tokenLine(tokens[i])===tokenLine(arrow))){
           const t=tokens[i++];if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;parts.push(t);
         }
         const access=parts[1]?.value?.startsWith?.('.')?parts.slice(1):null,targets=access?[parts[0]]:parts.filter(t=>t.kind!==',');
@@ -528,12 +605,26 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       }
       if (tokens[i].kind === 'word' && tokens[i].value === '->') {
         const arrow=tokens[i++],parts=[];let depth=0;
-        while(i<tokens.length&&(depth||!done()&&![';',';;',','].includes(tokens[i].kind)&&tokens[i].line===arrow.line)){
+        while(i<tokens.length&&(depth||!done()&&![';',';;'].includes(tokens[i].kind)&&tokenLine(tokens[i])===tokenLine(arrow))){
           const t=tokens[i++];if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;parts.push(t);
         }
         nodes.push(...binding(parts,arrow));
         if(!done() && ![';',';;',','].includes(tokens[i].kind))startClause(tokens[i]);
-      } else {const start=i,parsed=expression();if(i===start)throw new LanguageError('Unexpected token: '+tokens[i].value,tokens[i]);nodes.push(...parsed);}
+      } else {
+        const start=i,parsed=expression();
+        if(i===start)throw new LanguageError('Unexpected token: '+tokens[i].value,tokens[i]);
+        if(below) {
+          const call=parsed[0],slot=call.kind==='application'?call.body.indexOf(below):-1;
+          if(slot<1)throw new LanguageError('below must be a direct argument of a call',below);
+          if(tokens[i]?.kind!==';')throw new LanguageError('Expected a newline or ; after the call containing below',tokens[i]||below);
+          i++;
+          // Parse the remaining commands as a quotation, then return from this scope.
+          call.body[slot]={...below,kind:'quote',body:scope(end,opener,{parents:[context,...context.parents||[]]})};
+          nodes.push(call);
+          return nodes;
+        }
+        nodes.push(...parsed);
+      }
     }
     if (end) {
       if (i >= tokens.length) throw new LanguageError(`Missing ${end}`, opener);
@@ -545,7 +636,7 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
   function clean(nodes) {
     return nodes.filter(n=>n.kind!=='capture'||n.slots.length).map(n=>{
       if(n.body)n.body=clean(n.body);
-      if(['record','dict','path-update','interpolation'].includes(n.kind))for(const f of n.fields)f.body=clean(f.body);
+      if(['record','dict','path-update','interpolation','list-index'].includes(n.kind))for(const f of n.fields||[])f.body=clean(f.body);
       if(n.left){n.left=clean(n.left);n.right=clean(n.right);}
       if(n.operands)n.operands=n.operands.map(clean);
       return n;
@@ -564,7 +655,7 @@ function resolveLabels(nodes,scope=new Map()) {
     }
     if(n.kind==='label') {
       const root=n.body.length===1?n.body[0]:null,head=root?.kind==='application'?root.body[0]:root;
-      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','toVector','toDict','counts','nth','zip','vzip','windows','chunks','chunkBy','groupBy','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
+      if(head?.kind!=='word'||!['handle','while','each','vmap','vfilter','fold','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy','all','any','join','vector','dict','counts','nth','zip','vzip','windows','chunks','chunkBy','groupBy','fromYield',...transforms.keys()].includes(head.value))throw new LanguageError('Label requires a loop, handle, or fromYield',n);
       n.key??=`@label${nextLabel++}`;head.handlerLabel=n.key;
       const nested=new Map(scope);nested.set(n.name,n.key);resolveLabels(n.body,nested);continue;
     }
@@ -591,7 +682,7 @@ function dataDeclarations(groups, definitions, globals) {
     const name=originalName && {...originalName,value:typeName(originalName.value)};
     if (!name || name.kind!=='word' || !/^[a-z][a-zA-Z0-9_']*$/.test(name.value) || ['data','mut'].includes(name.value) || eq<2)
       throw new LanguageError('Expected data Type parameters = Constructors',group[0]);
-    if (['num','float','byte','char','bool','string','int','range','stream','vector','deque','heap','mutref','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
+    if (['num','float','byte','char','bool','string','int','range','stream','vector','deque','heap','set','mutref','continuation'].includes(name.value) || definitions.dataTypes.has(name.value))
       throw new LanguageError(`Type already declared: ${name.value}`,name);
     const parameters=group.slice(postfix ? 1 : 2,postfix ? eq-1 : eq).map(t=>{
       if(t.kind!=='word' || !(postfix ? /^'[a-z][a-zA-Z0-9_']*$/ : /^'?[a-z][a-zA-Z0-9_']*$/).test(t.value) || ['mut','data'].includes(t.value))
@@ -639,8 +730,8 @@ function dataDeclarations(groups, definitions, globals) {
 }
 
 let nextPatternStack=0;
-function patternStack(patterns,ephemeral=false){return patterns.flatMap(p=>p.stackMatch?[{...p,kind:'word',ephemeral}]:p.fields?patternStack(p.fields,ephemeral):[]);}
-function parsePatterns(tokens, constructors,mutableParameters=false) {
+function patternStack(patterns,ephemeral=false){return patterns.flatMap(p=>p.stackMatch?[{...p,kind:'word',ephemeral}]:p.fields?patternStack(p.kind==='or-pattern'?[p.fields[0]]:p.fields,ephemeral):[]);}
+function parsePatterns(tokens, constructors,{mutableParameters=false,bindingCommas=false}={}) {
   tokens=tokens.filter(t=>!t.layout);
   let i=0;
   function atom() {
@@ -669,7 +760,7 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
       while(tokens[i]?.kind!=='}'){
         const key=tokens[i++];if(key?.kind!=='word'||!/^[a-zA-Z_][a-zA-Z0-9_']*$/.test(key.value)||tokens[i++]?.value!==':')throw new LanguageError('Expected record pattern field name:',key||t);
         if(seen.has(key.value))throw new LanguageError('Duplicate record pattern field: '+key.value,key);seen.add(key.value);
-        keys.push(key.value);fields.push(cons(atom()));
+        keys.push(key.value);fields.push(alternative());
         if(tokens[i]?.kind==='}')break;
         if(tokens[i++]?.kind!==',')throw new LanguageError('Expected , or } in record pattern',tokens[i-1]||t);
       }
@@ -687,7 +778,7 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
       for(let n=0;n<count;n++)fields.push(atom());
       return {...t,kind:t.value==='Push'?'push-pattern':'constructor',fields};
     }
-    if(t.kind==='word' && identifier.test(t.value) && !['mut','data'].includes(t.value)) {
+    if(t.kind==='word' && identifier.test(t.value) && !['mut','data','below'].includes(t.value)) {
       if(/^[A-Z]/.test(t.value))throw new LanguageError(`Unknown constructor or missing constructor fields: ${t.value}`,t);
       return t;
     }
@@ -700,10 +791,40 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
     }
     return left;
   }
+  function alternative() {
+    function concatenation(){
+      let left=cons(atom());
+      if(tokens[i]?.value!=='++')return left;
+      const fields=[left],op=tokens[i];
+      while(tokens[i]?.value==='++'){i++;fields.push(cons(atom()));}
+      const rest=fields.findIndex(p=>p.kind!=='list-pattern');
+      if(fields.filter(p=>p.kind!=='list-pattern').length>1)throw new LanguageError('Concatenation pattern allows at most one variable-length part',op);
+      return {...op,kind:'concat-pattern',fields,rest};
+    }
+    let left=concatenation();
+    while(tokens[i]?.kind==='word' && tokens[i].value==='||') {
+      const op=tokens[i++],right=concatenation();
+      const names=pattern=>patternNames([pattern]).filter(name=>!name.startsWith('@match'));
+      const a=names(left),b=names(right);
+      if(new Set(a).size!==a.length||new Set(b).size!==b.length)throw new LanguageError('Duplicate pattern variable',op);
+      if(a.length!==b.length||a.some(name=>!b.includes(name)))throw new LanguageError('Or-pattern alternatives must bind the same names',op);
+      const stackLeft=patternStack([left]),stackRight=patternStack([right]);
+      if(stackLeft.length!==stackRight.length)throw new LanguageError('Or-pattern alternatives must bind the same number of ~ slots',op);
+      const aliases=new Map(stackRight.map((slot,i)=>[slot.value,stackLeft[i].value]));
+      function rename(p) {
+        if(p.stackMatch)p.value=aliases.get(p.value)||p.value;
+        for(const field of p.fields||[])rename(field);
+      }
+      rename(right);
+      left={...op,kind:'or-pattern',fields:[left,right]};
+    }
+    return left;
+  }
   function sequence(end) {
     const patterns=[];
     while(i<tokens.length && tokens[i].kind!==end) {
-      patterns.push(cons(atom()));
+      patterns.push(alternative());
+      if((end===']'||end===')'||!end&&bindingCommas) && tokens[i]?.kind===',')i++;
     }
     return patterns;
   }
@@ -713,10 +834,30 @@ function parsePatterns(tokens, constructors,mutableParameters=false) {
 }
 
 function matchPattern(pattern,value,bindings,valueType) {
+  if(pattern.kind==='or-pattern') {
+    for(const p of pattern.fields) {
+      const trial=new Map();
+      if(!matchPattern(p,value,trial,valueType))continue;
+      for(const [name,binding] of trial)bindings.set(name,binding);
+      return true;
+    }
+    return false;
+  }
   if(pattern.kind==='record-pattern')return value?.kind==='record'&&pattern.fields.every((p,i)=>Object.hasOwn(value.fields,pattern.keys[i])&&matchPattern(p,value.fields[pattern.keys[i]],bindings,valueType));
   if(pattern.kind==='tuple-pattern')return value?.kind==='tuple' && pattern.fields.length===value.items.length && pattern.fields.every((p,i)=>matchPattern(p,value.items[i],bindings,valueType));
   if(pattern.kind==='literal')return typeof pattern.value==='number'&&['int','float','byte'].includes(scalarType(value))?pattern.value===scalarValue(value):equal(pattern.value,value);
   if(pattern.kind==='list-pattern')return Array.isArray(value) && value.length===pattern.fields.length && pattern.fields.every((p,i)=>matchPattern(p,value[i],bindings,valueType));
+  if(pattern.kind==='concat-pattern'){
+    if(!Array.isArray(value))return false;
+    const fixed=pattern.fields.reduce((n,p,i)=>n+(i===pattern.rest?0:p.fields.length),0);
+    if(value.length<fixed||pattern.rest<0&&value.length!==fixed)return false;
+    let offset=0;
+    return pattern.fields.every((p,i)=>{
+      const count=i===pattern.rest?value.length-fixed:p.fields.length;
+      const part=vectorView(value,offset,count);offset+=count;
+      return matchPattern(p,part,bindings,valueType);
+    });
+  }
   if(pattern.kind==='push-pattern')return Array.isArray(value) && value.length>0 && matchPattern(pattern.fields[0],value.slice(0,-1),bindings,valueType) && matchPattern(pattern.fields[1],value.at(-1),bindings,valueType);
   if(pattern.kind==='constructor')return value?.kind==='adt' && value.constructor===pattern.value && value.fields.length===pattern.fields.length && pattern.fields.every((p,i)=>matchPattern(p,value.fields[i],bindings,valueType));
   if(pattern.value!=='_')bindings.set(pattern.value,pattern.mutable?{kind:'cell',value,staticType:valueType?.(value)}:value);
@@ -738,7 +879,7 @@ export function expressionWarnings(nodes,variables=new Set()) {
       if(n.kind==='local-function'){env.delete(n.name);walk(n.body,env);continue;}
       if(n.kind==='case')for(const b of n.branches){const local=new Set([...env,...patternNames(b.patterns)]);if(b.guard)walk(b.guard,local);walk(b.body,local);}
       if(n.body)walk(n.body,env);
-      if(['record','dict','path-update','interpolation'].includes(n.kind))for(const f of n.fields)walk(f.body,env);
+      if(['record','dict','path-update','interpolation','list-index'].includes(n.kind))for(const f of n.fields||[])walk(f.body,env);
       if(n.left){walk(n.left,env);walk(n.right,env);}
       if(n.operands)for(const o of n.operands)walk(o,env);
     }
@@ -748,12 +889,13 @@ export function expressionWarnings(nodes,variables=new Set()) {
 export function declarationGroups(tokens){
   const groups=[];
   let depth = 0,afterDefinition=false,openDefinitions=0,guardHeader=false;
-  for (const token of tokens) {
+  for (const token of layoutQuotations(tokens)) {
     if(token.kind===';;' && depth===0){
       if(openDefinitions>1){openDefinitions--;groups.at(-1).push(token);continue;}
       afterDefinition=true;openDefinitions=0;guardHeader=false;continue;
     }
-    if (afterDefinition || (token.col === 1||token.declarationStart) && depth === 0 && !(token.kind==='word' && ['|','end'].includes(token.value))) {groups.push([]);openDefinitions=0;guardHeader=false;}
+    const previous=groups.at(-1)?.at(-1);
+    if (afterDefinition || (token.col === 1&&(token.file!==previous?.file||tokenLine(token)!==tokenLine(previous))||token.declarationStart) && depth === 0 && !(token.kind==='word' && ['|','end'].includes(token.value))) {groups.push([]);openDefinitions=0;guardHeader=false;}
     afterDefinition=false;
     if (!groups.length) throw new LanguageError('Top-level declarations must start in column 1', token);
     if(!depth && token.value==='|')guardHeader=true;
@@ -784,7 +926,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   const families=effectFamilies(definitions.effects);
   for(let group of groups)if(group[0].value==='effect') {
     if(!group.some(t=>t.value===':')&&group[2]?.kind==='('){const end=group.findIndex(t=>t.kind===')');if(end>2)group=[...group.slice(0,end+1),{...group[end],value:':'},...group.slice(end+1)];}
-    const token=group[0],where=group.findIndex(t=>t.line===token.line && t.value==='where');
+    const token=group[0],where=group.findIndex(t=>tokenLine(t)===tokenLine(token) && t.value==='where');
     const grouped=where>=0,colonIndex=group.findIndex(t=>t.value===':'),name=group[1],parameterTokens=group.slice(2,grouped?where:colonIndex).map(t=>t.value),rowParameters=parameterTokens.filter((p,i)=>parameterTokens[i-1]==='..'),parameters=parameterTokens.filter(p=>!['(',')','..'].includes(p));
     if((grouped?where<2:colonIndex<2) || !name || !/^[a-z][A-Za-z0-9_']*$/.test(name.value) || parameters.some(p=>!/^'[a-z][A-Za-z0-9_']*$/.test(p)))throw new LanguageError("Expected effect name 'a : signature or effect name 'a where",token);
     if(new Set(parameters).size!==parameters.length)throw new LanguageError('Duplicate effect type parameter',token);
@@ -793,10 +935,10 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
     const members=[];
     if(grouped){
       const body=group.slice(where+1),indent=body[0]?.col;let depth=0;
-      if(!body.length||body[0].line===token.line||indent<=token.col)throw new LanguageError('Effect group requires indented operations',token);
+      if(!body.length||tokenLine(body[0])===tokenLine(token)||indent<=token.col)throw new LanguageError('Effect group requires indented operations',token);
       for(const t of body){
-        if(!depth && t.col===indent && (!members.length||t.line>members.at(-1).at(-1).line))members.push([]);
-        if(!members.length||t.col<indent)throw new LanguageError('Invalid effect operation indentation',t);
+        if(!depth && t.col===indent && (!members.length||tokenLine(t)>tokenLine(members.at(-1).at(-1))))members.push([]);
+        if(!members.length||t.col<indent&&tokenLine(t)!==tokenLine(members.at(-1).at(-1)))throw new LanguageError('Invalid effect operation indentation',t);
         members.at(-1).push(t);
         if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;
       }
@@ -845,20 +987,20 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
     const header=separators[0];
     if (header===undefined || header<1) throw new LanguageError('Expected name [patterns] = body or name | condition = body', first);
     const name = group[0];
-    if (!identifier.test(name.value) || name.kind !== 'word' || ['_', 'mut', 'data', 'mask', 'with'].includes(name.value)) throw new LanguageError('Expected a function name before =', name);
+    if (!identifier.test(name.value) || name.kind !== 'word' || ['_', 'mut', 'data', 'mask', 'with', 'below'].includes(name.value)) throw new LanguageError('Expected a function name before =', name);
     if(definitions.effects.has(name.value))throw new LanguageError(`Cannot redefine effect: ${name.value}`,name);
     if(definitions.methods.has(name.value))throw new LanguageError(`Cannot redefine class method: ${name.value}`,name);
     if(name.value.startsWith('__tc_') && !name.internal)throw new LanguageError('Reserved instance implementation name',name);
     if (BUILTINS.has(name.value)) throw new LanguageError('Cannot redefine a built-in word', name);
     if(definitions.constructors.has(name.value))throw new LanguageError(`Cannot redefine constructor: ${name.value}`,name);
-    const patterns = parsePatterns(group.slice(1, header),definitions.constructors,true);
+    const patterns = parsePatterns(group.slice(1, header),definitions.constructors,{mutableParameters:true});
     if (!local.has(name.value)) { definitions.set(name.value, []); local.add(name.value); }
     const clauses = definitions.get(name.value);
     if (clauses.length && clauses[0].patterns.length !== patterns.length) throw new LanguageError('All clauses must have the same arity', name);
     if(group[header].value==='=') {
       clauses.push({patterns,body:[...patternStack(patterns),...parseTokens(group.slice(header+1),null,definitions.constructors)],token:name});
     } else {
-      const bars=separators.filter(i=>group[i].value==='|' && (group[i].line===group[header].line || group[i].col===group[header].col));
+      const bars=separators.filter(i=>group[i].value==='|' && (tokenLine(group[i])===tokenLine(group[header]) || group[i].col===group[header].col));
       for(let j=0;j<bars.length;j++) {
         const start=bars[j],end=bars[j+1]??group.length;
         const eq=separators.find(i=>i>start && i<end && group[i].value==='=');
@@ -894,6 +1036,7 @@ export function format(value) {
   if(value?.kind==='range')return `(${value.start} ${value.inclusive?'..=':'..'} ${value.end})`;
   if(value?.kind==='tuple')return `#(${value.items.map(format).join(' ')})`;
   if(['deque','heap'].includes(value?.kind))return value.kind+' '+format(collectionItems(value));
+  if(value?.kind==='set')return 'set ['+[...dictEntries(value.data)].map(([key])=>format(key)).join(', ')+']';
   if(value?.kind==='dict')return value.entries.length?'['+value.entries.map(([k,v])=>format(k)+': '+format(v)).join(', ')+']':'[:]';
   if(value?.kind==='record')return Object.keys(value.fields).length ? `{${Object.keys(value.fields).sort().map(k=>`${k}: ${format(value.fields[k])}`).join(', ')}}` : '{:}';
   if (Array.isArray(value)) return `[${value.map(format).join(', ')}]`;
@@ -904,6 +1047,7 @@ export function format(value) {
   return String(value);
 }
 function equal(a, b) {
+  if(a?.kind==='set'&&b?.kind==='set'){if(a.data.size!==b.data.size)return false;for(const [key,,hash] of dictHashedEntries(a.data))if(!dictGet(b.data,key,hash,equal))return false;return true;}
   if(a?.kind==='scalar'||b?.kind==='scalar')return a?.kind==='scalar'&&b?.kind==='scalar'&&a.type===b.type&&a.value===b.value;
   if(a?.kind==='range' && b?.kind==='range')return a.start===b.start && a.end===b.end && a.inclusive===b.inclusive;
   if(a?.kind==='dict'&&b?.kind==='dict'){if(a.size!==b.size)return false;for(const [k,v,h] of dictHashedEntries(a)){const p=dictGet(b,k,h,equal);if(!p||!equal(v,p.value))return false;}return true;}
@@ -1050,6 +1194,7 @@ export class VM {
     if(target){const local=[value];yield* this.run([{...t,kind:'word',value:target}],local,new Map(this.globals));return scalarHash(scalarValue(local[0]),'int');}
     const type=scalarType(value)||(typeof value==='boolean'?'bool':typeof value==='string'?'string':null),simple=scalarHash(scalarValue(value),type);
     if(simple!==null)return simple;
+    if(value?.kind==='set'){let sum=0;for(const [key] of dictEntries(value.data))sum=(sum+(yield* this.hashValue(key,t)))>>>0;return hashMix(hashMix(hashText('set'),value.data.size),sum);}
     if(value?.kind==='dict'){let sum=0;for(const [k,v] of dictEntries(value))sum=(sum+hashMix(yield* this.hashValue(k,t),yield* this.hashValue(v,t)))>>>0;return hashMix(hashMix(hashText('dict'),value.size),sum);}
     let tag,items;
     if(Array.isArray(value)){tag='vector';items=value;}
@@ -1103,6 +1248,10 @@ export class VM {
         }
         return;
       }
+      if(xs.mode==='chars'||xs.mode==='bytes') {
+        for(const item of textItems(xs.source,xs.mode))yield* consume(item);
+        return;
+      }
       if(xs.mode==='split') {
         if(xs.separator===''){for(const char of xs.source)yield* consume(char);}
         else {let start=0;while(true){const end=xs.source.indexOf(xs.separator,start);if(end<0){yield* consume(xs.source.slice(start));break;}yield* consume(xs.source.slice(start,end));start=end+xs.separator.length;}}
@@ -1136,6 +1285,7 @@ export class VM {
       return;
     }
     if(['deque','heap'].includes(xs?.kind)){for(const item of collectionItems(xs))yield* consume(item);return;}
+    if(xs?.kind==='set'){for(const [key] of dictEntries(xs.data))yield* consume(key);return;}
     if(xs?.kind==='dict'){for(const [key,value] of dictEntries(xs))yield* consume({kind:'tuple',items:[key,value]});return;}
     const target=this.definitions.classes?.get('streem')?.instances.get(runtimeTypeKey(xs))?.implementations.get('each');
     if(target){const visitor={kind:'closure',native:function*(local){const iterator=consume(local.pop());try{let result=iterator.next();while(!result.done){const request=result.value;if(['cancel','break'].includes(request.operation.name)&&!request.target&&!request.bypassUntil&&t.loopTarget)request.bypassUntil=t.loopTarget;const returned=yield request;result=iterator.next(returned);}}finally{iterator.return();}}};yield* this.run([{...t,kind:'word',value:target}],[xs,visitor],new Map(this.globals));return;}
@@ -1149,6 +1299,7 @@ export class VM {
     if(items){const parts=[];for(const v of items)parts.push(yield* this.showValue(v,t));return Array.isArray(value)?'['+parts.join(', ')+']':'#('+parts.join(' ')+')';}
     if(value?.kind==='record'){const parts=[];for(const k of Object.keys(value.fields).sort())parts.push(k+': '+(yield* this.showValue(value.fields[k],t)));return parts.length?'{'+parts.join(', ')+'}':'{:}';}
     if(['deque','heap'].includes(value?.kind)){const parts=[];for(const item of collectionItems(value))parts.push(yield* this.showValue(item,t));return value.kind+' ['+parts.join(', ')+']';}
+    if(value?.kind==='set'){const parts=[];for(const [key] of dictEntries(value.data))parts.push(yield* this.showValue(key,t));return 'set ['+parts.join(', ')+']';}
     if(value?.kind==='dict'){const parts=[];for(const [k,v] of value.entries)parts.push((yield* this.showValue(k,t))+': '+(yield* this.showValue(v,t)));return parts.length?'['+parts.join(', ')+']':'[:]';}
     if(value?.kind==='adt'){const parts=[];for(const v of value.fields)parts.push(yield* this.showValue(v,t));return parts.length?'('+displayConstructor(value.constructor)+' '+parts.join(' ')+')':displayConstructor(value.constructor);}
     return format(value);
@@ -1156,6 +1307,10 @@ export class VM {
   *eqValue(a,b,t){
     const child=function*(vm,x,y){const pair=[x,y];yield* vm.binary('==',pair,t);return pair[0];};
     if(a?.kind==='closure'||a?.kind==='quote'||a?.kind==='stream')throw new LanguageError('No eq instance for quotation or stream',t);
+    if(a?.kind==='set'){
+      if(b?.kind!=='set'||a.data.size!==b.data.size)return false;
+      for(const [key] of dictEntries(a.data)){const hash=yield* this.hashValue(key,t);let found=false;for(const p of dictBucket(b.data,hash)){if(yield* child(this,key,p.key)){found=true;break;}}if(!found)return false;}return true;
+    }
     if(a?.kind==='dict'){
       if(b?.kind!=='dict'||a.size!==b.size)return false;
       const remaining=[...dictEntries(b)];
@@ -1211,7 +1366,7 @@ export class VM {
     try {
       for (const t of nodes) {
         this.currentTrace=trace;const dispatch=this.typePlan.dispatch;let info=trace?.get(t);
-        if(dispatch&&!info&&t.kind==='word'&&(this.definitions.has(t.value)||this.definitions.methods?.has(t.value)))info=dispatch.runtimeCall(t,stack);
+        if(dispatch&&!info&&t.kind==='word'&&!env.has(t.value)&&(this.definitions.has(t.value)||this.definitions.methods?.has(t.value)))info=dispatch.runtimeCall(t,stack);
         if(dispatch&&info)dispatch.observe(stack,info.input);
         if(t.kind==='capture') {
           const slots=t.slots;
@@ -1380,6 +1535,11 @@ export class VM {
           stack.push(yield* copy(original,0));
         }
         else if(t.kind==='list-index') {
+          if(t.sliceMethod){
+            this.need(stack,1,t);const local=[stack.pop()];
+            for(const field of t.fields)local.push(yield* this.operand(field.body,env,missing,t,'Slice bound'));
+            yield* BUILTINS.get(t.sliceMethod)(this,local,{...t,sliceEffect:info?.indexGet});stack.push(local[0]);continue;
+          }
           this.need(stack,1,t);const value=stack.pop(),index=yield* this.operand(t.body,env,missing,t,'Index'),local=[value,index];
           const iterator=BUILTINS.get('at')(this,local,{...t,indexEffect:info?.indexGet});let failed=false;
           try{let step=iterator.next();while(!step.done){if(t.optional&&step.value.operation.name==='exn'){failed=true;break;}const returned=yield step.value;step=iterator.next(returned);}}finally{iterator.return();}
@@ -1415,7 +1575,7 @@ export class VM {
           stack.push(...returned);
         }
         else if (BUILTINS.has(t.value)) {
-          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t)||ownershipPlan?.lookup.get(t)?.ownership?.mode==='move',...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
+          const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialSlice?{sliceEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t)||ownershipPlan?.lookup.get(t)?.ownership?.mode==='move',...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
           if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxiBy','miniBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
         }
@@ -1535,8 +1695,8 @@ define('nth',2,function*(vm,s,t){t={...t};let remaining=vm.expect(s.pop(),'numbe
  if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);
 });
 define('counts',1,function*(vm,s,t){t={...t};const source=s.pop();let result=emptyDict();yield* vm.loop(vm.walk(source,function*(key){const hash=yield* vm.hashValue(key,t),old=dictGet(result,key,hash,equal);result=dictSet(result,key,(old?old.value:0)+1,hash,equal);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
-define('toDict',1,function*(vm,s,t){t={...t};const source=s.pop();let result=emptyDict();yield* vm.loop(vm.walk(source,function*(item){if(item?.kind!=='tuple'||item.items.length!==2)throw new LanguageError('toDict requires key/value pairs',t);const [key,value]=item.items,hash=yield* vm.hashValue(key,t);result=dictSet(result,key,value,hash,equal);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
-define('toVector',1,function*(vm,s,t){t={...t};const xs=s.pop(),result=[];yield* vm.loop(vm.walk(xs,function*(value){result.push(value);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
+define('dict',1,function*(vm,s,t){t={...t};const source=s.pop();let result=emptyDict();yield* vm.loop(vm.walk(source,function*(item){if(item?.kind!=='tuple'||item.items.length!==2)throw new LanguageError('dict requires key/value pairs',t);const [key,value]=item.items,hash=yield* vm.hashValue(key,t);result=dictSet(result,key,value,hash,equal);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
+define('vector',1,function*(vm,s,t){t={...t};const xs=s.pop(),result=[];yield* vm.loop(vm.walk(xs,function*(value){result.push(value);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
 for(const [name,mode] of transforms)define(name,mode==='flatten'?1:2,function*(vm,s,t){
   const argument=mode==='flatten'?null:s.pop(),source=s.pop();
   if(countTransform(mode) && (!Number.isSafeInteger(argument)||argument<0)){
@@ -1591,11 +1751,11 @@ for(const name of ['maxi','mini','maxiBy','miniBy','all','any'])define(name,['ma
 });
 
 define('cons',2,(vm,s,t)=>{ const list=vm.expect(s.pop(),'list',t),x=s.pop(); s.push([x,...list]); });
-define('Push',2,(vm,s,t)=>{const x=s.pop(),xs=vm.expect(s.pop(),'list',t);if(t.reuseVector){vm.vectorUpdates.inPlace++;xs.push(x);s.push(xs);}else{vm.vectorUpdates.copied++;s.push([...xs,x]);}});
+define('Push',2,(vm,s,t)=>{const x=s.pop(),xs=vm.expect(s.pop(),'list',t);if(t.reuseVector&&canMutateVector(xs)){vm.vectorUpdates.inPlace++;xs.push(x);s.push(xs);}else{vm.vectorUpdates.copied++;s.push([...xs,x]);}});
 BUILTINS.set('push', BUILTINS.get('Push'));
 BUILTINS.set('vpush', BUILTINS.get('Push'));
 BUILTINS.set('::', BUILTINS.get('Push'));
-define('concat',2,(vm,s,t)=>{ const b=vm.expect(s.pop(),'list',t),a=vm.expect(s.pop(),'list',t); if(t.reuseVector){vm.vectorUpdates.inPlace++;for(const x of b)a.push(x);s.push(a);}else{vm.vectorUpdates.copied++;s.push([...a,...b]);} });
+define('concat',2,(vm,s,t)=>{ const b=vm.expect(s.pop(),'list',t),a=vm.expect(s.pop(),'list',t); if(t.reuseVector&&canMutateVector(a)){vm.vectorUpdates.inPlace++;for(const x of b)a.push(x);s.push(a);}else{vm.vectorUpdates.copied++;s.push([...a,...b]);} });
 define('++',2,(vm,s,t)=>{
   if(typeof s.at(-2)==='string'){const b=vm.expect(s.pop(),'string',t),a=s.pop();s.push(a+b);}
   else return BUILTINS.get('concat')(vm,s,t);
@@ -1638,8 +1798,8 @@ define('parseInt',1,function*(vm,s,t){
   yield {operation:ioEffects().get('exn'),args:['Invalid integer: '+format(source)],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);
 });
 for(const [name,count] of Object.entries(collectionOperations))define(name,count,function*(vm,s,t){
- if(name==='deque'){s.push(emptyDeque());return;}
- if(name==='heap'){s.push({kind:'heap',items:[]});return;}
+ if(name==='__emptyDeque'){s.push(emptyDeque());return;}
+ if(name==='__emptyHeap'){s.push({kind:'heap',items:[]});return;}
  const push=name==='qpush'||name==='qpushFront'||name==='hpush',value=push?s.pop():null,c=s.pop(),kind=name[0]==='q'?'deque':'heap';
  if(c?.kind!==kind)throw new LanguageError(name+' requires '+kind,t);
  const less=function*(a,b){const pair=[a,b];yield* vm.binary('<',pair,t);return pair[0];};
@@ -1654,7 +1814,7 @@ for(const [name,count] of Object.entries(collectionOperations))define(name,count
 
 define('readRef',1,(vm,s,t)=>{const ref=s.pop();if(ref?.kind!=='mutref'||!ref.live)throw new LanguageError('Borrowed reference is outside its lifetime',t);s.push(ref.cell.value);});
 define('writeRef',2,(vm,s,t)=>{const value=s.pop(),ref=s.pop();if(ref?.kind!=='mutref'||!ref.live)throw new LanguageError('Borrowed reference is outside its lifetime',t);if(!vm.journal.has(ref.cell))vm.journal.set(ref.cell,ref.cell.value);ref.cell.value=value;});
-export const builtinNames = () => [...BUILTINS.keys()].sort();
+export const builtinNames = () => [...BUILTINS.keys()].filter(name=>!name.startsWith('__')).sort();
 import { checkDefinitions, checkExpression, inferExpression, missingOperands, typeIR } from './types.mjs';
 export { StaticTypeError } from './types.mjs';
 
@@ -1667,11 +1827,36 @@ for(const name of combinationNames)define(name,name==='powerset'?1:2,function*(v
  s.push({kind:'stream',mode:'combinatorial',operation:name,source,...(name==='cartesianProduct'?{right:arg}:{count:arg})});
 });
 
-define('chars',1,(vm,s,t)=>{const value=vm.expect(s.pop(),'string',t);s.push([...value].map(c=>scalar('char',c)));});
-for(const name of ['from',...['to','from'].flatMap(prefix=>['Int','Float','Byte','Char'].map(t=>prefix+t))])define(name,1,function*(vm,s,t){
+function* textItems(source,mode) {
+  if(mode==='chars') {
+    for(const char of source)yield scalar('char',char);
+    return;
+  }
+  // Encode at most one chunk ahead and keep Unicode scalars intact at its boundary.
+  const encoder=new TextEncoder(),buffer=new Uint8Array(4096);
+  for(let offset=0;offset<source.length;){
+    let end=Math.min(offset+buffer.length,source.length);
+    const last=source.charCodeAt(end-1);
+    if(end<source.length && last>=0xd800 && last<=0xdbff)end++;
+    const {read,written}=encoder.encodeInto(source.slice(offset,end),buffer);
+    offset+=read;
+    for(let i=0;i<written;i++)yield scalar('byte',buffer[i]);
+  }
+}
+for(const mode of ['chars','bytes']) {
+  define(mode,1,(vm,s,t)=>s.push({kind:'stream',mode,source:vm.expect(s.pop(),'string',t)}));
+  define('v'+mode,1,(vm,s,t)=>s.push([...textItems(vm.expect(s.pop(),'string',t),mode)]));
+}
+for(const name of ['from','int','float','byte','char',...['Int','Float','Byte','Char'].map(t=>'from'+t)])define(name,1,function*(vm,s,t){
  const value=s.pop(),info=t.conversion,target=info?.target;
- if(target&&target!==name){const call={...t,kind:'word',value:target},effect=t.castEffect,local=[value];yield* vm.run([call],local,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(local[0]);return;}
- const type=info?.destination||(name.startsWith('to')?name.slice(2).toLowerCase():null);
+ if(target&&target!==name){
+  const call={...t,kind:'word',value:target},effect=t.castEffect;
+  // The specialized effect includes the caller's preserved stack prefix.
+  s.push(value);
+  yield* vm.run([call],s,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);
+  return;
+ }
+ const type=info?.destination||(['int','float','byte','char'].includes(name)?name:name.startsWith('to')?name.slice(2).toLowerCase():null);
  if(!type)throw new LanguageError('Ambiguous conversion: '+name,t);
  if(type==='char'&&scalarType(value)==='char'){s.push(value);return;}
  const n=scalarType(value)==='char'?scalarValue(value).codePointAt(0):scalarValue(value);let result=type==='float'?n:Math.trunc(n);
@@ -1682,7 +1867,18 @@ for(const name of ['from',...['to','from'].flatMap(prefix=>['Int','Float','Byte'
 });
 define('hash',1,function*(vm,s,t){const value=s.pop(),target=vm.definitions.classes?.get('hash')?.instances.get(runtimeTypeKey(value))?.implementations.get('hash');if(target){const local=[value];yield* vm.run([{...t,kind:'word',value:target}],local,new Map(vm.globals));s.push(local[0]);}else s.push(yield* vm.hashValue(value,t));});
 define('values',1,(vm,s,t)=>{const source=s.pop();if(source?.kind!=='dict')throw new LanguageError('values requires a dictionary',t);s.push({kind:'stream',mode:'dict-values',source});});
-define('bytes',1,(vm,s,t)=>s.push([...new TextEncoder().encode(vm.expect(s.pop(),'string',t))].map(v=>scalar('byte',v))));
+define('__emptySet',0,(vm,s)=>s.push({kind:'set',data:emptyDict()}));
+define('vreplicate',2,function*(vm,s,t){const value=s.pop(),count=s.pop();if(!Number.isSafeInteger(count)||count<0){yield {operation:ioEffects().get('exn'),args:['vreplicate: count must be nonnegative'],token:t};throw new LanguageError('Cannot resume a non-returning effect',t);}s.push(Array(count).fill(value));});
+define('vscan',3,function*(vm,s,t){t={...t};const block=s.pop();let state=s.pop();const source=s.pop(),result=[state];yield* vm.loop(vm.walk(source,function*(item){const local=[state,item];yield* vm.call(block,local,t);state=local.pop();result.push(state);},t),t);if(t.breakValues)s.splice(0,s.length,...t.breakValues);else s.push(result);});
+for(const name of ['sinsert','sremove','scontains','slength','sisEmpty'])define(name,['slength','sisEmpty'].includes(name)?1:2,function*(vm,s,t){
+ const key=['slength','sisEmpty'].includes(name)?null:s.pop(),set=s.pop();
+ if(set?.kind!=='set')throw new LanguageError(name+' requires a set',t);
+ if(name==='slength'||name==='sisEmpty'){s.push(name==='slength'?set.data.size:set.data.size===0);return;}
+ const hash=yield* vm.hashValue(key,t);let found;
+ for(const p of dictBucket(set.data,hash)){const trial=[p.key,key];yield* vm.binary('==',trial,t);if(trial[0]){found=p;break;}}
+ if(name==='scontains'){s.push(!!found);return;}
+ s.push(name==='sinsert'?found?set:{kind:'set',data:dictSet(set.data,key,true,hash,equal)}:!found?set:{kind:'set',data:dictDelete(set.data,found.key,hash,equal)});
+});
 for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];
  const target=vm.definitions.classes?.get(name==='at'?'indexGet':'indexSet')?.instances.get(runtimeTypeKey(container))?.implementations.get(name);
@@ -1693,5 +1889,16 @@ for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  if(name==='at'){s.push(typeof container==='string'?scalar('byte',xs[index]):xs[index]);return;}
  if(typeof container==='string'){
   const bytes=new Uint8Array(xs);bytes[index]=scalarValue(values[2]);try{s.push(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{yield {operation:ioEffects().get('exn'),args:['String update produces invalid UTF-8'],token:t};throw new LanguageError('Non-returning effect returned',t);}
- }else{const result=t.reuseVector?xs:[...xs];vm.vectorUpdates[t.reuseVector?'inPlace':'copied']++;result[index]=values[2];s.push(result);}
+ }else{const reuse=t.reuseVector&&canMutateVector(xs),result=reuse?xs:[...xs];vm.vectorUpdates[reuse?'inPlace':'copied']++;result[index]=values[2];s.push(result);}
+});
+
+for(const name of ['sliceBetween','sliceFrom','sliceTo'])define(name,name==='sliceBetween'?3:2,function*(vm,s,t){
+ const args=s.splice(-(name==='sliceBetween'?3:2)),source=args[0];
+ const target=vm.definitions.classes?.get('slice')?.instances.get(runtimeTypeKey(source))?.implementations.get(name);
+ if(target){const call={...t,kind:'word',value:target},effect=t.sliceEffect;yield* vm.run([call],args,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(args[0]);return;}
+ const xs=vm.expect(source,'list',t),start=name==='sliceTo'?0:args[1],end=name==='sliceFrom'?xs.length-1:args.at(-1);
+ if(!Number.isSafeInteger(start)||start<0||start>xs.length||!Number.isSafeInteger(end)||end< -1||end>=xs.length||name!=='sliceFrom'&&end<0){
+  yield {operation:ioEffects().get('exn'),args:['Slice bounds out of range'],token:t};throw new LanguageError('Non-returning effect returned',t);
+ }
+ s.push(vectorView(xs,start,Math.max(0,end-start+1)));
 });

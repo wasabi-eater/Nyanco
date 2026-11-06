@@ -12,6 +12,11 @@ import {LanguageService,startServer} from '../lsp.mjs';
 import {PassThrough} from 'node:stream';
 
 function fixture(files,fn){const dir=mkdtempSync(join(tmpdir(),'nyanco-modules-'));try{const put=(file,text)=>{const path=join(dir,file);mkdirSync(dirname(path),{recursive:true});writeFileSync(path,text);return path;};for(const [file,text] of Object.entries(files))put(file,text);return fn(dir,put);}finally{rmSync(dir,{recursive:true,force:true});}}
+test('modules collect comma-separated top-level bindings',()=>fixture({
+ 'main.nyan':'import "./lib"\nmain = lib.sum',
+ 'lib/api.nyan':'1, #(2, 3) -> x, #(y, z)\npub sum : -> int\nsum = x + y + z'
+},dir=>assert.deepEqual(new VM(compileModule(join(dir,'main.nyan'))).evaluate('main'),[6])));
+
 const library=`pub data secret = Secret int
 open data box 'a = Box 'a deriving eq, show
 pub type token = int
@@ -69,6 +74,20 @@ main =
 `;
 const files={'main.nyan':main,'helper.nyan':'local x = x * 2','lib/api.nyan':library,'lib/helper.nyan':'unused x = privateHelper x'};
 const run=file=>{const p=compileModule(file),output=[],vm=new VM({...p,output:s=>output.push(s),warning:()=>{}});vm.evaluate('main');return {p,vm,output};};
+
+test('line continuation spans module signatures, definitions and call arguments',()=>fixture({
+ 'lib/api.nyan':[
+  'pub identity : \\',
+  'int -> int',
+  'identity \\',
+  'x = x',
+ ].join('\n'),
+ 'main.nyan':[
+  'import "./lib"',
+  'main = print \\',
+  '(lib.identity 7)',
+ ].join('\n'),
+},dir=>assert.deepEqual(run(join(dir,'main.nyan')).output,['7'])));
 
 test('directory modules share private definitions and import public functions types classes and effects',()=>fixture(files,(dir)=>{
  const {p,vm,output}=run(join(dir,'main.nyan'));

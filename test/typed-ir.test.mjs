@@ -34,7 +34,7 @@ test('specializations retain distinct concrete types, effects, regions and sourc
 
 test('ownership uses liveness, escapes and type checks rather than syntax alone',()=>{
  for(const name of ['vpush','hpush']){
-  const empty=name==='vpush'?'[]':'heap';
+  const empty=name==='vpush'?'[]':'heap []';
   const unique=lower(`main = ${empty}; dup; drop; ${name} 1`);
   assert.ok(ops(unique.ir).some(i=>i.name===name&&i.ownership.mode==='move'));
   const shared=lower(`main = ${empty} -> a; ${name} a 1; a`);
@@ -49,12 +49,12 @@ test('ownership uses liveness, escapes and type checks rather than syntax alone'
 });
 
 test('native ownership moves match copying for heap aliases, closures, globals, vector aliases and control flow',()=>{
- const source=`heap -> original
+ const source=`heap [] -> original
 main =
- heap; dup; drop; hpush 3; hpush 5; hpop; print; print
- heap -> h; print (hpush h 9); print h
- heap -> a; {a} -> saved; print (hpush a 7); print (call saved)
- heap -> b; [b] -> nested; print (hpush b 4); print nested
+ heap []; dup; drop; hpush 3; hpush 5; hpop; print; print
+ heap [] -> h; print (hpush h 9); print h
+ heap [] -> a; {a} -> saved; print (hpush a 7); print (call saved)
+ heap [] -> b; [b] -> nested; print (hpush b 4); print nested
  print (hpush original 1); print original
  [] -> xs; dup 0; drop; print (vpush xs 1); print xs
  0; each [1,2,3] {+; when ($ > 2) {break}}; print
@@ -68,7 +68,7 @@ main =
    else assert.doesNotMatch(go,/m\.collectionOp\("hpush"[^\n]+,true\)/);
    const file=join(dir,'main.go');writeFileSync(file,go);const run=spawnSync('go',['run',file],{encoding:'utf8',timeout:120000});assert.equal(run.status,0,run.stderr);assert.equal(run.stdout.trim(),output.join('\n'));
   }
-  const input=join(dir,'main.nyan'),out=join(dir,'ir.json');writeFileSync(input,'main = heap; hpush 1');
+  const input=join(dir,'main.nyan'),out=join(dir,'ir.json');writeFileSync(input,'main = heap []; hpush 1');
   const cli=spawnSync(process.execPath,['cli.mjs',input,'--emit-ir',out],{encoding:'utf8'});assert.equal(cli.status,0,cli.stderr);assert.ok(verifyTypedIR(JSON.parse(readFileSync(out,'utf8'))));
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

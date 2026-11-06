@@ -1,0 +1,73 @@
+// Single-threaded shared ownership. The control block and object share one
+// allocation; the separately stored pointer preserves adjusted base pointers.
+struct RcControl {
+    std::size_t references = 1;
+    void (*destroy)(RcControl*) noexcept;
+    explicit RcControl(void (*dispose)(RcControl*) noexcept) : destroy(dispose) {}
+};
+template <typename T> struct RcStorage final : RcControl {
+    T object;
+    template <typename... Args> explicit RcStorage(Args&&... args)
+        : RcControl([](RcControl* p) noexcept { delete static_cast<RcStorage*>(p); }),
+          object(std::forward<Args>(args)...) {}
+};
+template <typename T> class Rc {
+    template <typename> friend class Rc;
+    template <typename U, typename... Args> friend Rc<U> makeRc(Args&&...);
+    template <typename U, typename V> friend Rc<U> staticRcCast(const Rc<V>&) noexcept;
+    template <typename U, typename V> friend Rc<U> staticRcCast(Rc<V>&&) noexcept;
+    template <typename U, typename V> friend Rc<U> dynamicRcCast(const Rc<V>&) noexcept;
+    template <typename U, typename V> friend Rc<U> dynamicRcCast(Rc<V>&&) noexcept;
+    RcControl* control = nullptr;
+    T* pointer = nullptr;
+    Rc(RcControl* c, T* p, bool retain) noexcept : control(c), pointer(p) {
+        if (retain && control) ++control->references;
+    }
+public:
+    Rc() noexcept = default;
+    Rc(std::nullptr_t) noexcept {}
+    Rc(const Rc& other) noexcept : Rc(other.control, other.pointer, true) {}
+    Rc(Rc&& other) noexcept : control(other.control), pointer(other.pointer) {
+        other.control = nullptr; other.pointer = nullptr;
+    }
+    template <typename U, std::enable_if_t<std::is_convertible_v<U*,T*>,int> = 0>
+    Rc(const Rc<U>& other) noexcept : Rc(other.control, other.pointer, true) {}
+    template <typename U, std::enable_if_t<std::is_convertible_v<U*,T*>,int> = 0>
+    Rc(Rc<U>&& other) noexcept : control(other.control), pointer(other.pointer) {
+        other.control = nullptr; other.pointer = nullptr;
+    }
+    ~Rc() { if (control && --control->references == 0) control->destroy(control); }
+    Rc& operator=(Rc other) noexcept { swap(other); return *this; }
+    void swap(Rc& other) noexcept {
+        std::swap(control,other.control); std::swap(pointer,other.pointer);
+    }
+    void reset() noexcept { Rc{}.swap(*this); }
+    T* get() const noexcept { return pointer; }
+    T& operator*() const noexcept { return *pointer; }
+    T* operator->() const noexcept { return pointer; }
+    explicit operator bool() const noexcept { return pointer != nullptr; }
+    std::size_t use_count() const noexcept { return control ? control->references : 0; }
+};
+template <typename T, typename U> bool operator==(const Rc<T>& a, const Rc<U>& b) noexcept { return a.get() == b.get(); }
+template <typename T> bool operator==(const Rc<T>& a, std::nullptr_t) noexcept { return !a; }
+template <typename T, typename... Args> Rc<T> makeRc(Args&&... args) {
+    auto* storage = new RcStorage<T>(std::forward<Args>(args)...);
+    return Rc<T>(storage, &storage->object, false);
+}
+template <typename T, typename U> Rc<T> staticRcCast(const Rc<U>& source) noexcept {
+    return Rc<T>(source.control, static_cast<T*>(source.pointer), true);
+}
+template <typename T, typename U> Rc<T> staticRcCast(Rc<U>&& source) noexcept {
+    Rc<T> result(source.control, static_cast<T*>(source.pointer), false);
+    source.control = nullptr; source.pointer = nullptr; return result;
+}
+template <typename T, typename U> Rc<T> dynamicRcCast(const Rc<U>& source) noexcept {
+    auto* pointer = dynamic_cast<T*>(source.pointer);
+    return pointer ? Rc<T>(source.control, pointer, true) : Rc<T>{};
+}
+template <typename T, typename U> Rc<T> dynamicRcCast(Rc<U>&& source) noexcept {
+    auto* pointer = dynamic_cast<T*>(source.pointer);
+    if (!pointer) return {};
+    Rc<T> result(source.control, pointer, false);
+    source.control = nullptr; source.pointer = nullptr; return result;
+}

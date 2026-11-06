@@ -15,13 +15,25 @@ const source=`main =
  print (toVector (iterate {0} @c {when ($ >= 2) {cancel@c}; + 1}));
  0; loop {when ($ >= 3) {cancel}; + 1}; print;
  print (toVector (take (iterate {print "start"; 0} {+ 1}) 2));
- print (toVector (take (iterate {0} {print "unexpected cont"; + 1}) 1))`;
+ print (toVector (take (iterate {0} {print "unexpected cont"; + 1}) 1));
+ print (toVector (take (repeat "x") 3));
+ mut n <- 0;
+ xs <- repeatWith {n ! + 1; n};
+ print n;
+ print (toVector (take xs 0));
+ print (toVector (take xs 3));
+ print n;
+ print (nth xs 0)`;
 test('standard loops and iterate support multiple state values and cancel in either block',()=>{
- assert.deepEqual(run(source).output,['[0, 1, 1, 2, 3, 5, 8, 13]','[]','[0, 1, 2, 3]','[]','[0, 1, 2]','3','start','[0, 1]','[0]']);
+ assert.deepEqual(run(source).output,['[0, 1, 1, 2, 3, 5, 8, 13]','[]','[0, 1, 2, 3]','[]','[0, 1, 2]','3','start','[0, 1]','[0]','["x", "x", "x"]','0','[]','[1, 2, 3]','3','(Some 4)']);
  const vm=new VM();vm.evaluate('iterate {0} {+ 1} -> xs');assert.deepEqual(vm.evaluate('toVector (take xs 3)'),[[0,1,2]]);assert.deepEqual(vm.evaluate('toVector (take xs 2)'),[[0,1]]);
  assert.match(compile('f = iterate {print "start"; 0} {+ 1}').types.get('f'),/stream.*io/);
  assert.doesNotMatch(compile('f = iterate {0} {when ($ > 2) {cancel}; + 1}').types.get('f'),/cancel/);
  assert.throws(()=>compile('main = iterate {0} {"bad"}'),/unify|stack/i);
+ assert.match(vm.infer('repeatWith {read}'),/stream string.*io/);
+ assert.equal(vm.infer('nth (repeatWith {read}) 0'),'..s -> ..s (option string) / {io}');
+ assert.throws(()=>vm.infer('repeatWith {1, 2}'),/stack|underflow/i);
+ assert.throws(()=>vm.infer('repeatWith {drop; 1}'),/stack|underflow/i);
 });
 test('standard iterate lowers to native calls and supports lazy cancellation',()=>{
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-iterate-'));

@@ -135,7 +135,7 @@ function requireClass(name,type,token) {
     if(type.tag==='list')requireClass(c.name,type.item,token);
     else if(['tuple','tuple-tail'].includes(type.tag)){for(const item of type.items)requireClass(c.name,item,token);requireClass(c.name,type.tail||TEND,token);}
     else if(['record','record-row'].includes(type.tag)){const {fields,tail}=flattenRecord(type.tag==='record'?type.row:type);for(const item of fields.values())requireClass(c.name,item,token);requireClass(c.name,tail,token);}
-    else if(type.tag==='adt'&&['option','result','dict'].includes(type.name))for(const item of type.args)requireClass(c.name,item,token);
+    else if(type.tag==='adt'&&['option','result','dict','set'].includes(type.name))for(const item of type.args)requireClass(c.name,item,token);
   }
   if(c.conversion)return;
   if(!builtinInstance(c,type))throw new StaticTypeError(`No instance: ${name} ${formatType(type)}`,token);
@@ -149,7 +149,7 @@ function requireIterable(container,item,token,latent=null) {
   if(container.tag==='var') {if(container.eachItem)unify(container.eachItem,item,token);else container.eachItem=item;return;}
   if(container.tag==='rigid') {if(!container.eachItem)throw new StaticTypeError('Missing streem constraint',token);unify(container.eachItem,item,token);return;}
   if(container.tag==='list'){unify(container.item,item,token);return;}
-  if(container.tag==='adt'&&['deque','heap'].includes(container.name)){unify(container.args[0],item,token);return;}
+  if(container.tag==='adt'&&['deque','heap','set'].includes(container.name)){unify(container.args[0],item,token);return;}
   if(container.tag==='adt'&&container.name==='dict'){unify(item,tuple(container.args),token);return;}
   if(container.tag==='atom' && container.name==='range'){unify(item,INT,token);return;}
   const instance=activeClasses.get('streem')?.instances.get(instanceKey(container));
@@ -308,7 +308,7 @@ function effectView(t, excluded=[], seen=new Map(), result={entries:[],tails:new
     if(d.borrowType){for(const region of referencedRegions(d.borrowType,prune).values())effectView(effects([{name:'borrowMut',args:[region]}]),excluded,seen,result);continue;}
     if(d.safetyOnly){const safety=effectView(d.row,[],new Map(seen));for(const owner of safety.accesses||[])result.accesses.add(owner);effectView(effects(safety.entries.filter(e=>e.name==='borrowMut'||e.loans?.length||e.suspendedLoans?.length)),excluded,seen,result);continue;}
     // Keep conversion effects dependent on the literal type until specialization.
-    if(d.literalType){const type=prune(d.literalType);if(!(type.tag==='atom'&&['int','float','byte'].includes(type.name))&&!(type.tag==='var'&&!type.polymorphicNumber)){effectView(effects([{name:'exn',args:[]}]),excluded,seen,result);}continue;}
+    if(d.literalType){const type=prune(d.literalType);if(type.tag!=='var'&&!(type.tag==='atom'&&['int','float','byte'].includes(type.name))){effectView(effects([{name:'exn',args:[]}]),excluded,seen,result);}continue;}
     const h=d.handlers?prune(d.handlers):null,fields=h?.tag==='record'?new Map([...flattenRecord(h.row).fields].map(([name,q])=>[handlerOperation(h,name),q])):null;
     if(d.handlerEffects){
       if(fields)for(const [name,q] of fields){
@@ -374,8 +374,8 @@ function mergeEffects(a,b,token) {
   const combined=effects([], [{row:{...a}},{row:{...b}}]);if(a.weak||b.weak)combined.weak=true;
   Object.assign(a,combined);Object.assign(b,combined);
 }
-function effectChildren(t,skipLiteral=false) {
-  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(d.breakOutput?[d.breakOutput]:[]),...(d.borrowType?[d.borrowType]:[]),...(!skipLiteral&&d.literalType?[d.literalType]:[])])] : [];
+function effectChildren(t) {
+  return t.tag==='effects' ? [...t.entries.flatMap(e=>e.args),...t.dependencies.flatMap(d=>[...(d.row?[d.row]:[]),...(d.handlers?[d.handlers]:[]),...(d.body?[d.body]:[]),...(d.yieldItem?[d.yieldItem]:[]),...(d.breakOutput?[d.breakOutput]:[]),...(d.borrowType?[d.borrowType]:[]),...(d.literalType?[d.literalType]:[])])] : [];
 }
 function checkEffectPromises(actual,expected,token,seen=new Set()) {
   actual=prune(actual);expected=prune(expected);
@@ -401,10 +401,10 @@ function checkEffectPromises(actual,expected,token,seen=new Set()) {
   const aa=children(actual),bb=children(expected);
   if(aa.length===bb.length)aa.forEach((x,i)=>checkEffectPromises(x,bb[i],token,seen));
 }
-function free(t, found = new Set(), seen=new Set(),skipLiteral=false) {
+function free(t, found = new Set(), seen=new Set()) {
   t = prune(t);if(seen.has(t))return found;seen.add(t);
-  if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.relations)for(const r of t.relations)for(const x of r.args)free(x,found,seen,skipLiteral);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen,skipLiteral);if(t.eachItem)free(t.eachItem,found,seen,skipLiteral);if(t.eachEffects)free(t.eachEffects,found,seen,skipLiteral);if(t.handlerAnswer)free(t.handlerAnswer,found,seen,skipLiteral);if(t.handlerResidual)free(t.handlerResidual,found,seen,skipLiteral);}}
-  else for (const child of [...children(t),...t.borrowCaptures||[],...[...t.borrowFields?.values()||[]].flat(),...effectChildren(t,skipLiteral),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen,skipLiteral);
+  if (t.tag === 'var') {if(!found.has(t)){found.add(t);if(t.relations)for(const r of t.relations)for(const x of r.args)free(x,found,seen);if(t.associated)for(const ts of t.associated.values())for(const x of ts)free(x,found,seen);if(t.eachItem)free(t.eachItem,found,seen);if(t.eachEffects)free(t.eachEffects,found,seen);if(t.handlerAnswer)free(t.handlerAnswer,found,seen);if(t.handlerResidual)free(t.handlerResidual,found,seen);}}
+  else for (const child of [...children(t),...t.borrowCaptures||[],...[...t.borrowFields?.values()||[]].flat(),...effectChildren(t),...(t.effects?[t.effects]:[]),...(t.dispatchType?[t.dispatchType]:[]),...(t.dispatchTypes||[])]) free(child, found,seen);
   return found;
 }
 function keepNativePrefix(t) {t=prune(t);if(t.tag==='var'||t.tag==='push'){t.keepNativePrefix=true;if(t.tag==='push')keepNativePrefix(t.rest);}}
@@ -446,7 +446,7 @@ function unify(a, b, token) {
     if (occurs(a,b)) throw new StaticTypeError('Infinite type or changing stack shape (loop/recursive stack effect)', token);
     if(a.numericLiterals){
       if(b.tag==='var'&&(b.eachItem||b.associated)){unify(a,INT,token);unify(b,INT,token);return;}
-      if(b.tag==='var'){b.numericLiterals=[...new Set([...b.numericLiterals||[],...a.numericLiterals])];if(a.polymorphicNumber)b.polymorphicNumber=true;if(a.numericPattern)b.numericPattern=true;}
+      if(b.tag==='var')b.numericLiterals=[...new Set([...b.numericLiterals||[],...a.numericLiterals])];
       else if(b.tag!=='atom'||!['int','float','byte'].includes(b.name)){try{requireClass('num',b,token);}catch(error){if(!(error instanceof StaticTypeError))throw error;throw new StaticTypeError('Cannot unify integer literal with '+formatType(b)+'. '+error.message.split('Type error: ').at(-1),token);}}
       else if(b.name==='int'&&a.numericLiterals.some(n=>{try{const x=BigInt(n);return x< -9223372036854775808n||x>9223372036854775807n;}catch{return true;}}))throw new StaticTypeError('int literal is outside signed 64-bit range',token);
       else if(b.name==='byte'&&a.numericLiterals.some(n=>Number(n)<0||Number(n)>255))throw new StaticTypeError('byte literal is outside 0..255',token);
@@ -537,19 +537,16 @@ function generalize(type, excluded = new Set()) {
   if(type.tag==='quote' && isBottom(type.output) && !type.bottomBase)type.bottomBase=stackTail(type.input);
   return { type, vars: new Set([...free(type)].filter(v=>!excluded.has(v))) };
 }
-function generalizeNumbers(scheme,token){
- // Ignore literal-only effect dependencies: a discarded literal has no public type.
- const escaping=free(scheme.type,new Set(),new Set(),true);
- for(const v of scheme.vars)if(v.numericLiterals&&v.tag==='var'){
-  if(v.numericPattern||!escaping.has(v)){unify(v,INT,token);continue;}
-  requireClass('num',v,token);v.polymorphicNumber=true;
- }
- return scheme;
+function defaultNumericLiterals(variables,token,preserve) {
+  for(const candidate of variables) {
+    const type=prune(candidate);
+    if(type.tag==='var' && type.numericLiterals && !preserve?.has(type))unify(type,INT,token);
+  }
 }
 function instantiate(scheme, rigid = false, bindings = null, preserveWeak = true) {
   const top=prune(scheme.type),fixedRows=new Set(top.tag==='quote'?[stackTail(top.input),stackTail(top.output)]:[]);
   const vars=new Set([...scheme.vars].map(prune).filter(v=>v.tag==='var'));
-  const replacements=new Map([...vars].map(v=>[v, {...(rigid && (v.sort!=='effect-row'||v.explicitEffect) && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.explicitEffect?{explicitEffect:true}:{}),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.polymorphicNumber?{polymorphicNumber:true}:{}),...(v.numericPattern?{numericPattern:true}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
+  const replacements=new Map([...vars].map(v=>[v, {...(rigid && (v.sort!=='effect-row'||v.explicitEffect) && (v.sort!=='row'||fixedRows.has(v)) ? {tag:'rigid',sort:v.sort,id:nextId++} : variable(v.sort)),...(v.explicitEffect?{explicitEffect:true}:{}),...(v.numericLiterals?{numericLiterals:[...v.numericLiterals]}:{}),...(v.keepNativePrefix?{keepNativePrefix:true}:{}),...(v.lacks?{lacks:new Set(v.lacks)}:{}),...(v.classes?{classes:new Set(v.classes)}:{})}]));
   for(const [v,fresh] of replacements){if(v.relations)fresh.relations=v.relations.map(r=>({...r,args:r.args.map(t=>clone(t,replacements))}));if(v.associated)fresh.associated=new Map([...v.associated].map(([n,ts])=>[n,ts.map(t=>clone(t,replacements))]));if(v.eachItem)fresh.eachItem=clone(v.eachItem,replacements);if(v.eachEffects)fresh.eachEffects=clone(v.eachEffects,replacements);if(v.handlerAnswer)fresh.handlerAnswer=clone(v.handlerAnswer,replacements);if(v.handlerResidual)fresh.handlerResidual=clone(v.handlerResidual,replacements);}
   replacements.preserveWeak=preserveWeak;
   if(bindings)for(const [v,fresh] of replacements)bindings.set(v,fresh);
@@ -562,7 +559,7 @@ function envFree(env) {
 }
 
 export function formatType(type,{names=null,variableNames=new Map(),showConstraints=true,defaultNumbers=true}={}) {
-  if(defaultNumbers)for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&v.tag==='var')unify(v,INT);
+  if(defaultNumbers)defaultNumericLiterals(free(type));
   // An open callback row may include break, while every use of that row is
   // beneath a loop's handler. Expose that accepted operation in the signature
   // without injecting a performed effect into the callback's inference graph.
@@ -673,15 +670,15 @@ function builtinSchemes() {
   add('drop',()=>{const s=row(),a=variable();return quote(push(s,a),s);});
   {const s=row(),a=variable();out.set('print',generalize(quote(push(s,a),s,effects([{name:'io',operation:'put',args:[]}]))));}
   add('nop',()=>{const s=row();return quote(s,s);});
-  for(const [name,result] of [['toInt',INT],['toFloat',FLOAT],['toByte',BYTE]]){
+  for(const [name,result] of [['int',INT],['float',FLOAT],['byte',BYTE]]){
     const s=row(),a=variable();requireClass('num',a);out.set(name,generalize(quote(push(s,a),push(s,result),effects([{name:'exn',args:[]}]))));
   }
-  {const s=row();out.set('toChar',generalize(quote(push(s,INT),push(s,CHAR),effects([{name:'exn',args:[]}]))));}
+  {const s=row();out.set('char',generalize(quote(push(s,INT),push(s,CHAR),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),k=variable(),latent=variable('effect-row');requireIterable(c,k,null,latent);requireClass('hash',k);const output=push(s,adt('dict',[k,INT]));out.set('counts',generalize(quote(push(s,c),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
-  {const s=row(),c=variable(),k=variable(),v=variable(),latent=variable('effect-row');requireIterable(c,tuple([k,v]),null,latent);requireClass('hash',k);const output=push(s,adt('dict',[k,v]));out.set('toDict',generalize(quote(push(s,c),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
+  {const s=row(),c=variable(),k=variable(),v=variable(),latent=variable('effect-row');requireIterable(c,tuple([k,v]),null,latent);requireClass('hash',k);const output=push(s,adt('dict',[k,v]));out.set('dict',generalize(quote(push(s,c),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
   for(const kind of ['deque','heap']){
     const prefix=kind==='deque'?'q':'h';
-    add(kind,()=>{const s=row(),a=variable();return quote(s,push(s,adt(kind,[a])));});
+    add('__empty'+kind[0].toUpperCase()+kind.slice(1),()=>{const s=row(),a=variable();return quote(s,push(s,adt(kind,[a])));});
     for(const suffix of (kind==='deque'?['push','pushFront','pop','popBack','peek','peekBack','length','isEmpty']:['push','pop','peek','length','isEmpty']))add(prefix+suffix,()=>{
       const s=row(),a=variable(),c=adt(kind,[a]);if(kind==='heap'&&['push','pop'].includes(suffix))requireClass('ord',a);
       return quote(suffix.startsWith('push')?stack(s,c,a):push(s,c),suffix.startsWith('push')?push(s,c):suffix.startsWith('pop')?stack(s,c,adt('option',[a])):push(s,suffix.startsWith('peek')?adt('option',[a]):suffix==='length'?INT:BOOL));
@@ -689,9 +686,18 @@ function builtinSchemes() {
   }
   for(const name of ['readRef','writeRef']){const s=row(),r=variable(),a=variable(),ref=adt('mutref',[r,a]);out.set(name,generalize(quote(name==='readRef'?push(s,ref):stack(s,ref,a),name==='readRef'?push(s,a):s,effects([{name:'borrowMut',args:[r]}]))));}
   add('vpush',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
+  add('__emptySet',()=>{const s=row(),a=variable();requireClass('hash',a);requireClass('eq',a);return quote(s,push(s,adt('set',[a])));});
+  {const s=row(),a=variable();out.set('vreplicate',generalize(quote(stack(s,INT,a),push(s,list(a)),effects([{name:'exn',args:[]}]))));}
+  {const s=row(),c=variable(),item=variable(),a=variable(),latent=variable('effect-row'),callback=variable('effect-row');requireIterable(c,item,null,latent);const output=push(s,list(a));out.set('vscan',generalize(quote(stack(s,c,a,quote(stack(EMPTY,a,item),push(EMPTY,a),callback)),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output},{row:callback,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
+  for(const name of ['sinsert','sremove','scontains','slength','sisEmpty'])add(name,()=>{
+    const s=row(),a=variable(),set=adt('set',[a]);requireClass('hash',a);requireClass('eq',a);
+    return quote(['sinsert','sremove','scontains'].includes(name)?stack(s,set,a):push(s,set),push(s,name==='scontains'||name==='sisEmpty'?BOOL:name==='slength'?INT:set));
+  });
   add('values',()=>{const s=row(),k=variable(),v=variable();return quote(push(s,adt('dict',[k,v])),push(s,{tag:'stream',item:v,effects:effects()}));});
-  add('bytes',()=>{const s=row();return quote(push(s,STRING),push(s,list(BYTE)));});
-  add('chars',()=>{const s=row();return quote(push(s,STRING),push(s,list(CHAR)));});
+  for(const [name,item] of [['chars',CHAR],['bytes',BYTE]]) {
+    add(name,()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'stream',item,effects:effects()}));});
+    add('v'+name,()=>{const s=row();return quote(push(s,STRING),push(s,list(item)));});
+  }
   add('split',()=>{const s=row();return quote(stack(s,STRING,STRING),push(s,{tag:'stream',item:STRING,effects:effects()}));});
   add('toNum',()=>{const s=row();return quote(push(s,STRING),push(s,{tag:'adt',name:'option',args:[FLOAT]}));});
   for(const [name,type] of [['parseFloat',FLOAT],['parseInt',INT]]){const s=row();out.set(name,generalize(quote(push(s,STRING),push(s,type),effects([{name:'exn',args:[]}]))));}
@@ -720,7 +726,7 @@ function builtinSchemes() {
   add('compose',()=>{const r=row(),s=row(),t=row(),u=row();return quote(stack(r,quote(s,t),quote(t,u)),push(r,quote(s,u)));});
   {
     const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);
-    out.set('toVector',generalize(quote(stack(s,c),stack(s,list(a)),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));
+    out.set('vector',generalize(quote(stack(s,c),stack(s,list(a)),effects([],[{row:latent,exclude:['cancel','break'],loop:true}]))));
   }
   {const s=row(),c=variable(),a=variable(),latent=variable('effect-row');requireIterable(c,a,null,latent);const output=push(s,adt('option',[a]));out.set('nth',generalize(quote(stack(s,c,INT),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
   for(const name of combinationNames){
@@ -811,7 +817,9 @@ class Inference {
     const input=row(),candidate=this.block(body,input,new Map(local));
     local.set(name,{type:candidate,vars:sharedRows(candidate),callable:true});
     const checked=row();unify(candidate,this.block(body,checked,new Map(local)),token);
-    return {...generalizeNumbers(generalize(candidate,envFree(env)),token),callable:true};
+    const scheme=generalize(candidate,envFree(env));
+    defaultNumericLiterals(scheme.vars,token);
+    return {...scheme,callable:true};
   }
   declare(env,name,type,mutable,node) {
     if(this.constructors?.has(name))throw new StaticTypeError(`Cannot shadow constructor: ${name}`,node);
@@ -1052,13 +1060,13 @@ class Inference {
       } else if(node.kind==='list-index') {
         if(node.optional && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('Optional indexing requires data option a = None | Some a',node);
         let value;[current,value]=this.pop(current,node);const item=variable();
-        const index=this.single(node.body,env,bound,node);
-        if(isBottom(index))current=BOTTOM;
+        const indices=node.sliceMethod?node.fields.map(f=>this.single(f.body,env,bound,node)):[this.single(node.body,env,bound,node)];
+        if(indices.some(isBottom))current=BOTTOM;
         else {
-          const get=instantiate(this.functions.get('at'));unify(get,quote(stack(EMPTY,value,index),push(EMPTY,item)),node);
+          const get=instantiate(this.functions.get(node.sliceMethod||'at'));unify(get,quote(stack(EMPTY,value,...indices),push(EMPTY,node.sliceMethod?value:item)),node);
           if(trace)trace.indexGet=get;
           this.effectSink.dependencies.push({row:get.effects,...(node.optional?{exclude:['exn']}:{})});
-          current=push(current,node.optional?adt('option',[item]):item);
+          current=push(current,node.sliceMethod?value:node.optional?adt('option',[item]):item);
         }
       } else if(node.kind==='tuple-index') {
         let value;[current,value]=this.pop(current,node);
@@ -1177,6 +1185,7 @@ class Inference {
         return {tag:'stream',item,effects:effects([],[{row:effects([],deps),exclude:['cancel','break'],loop:true,breakOutput:EMPTY}])};
       }
       if(value.mode==='split')return {tag:'stream',item:STRING,effects:effects()};
+      if(value.mode==='chars'||value.mode==='bytes')return {tag:'stream',item:value.mode==='chars'?CHAR:BYTE,effects:effects()};
       if(value.mode==='fromYield') {const block=this.value(value.block,token),item=variable();unify(block,quote(EMPTY,row()),token);for(const e of effectView(block.effects).entries.filter(e=>(e.operation||e.name)==='yield' && (e.target?e.target===value.label?.key:!e.skip)))unify(item,e.args[0],token);return {tag:'stream',item,effects:effects([],[{row:block.effects,exclude:['yield'],label:value.label?.key}])};}
       const mode=value.mode,item=variable(),latent=variable('effect-row'),nested=variable('effect-row');requireIterable(this.value(value.source,token),item,token,latent);
       const deps=[{row:latent}];let result=item;
@@ -1187,6 +1196,7 @@ class Inference {
     if(value?.kind==='mutref')return adt('mutref',[value.region||loanRegion(),this.value(value.cell.value,token)]);
     if(value?.kind==='range')return atom('range');
     if(value?.kind==='tuple')return tuple(value.items.map(v=>this.value(v,token)));
+    if(value?.kind==='set'){const item=variable();for(const [v] of dictEntries(value.data))unify(item,this.value(v,token),token);requireClass('hash',item,token);requireClass('eq',item,token);return adt('set',[item]);}
     if(['deque','heap'].includes(value?.kind)){const item=variable();for(const v of collectionItems(value))unify(item,this.value(v,token),token);return adt(value.kind,[item]);}
     if(value?.kind==='dict'){const key=variable(),item=variable();for(const [k,v] of dictEntries(value)){unify(key,this.value(k,token),token);unify(item,this.value(v,token),token);}return adt('dict',[key,item]);}
     if(value?.kind==='record')return {...record(Object.entries(value.fields).map(([k,v])=>[k,this.value(v,token)])),...(value.moduleID?{moduleID:value.moduleID}:{})};
@@ -1220,7 +1230,17 @@ class Inference {
     throw new StaticTypeError('Unsupported host value',token);
   }
   pattern(pattern,type,env) {
-    if(pattern.kind==='record-pattern') {
+    if(pattern.kind==='or-pattern') {
+      const [left,right]=pattern.fields,other=new Map();
+      this.pattern(left,type,env);
+      this.pattern(right,type,other);
+      for(const [name,binding] of other) {
+        const shared=env.get(name);
+        if(shared.mutable!==binding.mutable)throw new StaticTypeError('Or-pattern alternatives must agree on mutability',pattern);
+        unify(shared.type,binding.type,pattern);
+      }
+    }
+    else if(pattern.kind==='record-pattern') {
       const fields=pattern.fields.map(()=>variable());unify(type,record(pattern.keys.map((name,i)=>[name,fields[i]]),variable('record-row')),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,fields[i],env));
     }
@@ -1228,10 +1248,10 @@ class Inference {
       const items=pattern.fields.map(()=>variable());unify(type,tuple(items),pattern);
       pattern.fields.forEach((p,i)=>this.pattern(p,items[i],env));
     }
-    else if(pattern.kind==='literal')unify(type,typeof pattern.value==='number'?((pattern.numericKind==='float'||!Number.isInteger(pattern.value))?FLOAT:{...variable(),numericLiterals:[pattern.numberSource??String(pattern.value)],numericPattern:true}):this.value(pattern.value,pattern),pattern);
-    else if(pattern.kind==='list-pattern' || pattern.kind==='push-pattern') {
+    else if(pattern.kind==='literal')unify(type,typeof pattern.value==='number'?((pattern.numericKind==='float'||!Number.isInteger(pattern.value))?FLOAT:{...variable(),numericLiterals:[pattern.numberSource??String(pattern.value)]}):this.value(pattern.value,pattern),pattern);
+    else if(pattern.kind==='list-pattern' || pattern.kind==='push-pattern' || pattern.kind==='concat-pattern') {
       const item=variable();unify(type,list(item),pattern);
-      pattern.fields.forEach((p,i)=>this.pattern(p,pattern.kind==='push-pattern' && i===0 ? list(item) : item,env));
+      pattern.fields.forEach((p,i)=>this.pattern(p,pattern.kind==='concat-pattern'||pattern.kind==='push-pattern' && i===0 ? list(item) : item,env));
     }
     else if(pattern.kind==='constructor') {
       const {fields,result}=constructorTypes(this.constructors.get(pattern.value));
@@ -1478,16 +1498,27 @@ function prepare(definitions,globalValues,initialized=false) {
         checkNeverPromises(inferred.type,declared.type,clauses[0].token);
         if(isBottom(declared.type.output) && !isBottom(inferred.type.output))throw new StaticTypeError('Function annotated ! may return normally',clauses[0].token);
         const bindings=new Map(),checked=instantiate(declared,true,bindings);
-        const actual=instantiate(inferred);unify(actual.input,checked.input,clauses[0].token);unify(actual.output,checked.output,clauses[0].token);
+        const actualBindings=new Map(),actual=instantiate(inferred,false,actualBindings);
+        unify(actual.input,checked.input,clauses[0].token);unify(actual.output,checked.output,clauses[0].token);
         if(!checked.effectBound)checked.effects=actual.effects;
+        const unresolvedLiterals=[...actualBindings.values()].map(prune).filter(v=>v.tag==='var' && v.numericLiterals);
         checkEffectPromises(actual,checked,clauses[0].token);
+        // Effect payloads can constrain literals too. Recheck the promise if
+        // matching a payload made a literal conversion effect visible.
+        if(unresolvedLiterals.length) {
+          defaultNumericLiterals(unresolvedLiterals,clauses[0].token);
+          checkEffectPromises(actual,checked,clauses[0].token);
+        }
         if(checked.effects!==actual.effects){checked.effects.dependencies??=[];checked.effects.dependencies.push({row:actual.effects,safetyOnly:true});}
         const skolems=new Set([...bindings.values()].filter(t=>t.tag==='rigid'));
         const escaped=(t,seen=new Set())=>{t=prune(t);if(skolems.has(t))return true;if(seen.has(t))return false;seen.add(t);return [...children(t),...effectChildren(t),...t.borrowCaptures||[],...[...t.borrowFields?.values()||[]].flat(),...(t.effects?[t.effects]:[])].some(t=>escaped(t,seen));};
         if([...inference.globals.values()].some(s=>escaped(s.type)))throw new StaticTypeError('Universally quantified parameter escapes into global state',clauses[0].token);
         const restore=new Map([...bindings].map(([v,fresh])=>[fresh,v]));
         published.set(name,{...declared,type:clone(checked,restore)});
-      } else published.set(name,generalizeNumbers(inferred,clauses[0].token));
+      } else {
+        defaultNumericLiterals(inferred.vars,clauses[0].token);
+        published.set(name,inferred);
+      }
     }
     for(const [name,scheme] of published)inference.functions.set(name,scheme);
   }
@@ -1538,7 +1569,7 @@ function specializeEffects(actual,expected,token) {
   const entries=effectView(expected).entries;
   for(const e of effectView(actual).entries) {
     const candidates=entries.filter(x=>x.name===e.name && x.target===e.target && (x.skip||0)===(e.skip||0));
-    const distinct=new Map(candidates.map(x=>[x.args.map(formatType).join(','),x]));
+    const distinct=new Map(candidates.map(x=>[x.args.map(t=>formatType(t,{defaultNumbers:false})).join(','),x]));
     if(distinct.size===1)e.args.forEach((a,i)=>unify(a,[...distinct.values()][0].args[i],token));
   }
 }
@@ -1573,7 +1604,7 @@ function executionTypes(base,definitions) {
     activate();const method=definitions.methods.get(node.value);if(method.specialCast)return castInfo(definitions,node,effect).target;let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
-    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialCast||method.specialBits))return node.value;
+    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialSlice||method.specialCast||method.specialBits))return node.value;
     if(!result && (operatorFallback(definitions.classes.get(method.className),type)||['eq','ord'].includes(method.className)&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;
@@ -1582,12 +1613,15 @@ function executionTypes(base,definitions) {
   function clause(c,effect) {
     const key=formatType(effect);if(clauses.get(c)?.has(key))return clauses.get(c).get(key);
     const inf=fresh(),env=new Map(base.globals),args=[];
-    effect=instantiate(generalize(effect));let input=effect.input;
+    effect=instantiate(generalize(effect));
+    const signatureVariables=free(effect);
+    let input=effect.input;
     for(let i=0;i<c.patterns.length;i++){let arg;[input,arg]=inf.pop(input,c.token);args.unshift(arg);}
     env.locals=new Set(patternNames(c.patterns));c.patterns.forEach((p,i)=>inf.pattern(p,args[i],env));
     if(c.guard){input=inf.sequence(c.guard,input,new Map(env));let flag;[input,flag]=inf.pop(input,c.token);unify(flag,BOOL,c.token);}
     const output=inf.sequence(c.body,input,env);unify(output,effect.output,c.token);specializeEffects(inf.effectSink,effect.effects,c.token);
     inf.trace.enclosingType=effect;
+    inf.trace.signatureVariables=new Set([...signatureVariables].map(prune));
     if(!clauses.has(c))clauses.set(c,new Map());clauses.get(c).set(key,inf.trace);
     return inf.trace;
   }
@@ -1666,14 +1700,13 @@ export function occurrenceTypes(definitions,file) {
   result.stacks=[];
   let nextStackSequence=0;
   const collect=(trace,nodes)=>{
-    const escaping=trace.enclosingType?free(trace.enclosingType,new Set(),new Set(),true):new Set();
-    // Default only literals local to the body; inputs/outputs of the enclosing
-    // polymorphic function must stay polymorphic in occurrence displays.
-    const defaultLocalNumbers=type=>{
-      for(const v of free(type))if(v.numericLiterals&&!v.polymorphicNumber&&!escaping.has(v))unify(v,INT);
-    };
-    for(const t of trace.values())for(const effect of [t.effect,...t.operatorEffects||[]])if(effect)defaultLocalNumbers(effect);
-    for(const type of trace.variableTypes?.values()||[])defaultLocalNumbers(type);
+    const variables=new Set(),seen=new Set();
+    for(const t of trace.values()) {
+      for(const type of [t.effect,t.output,...t.operatorEffects||[]])if(type)free(type,variables,seen);
+    }
+    for(const type of trace.variableTypes?.values()||[])free(type,variables,seen);
+    // Explicitly quantified parameters remain generic in editor displays.
+    defaultNumericLiterals(variables,undefined,trace.signatureVariables);
     for(const [node,t] of trace){
       const save=(token,effect)=>{
         if(effect&&token.file===file){

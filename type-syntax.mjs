@@ -8,7 +8,7 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
     if(name==='..'){const rawParameter=tokens[i++];if(!/^'?[a-z][a-zA-Z0-9_']*$/.test(rawParameter||''))fail('Expected stack row parameter');const parameter=rawParameter.startsWith("'")?rawParameter:"'"+rawParameter;if(parameters&&!parameters.has(parameter))fail('Undeclared stack row parameter: '+rawParameter);return {tag:'stack-row',name:parameter};}
     if(name==='continuation'){const block=type();if(block.tag!=='quote')fail('continuation requires a block type');return {...block,tag:'continuation'};}
     if(name==='num')fail('num is a class; use float or int as the value type');
-    if(['deque','heap'].includes(name))return {tag:'adt',name,args:[type()]};
+    if(['deque','heap','set'].includes(name))return {tag:'adt',name,args:[type()]};
     if(name==='mutref')return {tag:'adt',name,args:[type(),type()]};
     if(name==='dict')return {tag:'adt',name:'dict',args:[type(),type()]};
     if(name==='vector')return {tag:'list',item:type()};
@@ -99,7 +99,8 @@ export function typeSyntax(tokens, dataTypes, parameters, fail) {
 
 export function patternNames(patterns, names = []) {
   for (const p of patterns) {
-    if (['constructor','list-pattern','push-pattern','tuple-pattern','record-pattern'].includes(p.kind)) patternNames(p.fields,names);
+    if (p.kind==='or-pattern')patternNames([p.fields[0]],names);
+    else if (['constructor','list-pattern','push-pattern','concat-pattern','tuple-pattern','record-pattern'].includes(p.kind)) patternNames(p.fields,names);
     else if (p.kind === 'word' && p.value !== '_') names.push(p.value);
   }
   return names;

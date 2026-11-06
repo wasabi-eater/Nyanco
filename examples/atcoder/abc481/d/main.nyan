@@ -1,0 +1,35 @@
+ints = read; split " "; vmap {parseInt}
+main =
+    ints -> [n m s t]
+    repeatWith {ints; -> [a b]; #(a - 1, b - 1)}; take m; unzip -> sources targets
+    vreplicate n 0 -> mut degree
+    each sources {-> v; degree.[v] ! + 1}
+    vscan degree 0 {+} -> offsets
+    offsets.[:n - 1] -> mut cursor
+    vreplicate m 0 -> mut destinations
+    vreplicate n n -> mut free
+    each (0 .. m) do -> i
+        sources.[i] -> v
+        targets.[i] -> destination
+        cursor.[v] -> position
+        destinations.[position] <<- destination
+        cursor.[v] ! + 1
+        when (destination < free.[v]) {free.[v] <<- destination}
+    vreplicate n 1000000000 -> mut dist
+    dist.[s - 1] <<- 0
+    deque []; qpush (s - 1) -> mut queue
+    set [] -> mut seen
+    while {qisEmpty queue; not} do
+        qpop queue -> rest item
+        queue <<- rest
+        unwrap item -> v
+        when (scontains seen v; not) do
+            seen ! sinsert v
+            each (offsets.[v] .. offsets.[v + 1]) do -> i
+                destinations.[i] -> b
+                if (b == free.[v]) {0} {1} -> cost
+                dist.[v] + cost -> candidate
+                when (candidate < dist.[b]) do
+                    dist.[b] <<- candidate
+                    if (cost == 0) {queue ! qpushFront b} {queue ! qpush b}
+    if (dist.[t - 1] == 1000000000) {-1} {dist.[t - 1]}; print

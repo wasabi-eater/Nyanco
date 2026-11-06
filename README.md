@@ -12,6 +12,15 @@
 
 式の中では改行も`;`と同じ節の区切りです。次の行は前の行の引数にはなりません。`_`・`$`の捕捉も改行ごとに切り替わります。関数定義の`=`、case分岐の`?`、開き括弧などの直後の改行は、本体を始めるための改行として扱います。
 
+行末の `\` は直後の改行を無視し、次の行を同じ論理行として扱います。`\` の後の空白・タブも許容します。節を区切りたい位置には `;` を書きます。文字列やコメント中の `\` は行継続になりません。REPLでも行末に `\` を書くと続きの入力を受け付けます。
+
+```nyanco
+main =
+    1 ..= 10; map {_ * _}; \
+        filter {% 2 == 1}; take 3; \
+        toVector; print
+```
+
 空白で2個以上の項を並べると、先頭以外を左から右に実行し、最後に先頭を実行します。引数の個数を見て自動的にグループ分けする規則ではありません。
 
 ```haskell
@@ -75,14 +84,33 @@ sum [1, 2, 3]          -- 6
 
 ```haskell
 3, 4 -> x y
-0 -> mut count
-count <<- 10
-count ! (+ 1)
+0 -> mut counter
+counter <<- 10
+counter ! (+ 1)
 ```
 
-`x ! f`は現在のxを積み、fの処理を適用してxを更新します。`;`、`,`、改行、スコープ末尾で代入や束縛を終えられます。複数の処理を代入の右辺に含める場合は括弧で囲んでください。
+`x ! f`は現在のxを積み、fの処理を適用してxを更新します。`;`、改行、スコープ末尾で代入や束縛を終えられます。複数の処理を代入の右辺に含める場合は括弧で囲んでください。
 
 ## quotationと制御
+
+`do` はインデントで囲む quotation です。本文の最初の行は `do` のある行より深くインデントし、本文より浅いインデントに戻ると quotation が閉じます。`do -> x` のように冒頭の束縛を同じ行に書けます。
+
+```nyanco
+xs; each do -> x
+    print x
+    print (x * 2)
+```
+
+呼び出しの引数に `below` を一つ書くと、呼び出しを終える改行または `;` から現在のブロック末尾までを quotation にまとめ、その位置に渡します。`handle below handlers` は `handle {後続の処理} handlers` に、`each xs below` は `each xs {後続の処理}` に展開されます。後続の処理にある `below` は同じ規則で入れ子になります。
+
+```nyanco
+positivePairs xs ys = fromYield {
+  each xs below; -> x;
+  each ys below; -> y;
+  when (x > 0 && y > 0 && x /= y) below;
+  yield #(x, y)
+}
+```
 
 quotationは値で、`call`によって実行します。quotationを先頭に置いただけでは自動実行しません。
 
@@ -105,6 +133,18 @@ fold [1, 2, 3] 0 {+}          -- 6
 `compose q1 q2`はq1の後にq2を実行するquotationを作ります。`++`はvector連結です。
 
 ## 値、演算子、パターン
+
+パターン内の `p || q` は左から順に試し、最初に一致した側の値を束縛します。両側で変数名・型・可変性を揃えます。`~` は両側で同数にし、出現順に対応させます。
+
+```nyanco
+ends = case
+    -> [x, 0] || [0, x] ? x
+    otherwise drop; 0
+```
+
+タプルは `#(1, "a") -> #(x, y)` で分解できます。複数のスタック値は `1, 2 -> x, y` で束縛できます。束縛の後に同じ行で命令を続けるときは `;` で区切ります。
+
+vector は `[1, 2, 3, 4] -> [a b c d]` で分解できます。`[a, b, c, d]` のようにコンマで区切ることもできます。パターンと vector の要素数は一致する必要があります。
 
 型名は`int`、`bool`、`string`など、小文字始まりです。
 
@@ -291,6 +331,60 @@ CLI・REPL・VM・native実行には最外側の標準I/Oハンドラーがあ�
 REPLのプロンプト、警告、型表示や`--stack`の表示は実行環境の表示であり、言語のハンドラーの対象外です。
 
 [出力の実行例](examples/io-effects.nyan)・[stateの実行例](examples/effect-groups.nyan)
+
+## zipWithとunzip
+
+`zipWith xs ys block` は、二つの列から取り出した値を左・右の順でblockに渡し、その結果を遅延streamで返します。短い方の入力が終わると停止します。blockは二つの値を消費して一つ返します。
+
+`unzip pairs` は、2要素タプルの列から二つのvectorを作り、左側のvector、右側のvectorの順にスタックへ積みます。入力streamは一度だけ走査し、集めたペアを各成分へ分けます。空の入力からは空vectorを二つ返します。どちらも `std.stream` とpreludeから使えます。
+
+```nyanco
+zipWith [1, 2, 3] [10, 20] {+}; toVector; print -- [11, 22]
+[#(1, "a"), #(2, "b")]; unzip -> xs, ys
+xs; print -- [1, 2]
+ys; print -- ["a", "b"]
+```
+
+## vectorの二分探索
+
+`binarySearch xs key` は昇順に整列したvectorを検索し、見つかれば `Ok index`、見つからなければ整列順を保つ挿入位置を `Err index` で返します。戻り値の型は `result int int` です。重複がある場合、現在の実装では最初の一致を返します。
+
+`binarySearchBy xs key {キーを返す処理}` は各要素から取り出したキーを比較します。vectorはそのキーの昇順に整列している必要があります。比較する型には `ord` 制約が必要です。
+
+`partitionPoint xs {条件}` は、条件が `True` になる部分と `False` になる部分の境界を `int` で返します。全て `False` なら `0`、全て `True` ならvectorの長さ、空なら `0` です。条件を満たす要素が先頭にまとまっている必要があります。
+
+```nyanco
+[1, 3, 5]; binarySearch 3; print       -- Ok 1
+[1, 3, 5]; binarySearch 4; print       -- Err 2
+[{score: 1}, {score: 5}]; binarySearchBy 5 {.score}; print -- Ok 1
+[1, 3, 3, 5]; partitionPoint {< 3}; print  -- 1
+[1, 3, 3, 5]; partitionPoint {<= 3}; print -- 3
+```
+
+いずれも `std.vector` とpreludeから公開されます。探索は O(log n) 回の比較またはblock呼び出しで行い、blockのエフェクトを伝えます。要素のコピーや並べ替えは行いません。`binarySearchBy` はRustの `binary_search_by_key` に対応し、キーを返すblockを受け取ります。
+
+## vectorのスライスと連結パターン
+
+スライスは末尾の添字も含みます。三つの構文は、それぞれ型クラス `slice` のメソッド `sliceBetween`、`sliceFrom`、`sliceTo` を呼び出します。
+
+```nyanco
+[0, 1, 2, 3].[1:2] -- [1, 2]
+[0, 1, 2, 3].[1:]  -- [1, 2, 3]
+[0, 1, 2, 3].[:2]  -- [0, 1, 2]
+[0, 1, 2, 3]; sliceBetween 1 2
+```
+
+型は `slice 'c => 'c int int -> 'c / {exn}`、`slice 'c => 'c int -> 'c / {exn}` です。vectorに標準実装があり、ユーザー定義型にもinstanceを実装できます。`.[:]` は構文エラーです。負の添字や範囲外の添字は `exn`、開始が末尾より後なら空vectorを返します。`xs.[length xs:]` も空vectorです。
+
+```nyanco
+main =
+    [1, 2, 4, 5, 3] -> [1, 2] ++ middle ++ [3]
+    middle; print -- [4, 5]
+```
+
+`++` パターンでは、長さが未確定の部分を一つまで指定できます。`[x, y]` のようなvectorパターンは固定長です。`a ++ b` や `a ++ [1, 2, 3] ++ b` は構文エラーです。関数の引数、case、変数宣言で使えます。
+
+vectorのスライスと連結パターンの部分vectorは、元のストレージを共有するviewです。所有権解析では共有したストレージを単独所有として更新しないよう扱い、viewと元vectorの更新時には必要なコピーを行います。元の値を更新しても、既存のviewの要素は変わりません。
 
 ## vectorのインデックスアクセス（0.41）
 
@@ -605,6 +699,8 @@ immutableなコピー更新ではrecordフィールドやtuple要素の型を変
 
 ## vectorとstream（0.49・破壊的変更）
 
+`sum` と `product` は `std.stream` から暗黙に公開される集約関数です。それぞれ `fold (fromInt 0) {+}`、`fold (fromInt 1) {*}` と定義され、`streem` を実装する型を受け取ります。要素には `fromInt` と `add`／`mul` が必要です。`[1, 2, 3]; sum` は `6`、`[1.5, 2.5]; product` は `3.75` になります。
+
 コレクションの公開名をvectorにしました。`[int]`と`vector int`は同じ型です。実体はVMではJavaScriptの動的配列、Goでは連続領域を持つsliceです。`push`は末尾へ値を追加します。
 
 ```haskell
@@ -826,6 +922,15 @@ k=0では空vectorを1個返します。kが入力数を超える順列・通常
 [実行例](examples/combinatorics.nyan)
 
 
+## repeat と repeatWith
+
+`repeat value` は同じ値を繰り返す無限 stream を返します。`repeatWith block` は、要素が必要になるたびに空のスタックで block を実行し、得られた一つの値を返します。block のエフェクトは stream の走査時に発生します。
+
+```nyanco
+toVector (take (repeat "x") 3)       -- ["x", "x", "x"]
+toVector (take (repeatWith {1}) 3)   -- [1, 1, 1]
+```
+
 ## 標準のloopとiterate（0.55）
 
 `loop body`は`while {True} body`に相当し、breakするまでblockを繰り返します。スタック上の状態を次の反復へ引き継ぎます。
@@ -902,7 +1007,7 @@ git commit -m "変更の説明"
 | `byte` | 0〜255の整数 |
 | `char` | Unicodeスカラー値（`'a'`、`'あ'`、`'😀'`） |
 
-`3`などの整数リテラルは、単独で評価すると未確定ならintになります。0.63以降、関数定義内で型が未確定のまま外へ現れる整数リテラルはnum制約で多相化します。必要な文脈があればbyteまたはfloatとして扱います。小数点・指数を含む`3.0`・`3e0`はfloatです。byteに推論する整数リテラルは0〜255でなければなりません。確定済みの異なる数値型を混ぜる演算は型エラーです。
+`3`などの整数リテラルは、型注釈や式の文脈で型が決まります。関数定義や式の型推論を終えた時点で未確定なら`int`になります。小数点・指数を含む`3.0`・`3e0`はfloatです。byteに推論する整数リテラルは0〜255でなければなりません。確定済みの異なる数値型を混ぜる演算は型エラーです。
 
 ```haskell
 b : -> byte
@@ -925,13 +1030,13 @@ toByte 42                 -- byteの42
 toInt 1 + toFloat 2       -- 型エラー
 ```
 
-文字列はUTF-8として添字を解釈し、結果はbyteになります。`chars : string -> [char]`はUnicodeスカラー値のvectorを返します。
+文字列はUTF-8として添字を解釈し、結果はbyteになります。`chars : string -> stream char {->}` は Unicode スカラー値を順に生成します。`vchars : string -> [char]` は同じ要素を vector にまとめます。
 
 ```haskell
 "あ".[0]                 -- byteの227
 "あ".[1]                 -- byteの129
 "あ".[2]                 -- byteの130
-chars "日本😀"           -- ['日', '本', '😀']
+vchars "日本😀"          -- ['日', '本', '😀']
 "abc" with {.[1] = 100}  -- "adc"（100はbyteに推論）
 ```
 
@@ -977,7 +1082,7 @@ render = show
 
 instanceでは継承したメソッドもまとめて実装できます。親のinstanceを別に定義済みならその実装を再利用するので、同じメソッドを重ねて定義する必要はありません。再利用する親の文脈制約も満たす必要があります。親の実装と異なる上書き、循環継承、無関係な親同士で衝突する関連型は型エラーになります。関連型も継承され、子のinstanceで指定します。
 
-numはadd・sub・mul・div・mod・pow・toInt・toFloat・toByte・toCharを継承する標準クラスです。変換関数もそれぞれ同名のクラスメソッドになりました。int・float・byteには全ての標準instanceがあります。`num 'a`制約から四則演算や変換を呼べますが、`+`だけを使う関数の推論結果は最小限の`add 'a`制約です。
+numはadd・sub・mul・div・mod・pow・toInt・toFloat・toByte・toCharを継承する標準クラスです。変換クラスのメソッド名は、それぞれint・float・byte・charです。int・float・byteには全ての標準instanceがあります。`num 'a`制約から四則演算や変換を呼べますが、`+`だけを使う関数の推論結果は最小限の`add 'a`制約です。
 
 ```haskell
 asFloat : num 'a => 'a -> float / {exn}
@@ -986,11 +1091,13 @@ asFloat = toFloat
 toChar 65          -- 'A'
 toChar 128512      -- '😀'
 toChar 'あ'        -- 'あ'
-bytes "あ"         -- [227, 129, 130] : [byte]
-chars "あ"         -- ['あ'] : [char]
+vbytes "あ"        -- [227, 129, 130] : [byte]
+vchars "あ"        -- ['あ'] : [char]
+count (bytes "あ") -- 3
+count (chars "あ") -- 1
 ```
 
-`toChar : toChar 'a => 'a -> char / {exn}`は数値をUnicodeスカラー値として解釈します。floatは0方向へ切り捨て、0〜0x10FFFFの範囲外やサロゲート領域0xD800〜0xDFFFはexnになります。charに対するtoCharはその文字を返します。ADTにも変換のinstanceを実装できます。`bytes : string -> [byte]`はUTF-8の各byteをvectorにします。
+`toChar : toChar 'a => 'a -> char / {exn}`は数値をUnicodeスカラー値として解釈します。floatは0方向へ切り捨て、0〜0x10FFFFの範囲外やサロゲート領域0xD800〜0xDFFFはexnになります。charに対するtoCharはその文字を返します。ADTにも変換のinstanceを実装できます。`bytes : string -> stream byte {->}` は UTF-8 の各 byte を順に生成します。`vbytes : string -> [byte]` は同じ要素を vector にまとめます。
 
 [実行例](examples/class-inheritance.nyan)
 
@@ -1015,7 +1122,7 @@ asInt = from                    -- toIntでも同じ
 main = print (asInt (makeDistance 42))
 ```
 
-標準のtoInt・toFloat・toByte・toCharクラスは、それぞれ`into 'a int`などを継承します。fromInt・fromFloat・fromByte・fromCharクラスは、それぞれ`into int 'a`などを継承します。これらの関数は同じinto instanceを利用するので、intoを実装すれば両方の名前で呼び出せます。以前の`instance toInt 型 where`形式も使え、その実装をintoにも登録します。変換クラスのinstanceではメソッド名に自身の名前、またはfromを指定できます。
+標準のtoInt・toFloat・toByte・toCharクラスは、それぞれ`into 'a int`などを継承します。fromInt・fromFloat・fromByte・fromCharクラスは、それぞれ`into int 'a`などを継承します。これらの関数は同じinto instanceを利用するので、intoを実装すれば両方の名前で呼び出せます。`instance toInt 型 where`ではメソッド`int`を実装し、その実装をintoにも登録します。`from`、および旧メソッド名`toInt`で実装する形式も互換用に受け付けます。from系のメソッド名は変更していません。
 
 numは演算クラス6種・to系4種に加え、fromInt・fromFloat・fromByteも継承します。ADTのnum instanceには、対応する入力変換の実装も必要です。これらをfromIntなどのメソッドとしてまとめて定義しても、intoのinstanceとして別々に定義しても構いません。
 
@@ -1123,21 +1230,19 @@ handle {unwrap None} {exn: {-> message k; 0}}  -- 0
 型クラスの診断も前置形式へ揃えました。たとえば`No instance: ord bool`、`No instance: into string int`、`Missing constraint: add 'a`と表示します。
 
 
-## 0.63: 関数定義内の整数リテラルの多相化
+## 関数定義内の整数リテラル
 
 ```nyanco
 sum = fold 0 {+}
-sum [0, 1, 2]; print       -- 3（int）
-sum [0.1, 0.2, 3]; print   -- 3.3（float）
-sum [toByte 1, toByte 2]; print -- 3（byte）
+floatSum : [float] -> float
+floatSum = fold 0 {+}
+genericSum : num 'a => ['a] -> 'a / {exn}
+genericSum = fold 0 {+}
 ```
 
-関数定義の推論終了時に型が未確定の整数リテラルを、intへ固定する代わりに`num 'a`制約付きで一般化します。ローカル関数や、返すblock・vectorなどに含まれる整数リテラルも対象です。型注釈、整数パターン、添字などにより型が確定した値はその型を保ち、小数リテラルはfloatのままです。`f = +`のように整数リテラルを持たない関数は引き続き必要最小限の制約で推論します。
+`sum` の初期値と結果は `int` です。注釈で `float` や `byte` が要求される場合は、その型で整数リテラルを解釈します。この規則はローカル関数や、返す block・vector 内のリテラルにも適用されます。`f = +` のように整数リテラルを使わない関数は、引き続き演算子の制約を持つ多相型になります。
 
-`one = 1`もnumで多相化され、利用時の文脈からint・float・byteなどを選びます。ユーザー定義のnum instanceでは`fromInt`でリテラルを変換します。fromIntの契約にはexnがあるため、未特殊化の多相関数には`/ {exn}`が表示されます。組み込みint・float・byteへの特殊化ではこのリテラル変換のexnが消え、`sum : [float] -> float / {}`のような純粋な注釈も使えます。
-
-`->`による値の束縛は数値型を多相化しません。`1 -> x`はintで、`one -> x`は同じxへの利用が一つの数値型に統一されます。文脈がなければ実行時にはintへ既定化します。byteの0〜255制限、intの64bitリテラル範囲は特殊化時も検査します。Goへのコンパイルも呼び出しごとの型に特殊化します。
-
+`genericSum` のように `num 'a` を明示すれば、呼び出しごとに数値型を選べます。ユーザー定義の `num` インスタンスでは `fromInt` でリテラルを変換し、その変換は `exn` を起こす可能性があります。
 
 ## 0.64: スタックを返すbreakとcancel
 
@@ -1460,7 +1565,14 @@ zip [0, 1] ["a", "b"]; toDict
 
 変換はsourceを最後まで走査する即時処理です。sourceのeffectを伝播し、cancelでは途中までの辞書を返します。breakでは戻り値の辞書を指定できます。
 
-## counts
+## count、countIf、counts、countsBy
+
+`count` は `streem` の要素数を `int` で返します。空の入力は `0` です。要素の型に追加の制約はなく、走査時に生じたエフェクトを引き継ぎます。
+
+```nyanco
+count [1, 2, 1]                          -- 3
+countIf (chars "hello") {_ == 'l'}       -- 2
+```
 
 `counts source`は要素ごとの出現回数を`dict key int`にまとめます。sourceはstreem、要素はhashである必要があります。個数は常にintです。
 
@@ -1468,7 +1580,10 @@ zip [0, 1] ["a", "b"]; toDict
 counts [1, 2, 1, 3, 1] -- [1: 3, 2: 1, 3: 1]
 counts (split "a b a" " ") -- ["a": 2, "b": 1]
 counts [] -- [:]
+countsBy [1, 2, 3, 4, 5] {% 2} -- [1: 3, 0: 2]
 ```
+
+`countIf` は条件が真になる要素を数えます。`countsBy` は各要素に block を適用し、その結果をキーにして出現回数を数えます。
 
 存在確認付きの内部検索と加算で実装しているため、counts自身はexnを要求しません。pureなsourceを渡すとpureになり、IOやexnなどのsourceのeffectはそのまま伝播します。cancelでは途中までの辞書を返し、breakでは辞書の戻り値を指定できます。辞書の走査順は保証しません。
 
@@ -1620,15 +1735,15 @@ introduce {:name, :age} = print name; print age
 ```nyanco
 x <- 0                  -- 0 -> x と同じ
 x, y <- 0, 0            -- 0, 0 -> x y と同じ
-mut count <- 0          -- 0 -> mut count と同じ
+mut counter <- 0        -- 0 -> mut counter と同じ
 mut a, mut b <- 1, 2
 
-count <<- 1             -- mutable変数を再代入
-2 ->> count             -- スタックの値をpopして再代入
+counter <<- 1           -- mutable変数を再代入
+2 ->> counter           -- スタックの値をpopして再代入
 
 a, b <<- b, a            -- 全右辺を評価してから同時に更新
 b, a ->> a, b            -- 右側の対象はコンマまたは空白で区切る
-count ! + 1             -- 更新用の ! は従来どおり
+counter ! + 1           -- 更新用の ! は従来どおり
 ```
 
 `<-`の左側の複数パターンはコンマで区切ります。`mut`は各変数に付けます。`{:name, :age} <- person`のようなパターンも使えます。宣言の右辺は現在のスタックで評価するため、`3; x <- + 1`は`3; + 1 -> x`と同じです。`x <- 1, 2`では最後の値だけをxに束縛し、それ以外はスタックに残ります。
@@ -1719,9 +1834,9 @@ main = vec.map [1, 2] {+ 1}
 
 ```nyanco
 []; vpush 1; vpush 2           -- [1, 2]
-deque; qpush 1; qpushFront 0   -- deque [0, 1]
-toDeque [1, 2]; qpop          -- deque [2], Some 1
-toHeap [3, 1, 4]; hpop        -- heap [3, 1], Some 4
+deque []; qpush 1; qpushFront 0 -- deque [0, 1]
+deque [1, 2]; qpop           -- deque [2], Some 1
+heap [3, 1, 4]; hpop         -- heap [3, 1], Some 4
 ```
 
 | module内の名前 | prelude名 | 動作 |
@@ -1733,7 +1848,20 @@ toHeap [3, 1, 4]; hpop        -- heap [3, 1], Some 4
 | std.heap.push / pop / peek | hpush / hpop / hpeek | 追加／最大値の取り出し／最大値を読む |
 | std.heap.length / isEmpty | hlength / hisEmpty | 要素数／空判定 |
 
-`deque`／`heap`は空のコンテナを作り、`toDeque`／`toHeap`はstreamなどから変換します。`pop`は更新後のコンテナと`option 'a`を返し、空の場合は`None`です。`peek`はコンテナを消費して`option 'a`だけを返すため、元も必要なら`dup`してください。heapの追加・取り出しには`ord 'a`が必要で、独自instanceにも従います。
+vector・deque・heap は `streem` を実装しており、変換先に合わせて `vector`、`deque`、`heap` を使えます。
+
+```nyanco
+deque [3, 1, 4]                   -- vector → deque
+heap [3, 1, 4]                    -- vector → heap
+vector (deque [3, 1, 4])           -- deque → vector
+heap (deque [3, 1, 4])             -- deque → heap
+vector (heap [3, 1, 4])            -- heap → vector
+deque (heap [3, 1, 4])             -- heap → deque
+```
+
+vector と deque の間では要素の順序を保ちます。heap からの変換は内部の走査順を使うため、値を整列して取り出したい場合は `sort` を使います。`heap` には要素の `ord` 制約が必要です。
+
+`deque []`／`heap []`は空のコンテナを作ります。`deque xs`／`heap xs`は入力を走査して変換します。`pop`は更新後のコンテナと`option 'a`を返し、空の場合は`None`です。`peek`はコンテナを消費して`option 'a`だけを返すため、元も必要なら`dup`してください。heapの追加・取り出しには`ord 'a`が必要で、独自instanceにも従います。
 
 どちらも見かけ上immutableで、更新前の値を保持できます。dequeは共有可能な前後の連結スタック、heapは配列上の二分ヒープです。所有権を証明できないheap更新は配列をコピーするためO(n)のコピーを伴い、比較回数はO(log n)です。0.82では、所有権を証明できる場合の直接更新を追加しました。dequeの片側が空になると反対側のノードを反転します。
 
@@ -1749,7 +1877,38 @@ node cli.mjs examples/collections --emit-ir collections.ir.json
 
 このコマンドはプログラムを実行せず、到達する特殊化のIRをJSONへ出力します。現在、到達する関数・quotationの列挙はGo生成パイプラインを利用します。JSON自体にGoのruntimeや命令は含みません。IRの生成APIは`createTypedIR(definitions)`、構造検証は`verifyTypedIR(ir)`です。
 
-`ir-ownership.mjs`は値の生存期間とescapeを調べ、更新を`move`または`copy`と判定します。新しいvector／heapで、入力への別名参照が後で使われず、クロージャや別のコンテナなどへ渡されてもいない場合に、既存の保存領域を直接使えます。例えば`heap; dup; drop; hpush 1`は別名が消えているため直接更新できます。`heap -> h; hpush h 1; h`は元のhが後で必要なのでコピーします。
+人が読むためのテキスト表示には`--dump-ir`、ファイルへの保存には`--emit-ir-text`を使えます。どちらもプログラムは実行しません。
+
+```sh
+node cli.mjs main.nyan --dump-ir
+node cli.mjs main.nyan --dump-ir > main.ir.txt
+node cli.mjs main.nyan --emit-ir-text main.ir.txt
+node cli.mjs main.nyan --procon --emit-ir-text main.ir.txt > main.cpp
+node cli.mjs main.nyan --emit-cpp main.cpp --emit-ir main.ir.json --emit-ir-text main.ir.txt
+```
+
+テキスト表示だけを指定した場合はC++生成パイプラインを使います。`--emit-go`／`--build`との併用時はGo、`--emit-cpp`／`--procon`も指定した場合はC++のIRを表示します。JSONも一緒に指定すると同じコンパイルで得たIRを両形式で出力します。`--emit-ir`だけを指定する既存のJSON出力は引き続きGoのIRです。
+
+表示例の一部は次のようになります。
+
+```text
+@r2 function main
+  inputs: []
+  #0 %0: [int] = list @ main.nyan:1:8
+      stack: [] -> [%0]
+      regions: body[0] = @r3
+  #1 %3: int = literal 3 @ main.nyan:1:22
+      stack: [%0] -> [%0, %3]
+  #2 %4: [int] = call vpush(%0, %3) [cow: runtime-reference-count] @ main.nyan:1:16
+      type: [int] int -> [int]
+      stack: [%0, %3] -> [%4]
+```
+
+`%N`は値のID、`@rN`はregion（関数の特殊化やquotation、子式の本体）のIDです。スタックは左が底、右がトップです。各命令の結果の型、引数に使う値、命令前後のスタック、effect、ソース位置を表示し、quotationの捕捉値と子regionへの参照も記録します。`move`は既存領域の再利用、`copy`はコピー、`view`は共有領域の参照、`cow`は参照数によって実行時に再利用かコピーかを選ぶ判定で、その理由も併記します。C++では`RC take-if-unshared`も表示し、最後の利用でローカル変数から値を取り出す箇所を確認できます。これはネイティブコード生成で利用する型付きIRの表示であり、生成後のC++をC++コンパイラが最適化した結果ではありません。
+
+`--dump-ir`とC++の標準出力（`--procon`）を併用すると、IRは標準エラーへ出し、標準出力にはC++だけを出します。`--no-source-paths`または`--procon`ではテキストIRにもソースパスを表示せず、行・列だけを残します。JavaScriptからは`formatTypedIR(ir, options)`（`ir-format.mjs`）で同じ形式を生成できます。
+
+`ir-ownership.mjs`は値の生存期間とescapeを調べ、更新を`move`または`copy`と判定します。新しいvector／heapで、入力への別名参照が後で使われず、クロージャや別のコンテナなどへ渡されてもいない場合に、既存の保存領域を直接使えます。例えば`heap []; dup; drop; hpush 1`は別名が消えているため直接更新できます。`heap [] -> h; hpush h 1; h`は元のhが後で必要なのでコピーします。
 
 Go生成はこのIRの型情報・所有権判定を利用し、heapの`hpush`／`hpop`にも直接更新を適用します。所有権を証明できたheapでは配列全体のコピーがなくなり、追加は償却O(log n)、取り出しはO(log n)です。APIの`transpileGo(program, {optimizeVectors:false})`で従来のvector最適化と今回の所有権最適化を両方無効化して比較できます。
 
@@ -1763,20 +1922,78 @@ Go生成はこのIRの型情報・所有権判定を利用し、heapの`hpush`�
 
 ```sh
 node cli.mjs examples/modules --emit-cpp main.cpp
-c++ -std=c++20 -O2 -pthread main.cpp -o main
+c++ -std=c++20 -O2 main.cpp -o main
 ./main
 ```
 
 WindowsのVisual Studio開発者コマンドプロンプトでは次のようにビルドします。
 
 ```bat
-cl /std:c++20 /EHsc /utf-8 /O2 main.cpp
+cl /std:c++20 /EHsc /utf-8 /O2 /bigobj main.cpp
 main.exe
 ```
 
 `--single-file`、`--eval`、`--stack` を組み合わせられます。`--emit-cpp main.cpp --emit-ir main.ir.json` ではC++の型特殊化に使ったIRも確認できます。JavaScriptからは `cpp-backend.mjs` の `transpileCpp(program, options)` で生成できます。
 
-評価値はC++のローカル変数になり、特殊化された関数は固定個数の値を受け渡します。型が確定した `int`、`byte`、`float`、`bool` は通常の関数の引数・戻り値と不変の単純なローカル束縛でC++の型を使います。型付きの戻り値を複数返す場合は `std::tuple` を使います。コンテナの要素やquotationの捕捉、エフェクトの受け渡しには `std::any` を使います。所有権を証明できたvectorやheapの更新では既存の領域を再利用します。`handle` で中断した継続や、遅延した `zip` の入力はC++のスレッド上に呼び出しフレームを保持します。
+`--procon` だけを指定すると、ソースパスを省いた C++ コードが標準出力に出ます。ファイルに保存するには `node cli.mjs main.nyan --procon > main.cpp` と書けます。`--emit-cpp main.cpp` を併用すると、指定したファイルに直接書き込みます。
+
+`--procon`はデフォルトで出力バッファを使い、`read`のたびに出力をflushしません。`node cli.mjs main.nyan --procon > main.cpp`だけで有効になります。出力はプログラム終了時にも書き出されます。対話型の問題では`--procon --interactive-io`とすると、入力前にflushします。通常の`--emit-cpp`は入力前にflushし、`--batch-io`を付けるとバッファ方式になります。両方の入出力オプションを指定した場合は最後の指定を使います。JavaScript APIのデフォルトは変更せず、バッファ方式は`transpileCpp(program, {batchIO:true})`で指定します。
+
+`--no-source-paths` を `--emit-go`、`--emit-cpp`、`--build` と組み合わせると、生成コードの診断位置には行番号と列番号だけが入ります。JavaScript API では `{noSourcePaths: true}` を指定します。
+
+評価値はC++のローカル変数になり、特殊化された関数は固定個数の値を受け渡します。型が確定した `int`、`byte`、`float`、`bool` は通常の関数の引数・戻り値と不変の単純なローカル束縛でC++の型を使います。型付きの戻り値を複数返す場合は `std::tuple` を使います。コンテナの要素やquotationの捕捉、エフェクトの受け渡しには `std::any` を使います。`handle` で中断した継続や、遅延した `zip` の入力はC++のスレッド上に呼び出しフレームを保持します。
+
+### C++の参照カウント・COW・move
+
+C++のvector・deque・heapなどの保存領域は`std::shared_ptr`で参照カウントを管理します。更新関数は所有する値を受け取り、参照数が1なら保存領域を直接変更し、共有されていればコピーしてから変更します。以前の静的な`move`判定だけで直接変更する方式から、実行時の共有確認を使う方式に変更しました。Goの所有権解析は従来のままです。
+
+```nyanco
+main =
+    [] -> mut v
+    v ! vpush 1
+    v ! vpush 2
+    print v
+```
+
+`cpp-lifetimes.mjs`が束縛の最後の利用を調べます。`!`や再代入は更新前の値の寿命の区切りになり、上の例では更新前の`v`を取り出して`std::move`で渡せます。呼び出しの引数と戻り値にもmoveを使い、使い終わった一時値は解放します。これにより、不要な一時参照が残ってCOWが毎回コピーすることを避けます。変数名のshadowing、分岐、quotationの捕捉も寿命の判断に含めます。
+
+旧値を保持する`old <- v`や別のコンテナが生きていれば、共有された旧値を保つためにコピーします。その後の更新で新しい領域が単独所有になれば、再び直接更新できます。vectorのsliceは所有元への参照を保持するので、viewが生きている間は元の保存領域を変更せず、view自身への更新でも所有する配列へコピーします。record・tuple・vectorの入れ子の`with`更新にも共有の確認を適用します。
+
+ローカル変数の値を取り出す場合も、その束縛のセルが他のスコープやquotationと共有されていないことを確認します。共有セルやmutableなcapture、独自のindexerなどでは保守的にコピーや借用を残す場合があります。quotationには必要な束縛だけを捕捉させます。これは参照カウントと寿命解析を組み合わせたC++向けの実装で、[KokaのPerceus](https://www.microsoft.com/en-us/research/publication/perceus-garbage-free-reference-counting-with-reuse-2/)全体を移植したものではありません。
+
+`transpileCpp(program, {optimizeVectors:false})`ではCOWによる再利用とmoveによる寿命短縮を無効にし、コピーする版と比較できます。通常の`--emit-cpp`／`--procon`では有効です。
+
+### C++のquotation展開と標準関数の高速化
+
+`call`・`if`・`when`・`while`・`each`・`fold`・`vmap`・`vfilter`にその場で渡すquotationは、実行先が分かる場合に本体を呼び出し位置へ展開します。直接展開だけで処理できるquotationは、quotationオブジェクトも生成しません。遅延streamの`map`などでも、実行先が分かるcallbackの本体を展開します。ラベルを持つblockや実行先が不明なquotationは、通常の呼び出しを使います。展開した本体はIRに`inline-quotation`として現れます。
+
+標準の`partitionPoint`は、その場で渡された述語のeffectが閉じていて空の場合、インデックスをC++の整数ローカル変数にした二分探索ループへ変換します。比較ごとの環境生成やoptionの構築を避け、スタックの下に保持する値も述語へ渡して更新します。effectを持つ述語、ラベル付きblock、ユーザーが同名で定義した関数は通常の関数呼び出しを使います。標準の`unzip`も、入力を一度収集した後、タプルの各成分を二つのvectorへ直接取り出すループに変換します。
+
+`parseInt`の結果を`-> [a b c]`のように束縛するとき、各要素がnativeなスカラーでimmutableなら、vectorの長さを検査した後にC++のスカラー変数へ直接取り出します。quotationの捕捉やローカル変数の名前表も共有し、新しい束縛を追加するときだけ名前表をコピーします。mutableな変数のセル自体は引き続き共有されるため、captureからの更新は元の変数へ反映されます。
+
+これらは`--procon`／`--emit-cpp`で自動的に利用されます。ソート後に大量の二分探索を行うプログラムでは、高水準の関数・quotation・パターンの処理を各比較ごとに繰り返す負荷を削減します。探索の計算量や、述語が評価される位置・順番は変えません。
+
+`split ","; vmap {parseInt}`や`vmap {parseFloat}`も、splitの結果を一度だけ消費すると分かる場合はまとめて処理します。各部分文字列の一時オブジェクトとstream callbackを作らず、元の文字列の範囲から数値を読み取ります。空の区切り文字によるUTF-8文字単位の分割、空要素、数値変換エラーも通常の経路と同じ挙動です。streamを別名やcaptureからも使う場合、独自に定義した変換関数を使う場合は通常の処理を残します。
+
+### 数値vectorの具体的なC++型
+
+要素の型が確定した`[int]`・`[float]`・`[byte]`は、C++ではテンプレート`ScalarVector<T>`で保持します。配列本体はそれぞれ`std::vector<std::int64_t>`・`std::vector<double>`・`std::vector<std::uint8_t>`であり、要素ごとの`std::any`は使いません。vectorリテラル、数値変換を行う`vmap`、`toVector`、`unzip`の結果などからこの保存形式を生成します。
+
+```cpp
+template <typename T> struct VectorStorage : VectorBase {
+    std::vector<T> values;
+    // COW、sliceの共有元、必要な場合のboxing cacheも保持
+};
+using Vector = VectorStorage<Value>;
+template <typename T> using ScalarVector = VectorStorage<T>;
+// [int]ではT = Int（std::int64_t）
+```
+
+索引アクセス・更新・追加・連結・slice・通常のソートと逆順化には、具体的な要素型のテンプレートを使います。`partitionPoint`の直接展開では、型付き保存領域をループの前に取得し、比較のたびに要素を`std::any`から取り出す処理を避けます。sliceは`std::span<const T>`と所有元への参照で保持し、共有中の更新は引き続きCOWで元の値を保護します。
+
+quotationやeffect、ADT、recordなどとの受け渡しでは、vector本体への参照を従来の`Value`で包むことがあります。この場合も配列の中身は型付きのままです。表示・hash・汎用patternなどが要素の汎用表現を要求した場合にだけ、変換した要素列をcacheします。従来の形式で作られた数値vectorも、型付きの読み取り領域へ変換してcacheできるため、境界をまたいだ後に索引アクセスのたびに配列全体を変換することはありません。
+
+現在の対象は`int`・`float`・`byte`で、`bool`・`char`・ADTなどのvectorは従来の要素表現を使います。関数引数や継続を含めたプログラム全体から`std::any`を除去する変更ではありません。比較用に`transpileCpp(program, {nativeVectors:false})`を指定すると、COWなど他の最適化を有効にしたまま、vectorの要素を従来の形式で保持します。通常の`--procon`／`--emit-cpp`では型付きvectorを有効にします。
 
 ADTごとにコンストラクターの構造体をまとめた `std::variant` を生成します。パターン照合と構造比較には型とalternativeの番号を使います。フィールドは固定長の `std::array` に格納し、各要素は `std::any` で保持します。
 
@@ -1846,3 +2063,146 @@ IRには`retention`による読み取りの要約、`captureArguments`による�
 `when`・`if`・`call`などの既知の同期的な呼び出し、および組み込みコンテナの`each`などが対象です。callbackの内部も参照を保持しないと証明する必要があります。遅延stream、外部への代入、未知の関数、独自の`show`などを介して参照が残り得る場合はコピーします。effectがescapeしないという型情報だけで直接更新を許可するものではありません。REPLの永続変数やmoduleのglobal変数も引き続き共有扱いです。
 
 実行例は`node cli.mjs examples/temporary-read`です。
+
+## Nyanco Language Tour
+
+```sh
+npm run tour
+```
+
+表示されたローカル URL をブラウザで開くと、スタックの基本から型クラス、借用、ストリーム、エフェクト、モジュールまでを8章で順に試せます。サンプルは色分けされたエディター上で編集でき、「実行」または Ctrl / ⌘ + Enter で動きます。モジュールのレッスンではファイルを切り替えて編集でき、入力が必要なレッスンには標準入力欄があります。
+
+`npm run tour:build` で静的配信用ファイルを `tour/dist/` に生成できます。
+
+## HashSetと競技プログラミングの解答例
+
+VMとC++にハッシュ集合 `set 'a` を追加しました。要素に `hash 'a` と `eq 'a` を要求し、`streem` として走査できます。集合の順序は保証しません。`std.set` の操作はpreludeでは `sinsert`・`sremove`・`scontains`・`slength`・`sisEmpty`・`sunion`・`sintersection`・`sdifference` です。`set []` は空集合、`set xs` はstreamから集合への変換です。要素が対応していれば集合自体も `eq`・`hash` に対応します。
+
+```nyanco
+main =
+    [1, 2, 1]; set; sinsert 3; vector; sort; print     -- [1, 2, 3]
+    [1, 2, 3]; vscan 0 {+}; print                     -- [0, 1, 3, 6]
+    vreplicate 3 0; print                             -- [0, 0, 0]
+```
+
+`vscan xs init f` は初期値を含む累積結果をvectorにします。`vreplicate n x` は同じ値を `n` 個持つvectorを返し、負の個数は `exn` になります。`std.vector.scan` / `replicate` からも利用できます。
+
+[ABC480・ABC481のA〜D解答例](examples/atcoder/README.md)に、追加した関数一覧、C++生成の改善点、公式サンプル・ランダム入力・最大規模入力の検査方法と計測結果をまとめています。
+
+## 変換先の名前で呼ぶ変換関数
+
+変換クラス名は `toInt`・`toFloat`・`toByte`・`toChar`、そのメソッド名は `int`・`float`・`byte`・`char` です。型名と関数名は、型を書く場所と式を書く場所で区別します。
+
+```nyanco
+instance toInt bool where
+    int = if {1} {0}
+
+convert : toByte 'a => 'a -> byte / {exn}
+convert = byte
+
+main =
+    byte 'x'; print                  -- 120
+    3; float; + 0.5; print           -- 3.5
+    int True; print                 -- 1
+    [0, 1, 2]; set; vector; sort; print
+    deque []; qpush 3; heap; hpeek; print
+    dict [#(0, "zero")]; .[0]; print
+```
+
+`vector xs`・`set xs`・`deque xs`・`heap xs`・`dict xs` は、従来の `toVector`・`toSet`・`toDeque`・`toHeap`・`toDict` に対応します。コンテナの入力は `streem` 制約を使い、`dict` はキーと値のtupleを走査します。空のコンテナは `set []`・`deque []`・`heap []` と書きます。引数のない `set`・`deque`・`heap` も必ずスタックから変換元を消費します。
+
+数値変換は引き続き `into` を使い、変換の失敗は `exn` です。`num` の継承関係と、`fromInt`・`fromFloat`・`fromByte`・`fromChar`・`from` は変更していません。旧 `toXXX` 関数名は互換エイリアスとして利用できます。既存instanceの旧 `toXXX` メソッド名も、新しいメソッド名へ正規化します。
+
+実行例は `node cli.mjs examples/target-conversions` です。
+
+## C++20 coroutineによるエフェクトとstreamの中断
+
+C++ターゲットの一般の `handle` / `resume` と、stream同士を交互に進める `zip` は、単一スレッド上でC++20 coroutineを使います。通常のCLI出力では `std::thread`・mutex・条件変数を使うworkerを生成しません。
+
+```nyanco
+effect ask : -> int
+plusOne = ask; + 1
+main =
+    handle {plusOne; * 2} {
+        ask: {-> k; resume 10 k; + 100}
+    }
+    print -- 122
+```
+
+生成C++では中断する呼び出しを `co_await`、その関数の戻り値を `Task<T>` に変換します。C++コンパイラが、再開位置と生存するローカル変数をフレームに保存します。`Task` はmove-onlyで、子の呼び出し終了時には親のcoroutineへ直接制御を渡します。フレームの確保には標準の `std::pmr::unsynchronized_pool_resource` を使い、同じスレッド内でメモリを再利用します。
+
+`handle` の本体は `CoroutineWorker` で駆動します。effectの要求が届いたら本体を中断してhandlerを実行し、`resume` の引数を本体に渡します。`resume` は、本体の残りの処理の結果を返します。同じ継続の再利用・失効後の呼び出しはエラーです。再開しない継続を放棄した場合も、保持されたフレームとローカル変数を破棄します。入れ子のhandler、マスク、ラベル、複数の結果、戻らないeffectにも対応します。
+
+型付きIRから通常の特殊化済みC++を生成し、使用するランタイムを選択した後で、中断する呼び出しとcallbackの契約に沿ってcoroutineへの変換を伝播させます。handlerや一般のstream cursorが不要なプログラムは、従来の同期的な生成を維持し、coroutineのヘッダーも含めません。vector同士の `zip` は引き続き直接走査します。coroutineを使うプログラム内では、中断を伝えるcallbackのインターフェースも `Task` になります。すべての関数を一律にcoroutineにする変更ではありません。
+
+```sh
+node cli.mjs examples/coroutine-effects --procon --emit-cpp main.cpp
+c++ -std=c++20 -O2 main.cpp -o main
+```
+
+MSVCでは `cl /std:c++20 /EHsc /utf-8 /O2 /bigobj main.cpp` でビルドできます。状態機械そのものはC++コンパイラが生成するため、NyancoのIR表示にはコンパイラ内部の再開状態番号は現れません。生成されたC++で `Task`・`co_await` を確認できます。
+
+`node bench/coroutines.mjs` で、従来のスレッド版との速度・ソースサイズの比較を行えます。C++20コンパイラがPATH上に必要です。結果と生成物は `native/coroutines/` に保存します。JavaScript APIの `transpileCpp(program, {effectCoroutines:false})` は比較検証用に従来版を生成します。通常はcoroutine版が有効です。
+
+2026-11-06のWindows / MSVC `/O2`で、プロセス起動とコンパイルを除く実行時間を3回測った中央値は次のとおりでした。
+
+| ケース | スレッド版 | coroutine版 |
+| --- | ---: | ---: |
+| handlerで2,000回再開 | 13.98 ms | 10.72 ms |
+| 遅延stream 2本を5,000組zip | 12.74 ms | 3.51 ms |
+
+この小規模な比較では約1.3倍・3.6倍の速度でした。すべてのプログラムで同じ改善になるものではありません。共通のTaskランタイムを含むため、この2例の生成ソース全体は従来版より約4KB増えています。C++20構文によって再開状態の記述をコンパイラへ任せていますが、従来のスレッド版より常にソース全体や実行ファイルが小さくなることは保証しません。
+
+## コンテナの共通テンプレートと数値hash trie
+
+C++のvectorは共通インターフェース `VectorBase` と、保存領域・COW・viewを持つ `VectorStorage<T>` に整理しました。`Vector` は `VectorStorage<Value>`、`ScalarVector<T>` は `VectorStorage<T>` の別名です。汎用版を基底クラスの保存領域として数値版に重ねる構成は廃止しました。数値版だけが必要とするboxing cacheは型に応じて分けています。
+
+辞書と集合の検索・衝突処理・挿入・削除・COWは、共通の `HashTrie<Entry>` で実装しています。
+
+```cpp
+using Dict = HashTrie<DictEntry<Value, Value>>;
+using HashSet = HashTrie<SetEntry<Value>>;
+template <typename K, typename V>
+using NativeDict = HashTrie<DictEntry<K, V>>;
+template <typename K>
+using NativeSet = HashTrie<SetEntry<K>>;
+```
+
+`DictEntry<K,V>` はキー・値・表示順の情報を保持し、`SetEntry<K>` はキーだけを保持します。集合の各要素にダミーのboolやValueを置く必要はありません。辞書・集合のCOWは、共有されたtrieの更新経路だけをコピーします。数値版と汎用版は、それぞれ `DictBase` / `HashSetBase` という型を消したインターフェースを通して既存のquotation・effectなどへ渡せます。
+
+`int`・`float`・`byte`が確定すると、辞書のキーと値をそれぞれ具体的なC++型で格納します。例えば `dict int int` は `NativeDict<Int,Int>`、`dict string int` は `NativeDict<Value,Int>`、`set byte` は `NativeSet<Byte>` です。数値キーは型付きの等値比較を使います。独自のhashまたはeq instanceがあるキー型は、そのinstanceを尊重する汎用のキー表現を使います。汎用インターフェースから値を取り出す際のboxingは残ります。
+
+比較用に `transpileCpp(program, {nativeHashTries:false})` を指定すると、同じテンプレート・COW実装のままキーと値をValueで格納できます。`node bench/native-tries.mjs` は、各10万件の挿入と検索を行う2ケースを比較し、結果を `native/tries/results.json` に保存します。2026-11-06のWindows / MSVC `/O2`、プロセス起動とコンパイルを除く3回の中央値は、集合が約145ms→106ms、辞書が約178ms→131msでした。言語側の文法や型は変更していません。
+
+## C++の単一スレッド参照カウンタ
+
+`--procon` は、atomic操作を使わない `Rc<T>` を標準の共有ポインタとして生成します。C++20 coroutineの中断と再開も同じスレッド上で行うため、handlerやstreamのcursorでも使用します。オブジェクトと制御ブロックは一度に確保し、最後の参照がなくなった時点で破棄します。vector・dict・setのCOWとmoveによる再利用、viewの所有者の保持にも同じ参照数を使います。
+
+```sh
+node cli.mjs main.nyan --procon > main.cpp
+node cli.mjs main.nyan --procon --rc shared > shared.cpp
+node cli.mjs main.nyan --emit-cpp main.cpp --rc local
+```
+
+`--rc shared` は比較用に `std::shared_ptr` を使います。通常の `--emit-cpp` とJavaScript APIのデフォルトは引き続き `shared` です。APIでは `transpileCpp(program, {referenceCounting:'local'})` を指定できます。比較用の旧スレッドworkerを使う `effectCoroutines:false` で実際にworkerが必要な場合は、`local` の指定をエラーにします。
+
+`node bench/reference-counting.mjs` は、参照のコピー、数値set・dict、handler、遅延zip、ABC481 C・DとABC482 Cの大きな入力について、両方式の出力と速度を比較します。コンパイラをPATH上に用意して実行してください。プロセス起動とコンパイルを除き、出力のflushとデータの破棄を含む時間を測ります。各方式を3回予備実行してから、実行順を交互に変えて7回測り、その中央値と全測定値を `native/rc/results.json` に保存します。特定のケース名を引数で指定すると、そのケースだけ測定できます。
+
+2026-11-07、Windows x64 / Ryzen AI MAX+ 395 / MSVC `/O2`での測定結果です。時間の単位はmsです。
+
+| ケース | shared | local |
+| --- | ---: | ---: |
+| vectorの参照を20万回利用 | 7.93 | 3.97 |
+| int setの10万件挿入・検索 | 97.34 | 90.99 |
+| int→int dictの10万件挿入・検索 | 120.44 | 125.68 |
+| handlerを2,000回再開 | 8.86 | 8.59 |
+| 遅延zipを5万組走査 | 40.85 | 39.80 |
+| ABC481 C、20万件の異なる文字列 | 613.27 | 587.68 |
+| ABC481 C、20万件の繰り返し文字列 | 282.56 | 279.03 |
+| ABC481 D、20万頂点のchain | 1360.56 | 1249.10 |
+| ABC481 D、20万頂点のstar | 1424.42 | 1301.94 |
+| ABC482 C、30万点・30万query | 525.57 | 513.99 |
+
+参照コピーの比重が高い例では約2倍、ABC481 Dでは約1.09倍でした。一方、辞書ではこの測定で約4%遅くなり、handlerやzipの差も小さいものでした。測定間のばらつきもあり、常に速くなる最適化ではありません。GCC・Clangでの速度比較は未実施です。
+
+正しさの検証では、派生型へのcastと複数継承、COWのsnapshot、sliceのview、quotationのcapture、継続の再開・放棄・失効、例外を扱い、ローカル参照カウンタの制御ブロックが実行後に残らないことも確認しています。`node bench/atcoder.mjs --rc local` でABC480・ABC481のA〜Dのサンプル・小規模ランダム入力・大規模入力を再検証できます。

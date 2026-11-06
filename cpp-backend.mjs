@@ -4,13 +4,15 @@ import {withStandardFunctions} from './builtin-functions.mjs';
 import {withOption} from './builtin-option.mjs';
 import {ioEffects} from './builtin-effects.mjs';
 import {lookupInstance} from './class-relations.mjs';
-import {vectorOwnership} from './ownership.mjs';
+import {cppLifetimes} from './cpp-lifetimes.mjs';
 import {parseExpression} from './language.mjs';
 import {checkExpression, formatType, missingOperands, StaticTypeError} from './types.mjs';
 import {T, tuple, neverValues, StoppedEmission, items, effectParts, copyEnv, freshTypes} from './native-types.mjs';
 import {transforms, streamTransforms, countTransform} from './iteration.mjs';
 import {patternNames} from './type-syntax.mjs';
 import {hashText} from './hash-map.mjs';
+import {lowerCppCoroutines} from './cpp-coroutines.mjs';
+import {lowerCppRc} from './cpp-rc.mjs';
 
 // Fixed-width octal escapes make generated source independent of the compiler's
 // input encoding and preserve embedded zero bytes in Nyanco strings.
@@ -21,10 +23,9 @@ function stringLiteral(value) {
   return `"${escaped}", ${bytes.length}`;
 }
 const string = value => `std::string(${stringLiteral(value)})`;
-const loc = token => string(token ? `${token.file}:${token.line}:${token.col}` : '<entry>');
 const arguments_ = count => Array.from({length: count}, (_, i) => `a${i}`);
 const resultType = count => `Results<${count}>`;
-const params = count => arguments_(count).map(name => `const Value& ${name}`);
+const params = count => arguments_(count).map(name => `Value ${name}`);
 const scalarTypes = new Map([['int','Int'], ['byte','Byte'], ['float','double'], ['bool','bool']]);
 const cppType = type => {
   const resolved = type && T.prune(type);
@@ -45,8 +46,8 @@ const needsLocalEnv = nodes => nodes.some(node =>
   node.kind === 'application' && needsLocalEnv(node.body)
 );
 const patternKinds = {
-  'word': 'word', 'literal': 'literal', 'constructor': 'constructor', 'list-pattern': 'vector',
-  'push-pattern': 'push', 'record-pattern': 'record', 'tuple-pattern': 'tuple'
+  'word': 'word', 'literal': 'literal', 'constructor': 'constructor', 'list-pattern': 'vector', 'or-pattern': 'alternative',
+  'push-pattern': 'push', 'concat-pattern': 'concatenate', 'record-pattern': 'record', 'tuple-pattern': 'tuple'
 };
 const bitwise = new Map([['.&.','&'], ['.|.','|'], ['xor','^']]);
 const bitPositions = new Set(['.<<.','.>>.','testBit','setBit','clearBit']);
@@ -81,7 +82,7 @@ function pattern(node, constructors) {
   const literals = node.kind === 'literal' ? values([literal(node)]) : '{}';
   const fields = (node.fields || []).map(field => pattern(field,constructors)).join(', ');
   const keys = (node.keys || []).map(string).join(', ');
-  const tag = node.kind === 'constructor' ? `, ${constructors.get(node.value).cpp}::tag` : '';
+  const tag = node.kind === 'constructor' ? `, ${constructors.get(node.value).cpp}::tag` : node.kind==='concat-pattern'?`, {}, ${node.rest}`:'';
   return `Pattern{PatternKind::${kind}, ${name}, ${literals}, {${fields}}, {${keys}}, ${!!node.mutable}${tag}}`;
 }
 function adtLayout(definitions) {
@@ -130,8 +131,9 @@ function unsupported(token, feature = token.value || token.kind) {
 }
 
 export function transpileCpp(program, {
-  expression = 'main', entryNodes = null, showStack = false, optimizeVectors = true, onIR = null
+  expression = 'main', entryNodes = null, showStack = false, optimizeVectors = true, onIR = null, noSourcePaths = false, batchIO = false, nativeVectors = true, effectCoroutines = true, nativeHashTries = true, referenceCounting = 'shared'
 } = {}) {
+  const loc = token => string(token ? `${noSourcePaths ? '' : token.file + ':'}${token.line}:${token.col}` : '<entry>');
   const definitions = withStandardFunctions(withOption(Object.assign(new Map(program.definitions), {
     ...program.definitions, effects: ioEffects(program.definitions.effects)
   })));
@@ -142,7 +144,15 @@ export function transpileCpp(program, {
   const adts = adtLayout(definitions);
   const patterns = nodes => `{${nodes.map(node=>pattern(node,adts.constructors)).join(', ')}}`;
   const ir = createTypedIR(definitions, {ownership: optimizeVectors});
-  const vectorReuse = optimizeVectors ? vectorOwnership(definitions, entry) : new WeakSet();
+  const vectorScalar = type => {
+    if (!nativeVectors || !optimizeVectors || !type) return null;
+    const container = T.prune(type);
+    if (container.tag !== 'list') return null;
+    const item = T.prune(container.item), native = cppType(item);
+    return ['Int','Byte','double'].includes(native) ? native : item.numericLiterals ? 'Int' : null;
+  };
+  const vectorFactory = (type,data) => `${vectorScalar(type) ? 'scalarVector<'+vectorScalar(type)+'>' : 'vector'}(${data})`;
+  const lifetimePlans = new WeakMap();
   const functions = new Map();
   const invocations = new Map();
   const helpers = new Map();
@@ -150,6 +160,16 @@ export function transpileCpp(program, {
   const sitesByNode = new WeakMap();
   const representations = new Map();
   const scalarBindings = new Map();
+  const knownQuotes = new Map();
+  const knownSplits = new Map();
+  let inlineDepth = 0;
+  function materializeQuote(value,ctx) {
+    const known = knownQuotes.get(value);
+    if (!known?.deferred) return;
+    known.deferred = false;
+    const captured = known.directEnv ? captureEnv(ctx,known.env,known.names) : known.env;
+    ctx.add(`Value ${value} = std::make_shared<Quote>(Quote{${known.site}, ${captured}, {}});`);
+  }
   let next = 0;
   const id = prefix => `${prefix}${next++}`;
   const typedDispatch = [...definitions.methods.values()].some(m => m.dispatchIndex < 0 && !m.specialCast);
@@ -172,12 +192,11 @@ export function transpileCpp(program, {
     scalarBindings.set(env,new Map(bindings(parent)));
     return env;
   }
-  function captureEnv(ctx, env) {
+  function captureEnv(ctx, env, names) {
     const scalars = bindings(env);
-    if (!scalars.size) return env;
     const snapshot = id('captured');
-    ctx.add(`Env ${snapshot} = ${env};`);
-    for (const [name,value] of scalars) ctx.add(`${snapshot}.bind(${string(name)}, ${value});`);
+    ctx.add(`Env ${snapshot} = ${env}.select({${names.map(string).join(', ')}});`);
+    for (const name of names) if (scalars.has(name)) ctx.add(`${snapshot}.bind(${string(name)}, ${scalars.get(name)});`);
     return snapshot;
   }
 
@@ -185,6 +204,8 @@ export function transpileCpp(program, {
     const lines = [];
     return {
       lines,
+      move: value => value,
+      pinned: new Set(),
       add: (...text) => lines.push(...text),
       value(expression, type = 'Value') {
         const name = id('v');
@@ -193,7 +214,7 @@ export function transpileCpp(program, {
         return name;
       },
       call(fn, inputs, outputCount) {
-        const call = `${fn}(${inputs.join(', ')})`;
+        const call = `${fn}(${inputs.map((value,i) => this.move(value,inputs.filter((_,j) => i !== j))).join(', ')})`;
         if (!outputCount) { lines.push(call + ';'); return []; }
         const result = id('results');
         lines.push(`auto ${result} = ${call};`);
@@ -206,7 +227,11 @@ export function transpileCpp(program, {
       ctx.add('fail("<generated>", "Non-returning computation returned");');
       return;
     }
-    const returned = output.map((value,i) => readAs(value,types[i]));
+    const returned = output.map((value,i) => {
+      const result = readAs(value,types[i]);
+      return optimizeVectors && types[i] === 'Value' && !output.some((other,j) => i !== j && other === value)
+        ? `std::move(${result})` : result;
+    });
     ctx.add(`return {${returned.join(', ')}};`);
   }
   function assign(ctx, targets, sources) {
@@ -218,11 +243,29 @@ export function transpileCpp(program, {
     });
     targets.forEach((target, i) => ctx.add(`${target} = std::move(${copies[i]});`));
   }
-  function bindPatterns(ctx, env, ps, inputs, types, mutable, at) {
+  function bindPatterns(ctx, env, ps, inputs, types, mutable, at, actualTypes = []) {
     const remaining = [], boxed = [], checks = [];
     for (const [i,p] of ps.entries()) {
       for (const name of patternNames([p])) bindings(env).delete(name);
       const type = types[i];
+      const element = actualTypes[i] && T.prune(actualTypes[i]);
+      if(at&&p.kind==='tuple-pattern'&&element?.tag==='tuple'&&p.fields.length===element.items.length&&
+          p.fields.every((field,j)=>field.kind==='word'&&!field.mutable&&!mutable?.get(field.value)&&cppType(element.items[j])!=='Value')){
+        ctx.add(`if(as<Ptr<Tuple>>(${inputs[i]})->values.size()!=${p.fields.length})fail(${at},"Assignment pattern did not match");`);
+        p.fields.forEach((field,j)=>{if(field.value!=='_'){const native=cppType(element.items[j]);bindings(env).set(field.value,ctx.value(`as<${native}>(as<Ptr<Tuple>>(${inputs[i]})->values[${j}])`,native));}});continue;
+      }
+      const scalar = element?.tag === 'list' ? cppType(element.item) : 'Value';
+      if (at && p.kind === 'list-pattern' && scalar !== 'Value' &&
+          p.fields.every(field => field.kind === 'word' && !field.mutable && !mutable?.get(field.value))) {
+        ctx.add(`if (as<Ptr<VectorBase>>(${inputs[i]})->size() != ${p.fields.length}) fail(${at}, "Assignment pattern did not match");`);
+        const native = vectorScalar(actualTypes[i]);
+        const data = native ? ctx.value(`scalarData<${native}>(${inputs[i]})`,'auto') : null;
+        p.fields.forEach((field,j) => {
+          if (field.value !== '_') bindings(env).set(field.value,ctx.value(native ? `${data}->scalars()[${j}]` : `as<${scalar}>(as<Ptr<VectorBase>>(${inputs[i]})->items()[${j}])`,scalar));
+        });
+        if (data) ctx.add(`${data}.reset();`);
+        continue;
+      }
       if (p.kind === 'word' && p.value === '_') continue;
       if (p.kind === 'word' && type !== 'Value' && !p.mutable && !mutable?.get(p.value) && env !== 'm.globals') {
         const value = ctx.value(readAs(inputs[i],type),type);
@@ -240,17 +283,17 @@ export function transpileCpp(program, {
     const target = at ? id('matched') : env;
     if (remaining.length) {
       if (at) ctx.add(`Env ${target};`);
-      checks.push(`matches(${patterns(remaining)}, ${values(boxed)}, ${target})`);
+      checks.push(`matches(${patterns(remaining)}, ${values(boxed.map((value,i) => at ? ctx.move(value,boxed.filter((_,j) => i !== j)) : value))}, ${target})`);
     }
     const check = checks.length ? checks.join(' && ') : null;
     if (!at) return check;
     if (check) ctx.add(`if (!(${check})) fail(${at}, "Assignment pattern did not match");`);
     for (const name of patternNames(remaining)) {
-      ctx.add(`${env}.bind(${string(name)}, ${target}.read(${string(name)}), ${!!mutable.get(name)});`);
+      ctx.add(`${env}.bind(${string(name)}, ${target}.${optimizeVectors ? 'take' : 'read'}(${string(name)}), ${!!mutable.get(name)});`);
     }
     return null;
   }
-  function branch(ctx, clause, inputs, env, trace, guardTrace = trace) {
+  function branch(ctx, clause, inputs, env, trace, guardTrace = trace, ownParameters = false) {
     const count = clause.patterns.length;
     const patternValues = count ? inputs.slice(-count) : [];
     let state = count ? inputs.slice(0, -count) : [...inputs];
@@ -260,12 +303,18 @@ export function transpileCpp(program, {
     ctx.add(condition ? `if (${condition}) {` : '{');
     if (clause.guard) {
       const guardEnv = cloneEnv(ctx,local);
-      state = emit(clause.guard, state, guardEnv, new Map(), guardTrace, ctx);
+      const pinned = ctx.pinned;
+      ctx.pinned = new Set([...pinned,...inputs]);
+      try { state = emit(clause.guard, state, guardEnv, new Map(), guardTrace, ctx); }
+      finally { ctx.pinned = pinned; }
       if (state.never) {
         ctx.add('}', '}');
         return null;
       }
       ctx.add(`if (${readAs(state.pop(),'bool')}) {`);
+    }
+    if (optimizeVectors && ownParameters) for (const value of patternValues) {
+      if (representation(value) === 'Value') ctx.add(`${value}.reset();`);
     }
     const output = emit(clause.body, state, local, new Map(), trace, ctx);
     return {output, close: () => ctx.add(...(clause.guard ? ['}'] : []), '}', '}')};
@@ -283,7 +332,7 @@ export function transpileCpp(program, {
       if (type !== 'Value') representations.set(arg,type);
       return arg;
     });
-    const parameters = args.map((arg,i) => `${inputTypes[i] === 'Value' ? 'const Value&' : inputTypes[i]} ${arg}`);
+    const parameters = args.map((arg,i) => `${inputTypes[i]} ${arg}`);
     const spec = {fn, inputTypes, outputTypes,
       header: `${nativeResult(outputTypes)} ${fn}(${['Machine& m', ...parameters].join(', ')})`};
     functions.set(key, spec);
@@ -301,7 +350,8 @@ export function transpileCpp(program, {
       const analysis = ir.analyze(clause.body, tuple(bodyInput), env);
       T.unify(analysis.output, tuple(outs), clause.token);
       if (typedDispatch) T.specializeEffects(analysis.effects, concrete.effects, clause.token);
-      const emitted = branch(ctx, clause, args, 'm.globals', analysis.trace, guard?.trace);
+      lifetimePlans.set(analysis.trace,cppLifetimes(clause.body,analysis.trace,{parameters:patternNames(clause.patterns)}));
+      const emitted = branch(ctx, clause, args, 'm.globals', analysis.trace, guard?.trace,true);
       if (emitted) { finish(ctx, emitted.output,outputTypes); emitted.close(); }
       ir.describe(analysis.trace, {kind:'function', name, signature, patterns:clause.patterns}, ins, outs);
       if (guard) ir.describe(guard.trace, {kind:'guard', name, signature});
@@ -317,7 +367,7 @@ export function transpileCpp(program, {
       stack.push(...ctx.call(spec.fn,['m',...args],spec.outputTypes.length));
       return;
     }
-    const call = `${spec.fn}(${['m',...args].join(', ')})`;
+    const call = `${spec.fn}(${['m',...args.map((value,i) => ctx.move(value,args.filter((_,j) => i !== j)))].join(', ')})`;
     if (spec.outputTypes.length === 1) stack.push(ctx.value(call,spec.outputTypes[0]));
     else {
       const result = id('results');
@@ -325,15 +375,27 @@ export function transpileCpp(program, {
       spec.outputTypes.forEach((type,i) => stack.push(ctx.value(`std::get<${i}>(std::move(${result}))`,type)));
     }
   }
-  function registerSite(node, env, body = node.body) {
+  function registerSite(node, env, body = node.body, type = null) {
+    const arities = [];
+    if (type) {
+      // Keep the creation context as well as the minimal stack effect. Loop
+      // callbacks can carry an explicit prefix even when the body preserves it.
+      const contextual = effectParts(T.instantiate(T.generalize(type)));
+      const input = T.row();
+      const analysis = ir.analyze(body,input,copyEnv(env),node.blockLabel);
+      const minimal = effectParts(T.quote(input,analysis.output,analysis.effects));
+      for (const shape of [contextual,minimal]) {
+        arities.push({input:shape.input.length,output:shape.output.length,never:!!shape.output.never});
+      }
+    }
     const key = [...env].map(([name, scheme]) =>
-      name + '=' + (scheme.callable ? 'function:' : 'value:') + formatType(scheme.type)).join(';');
+      name + '=' + (scheme.callable ? 'function:' : 'value:') + formatType(scheme.type)).join(';') + ';arity=' + JSON.stringify(arities);
     if (!sitesByNode.has(node)) sitesByNode.set(node, new Map());
     const existing = sitesByNode.get(node);
     if (existing.has(key)) return existing.get(key);
     if (sites.length >= 500) throw new Error('C++ quotation specialization limit exceeded');
     const site = sites.length;
-    sites.push({site, node, body, env: copyEnv(env)});
+    sites.push({site, node, body, env: copyEnv(env), arities});
     existing.set(key, site);
     return site;
   }
@@ -350,7 +412,31 @@ export function transpileCpp(program, {
     invocations.set(key, spec);
     return spec;
   }
-  function callQuote(ctx, q, effect, stack, at) {
+  function inlineQuote(ctx,q,effect,stack,override = null) {
+    const known = override || knownQuotes.get(q);
+    if (!known || known.ctx !== ctx || known.node.blockLabel || inlineDepth >= 12) return null;
+    const parts = effectParts(effect), signature = freshTypes(parts.input,parts.output,latent(effect));
+    const analysis = ir.analyze(known.node.body,signature.input,copyEnv(known.types));
+    T.unify(analysis.output,signature.output,known.node);
+    if (typedDispatch) T.specializeEffects(analysis.effects,signature.effects,known.node);
+    // The caller can need its original state on another branch or cancellation.
+    const inputs = take(stack,parts.input.length).map(value => ctx.value(value,representation(value)));
+    const local = needsLocalEnv(known.node.body) ? cloneEnv(ctx,known.env) : known.env;
+    inlineDepth++;
+    let result;
+    try { result = emit(known.node.body,inputs,local,new Map(),analysis.trace,ctx); }
+    finally { inlineDepth--; }
+    ir.describe(analysis.trace,{kind:'inline-quotation',site:known.site},parts.input,parts.output);
+    if (result.never) return result;
+    stack.push(...result);
+    return stack;
+  }
+  function callQuote(ctx, q, effect, stack, at, allowInline = false) {
+    if (allowInline) {
+      const result = inlineQuote(ctx,q,effect,stack);
+      if (result) return result;
+    }
+    materializeQuote(q,ctx);
     const spec = invocation(effect);
     stack.push(...ctx.call(spec.fn, ['m', q, at, ...take(stack, spec.input.length)], spec.output.length));
     if (T.isBottom(T.prune(effect).output)) {
@@ -438,12 +524,18 @@ export function transpileCpp(program, {
     }
     if (arithmetic.has(op)) return ctx.value(`numeric<Arithmetic::${arithmetic.get(op)}>(${a}, ${b}, ${loc(token)})`);
     if (op === 'cons') return ctx.value(`prepend(${a}, ${b})`);
-    if (['vpush','push','Push','::'].includes(op)) return ctx.value(`append<false>(${a}, ${b}, ${reuse})`);
+    if (['vpush','push','Push','::'].includes(op)) {
+      const native = vectorScalar(type);
+      return ctx.value(native ? `scalarPush<${native}>(${ctx.move(a,[b])}, ${readAs(b,native)}, ${reuse})` : `append<false>(${ctx.move(a,[b])}, ${b}, ${reuse})`);
+    }
     if (op === 'concat' || op === '++') {
       const container = type && T.prune(type);
-      if (op === 'concat' || container?.tag === 'list') return ctx.value(`append<true>(${a}, ${b}, ${reuse})`);
+      if (op === 'concat' || container?.tag === 'list') {
+        const native = vectorScalar(type);
+        return ctx.value(native ? `scalarConcat<${native}>(${ctx.move(a,[b])}, ${b}, ${reuse})` : `append<true>(${ctx.move(a,[b])}, ${b}, ${reuse})`);
+      }
       if (container?.tag === 'atom' && container.name === 'string') return ctx.value(`concatStrings(${a}, ${b})`);
-      return ctx.value(`concatValues(${a}, ${b}, ${reuse})`);
+      return ctx.value(`concatValues(${ctx.move(a,[b])}, ${b}, ${reuse})`);
     }
     if (op === 'range' || op === '..' || op === '..=') {
       const left = readAs(a,'Int'), right = readAs(b,'Int');
@@ -456,8 +548,13 @@ export function transpileCpp(program, {
     const methodToken = {...token, value:args.length === 2 ? 'at' : 'setAt'};
     const target = customMethod(methodToken, effect);
     if (!target) {
+      const native = vectorScalar(items(effect.input).at(-args.length));
+      if (native && args.length === 2 && optional) return ctx.value(`option(scalarFind<${native}>(${args[0]},${readAs(args[1],'Int')}))`);
+      if (native && args.length === 2 && !optional) return ctx.value(`scalarAt<${native}>(m,${args[0]},${readAs(args[1],'Int')},${loc(token)})`,native);
+      if (native && args.length === 3) return ctx.value(`scalarSetAt<${native}>(m,${ctx.move(args[0],args.slice(1))},${readAs(args[1],'Int')},${readAs(args[2],native)},${optimizeVectors},${loc(token)})`);
       if (optional) return ctx.value(`option(findIndex(${args.join(', ')}))`);
-      return ctx.value(`${args.length === 2 ? 'atIndex' : 'setIndex'}(m, ${args.join(', ')}, ${loc(token)})`);
+      const inputs = args.length === 2 ? args : [ctx.move(args[0],args.slice(1)),...args.slice(1)];
+      return ctx.value(`${args.length === 2 ? 'atIndex' : 'setIndex'}(m, ${inputs.join(', ')}, ${loc(token)}${args.length === 3 ? ', ' + optimizeVectors : ''})`);
     }
     if (!optional) {
       callNamed(ctx, target, effect, args);
@@ -469,6 +566,13 @@ export function transpileCpp(program, {
 ${inner.lines.join('\n')}
 return {option(${args[0]})};
 }, {{"exn", [](const Values&, Ptr<Continuation>) -> Values {return {option()};}}})`, 1)[0];
+  }
+  function callSlice(ctx, token, effect, args) {
+    const name=token.sliceMethod||token.value,target=customMethod({...token,value:name},effect);
+    if(target){callNamed(ctx,target,effect,args);return args[0];}
+    const native = vectorScalar(items(effect.input).at(-args.length));
+    if (native) return ctx.value(`scalarSlice<${native}>(m,${args[0]},${name==='sliceTo'?'Int{0}':readAs(args[1],'Int')},${name==='sliceFrom'?'Int{0}':readAs(args.at(-1),'Int')},${name==='sliceFrom'},${loc(token)})`);
+    return ctx.value(`sliceVector(m, ${args[0]}, ${name==='sliceTo'?'Int{0}':args[1]}, ${name==='sliceFrom'?'Int{0}':args.at(-1)}, ${name==='sliceFrom'}, ${loc(token)})`);
   }
   function shown(ctx, value, type, token, rawStrings = false) {
     type = T.prune(type);
@@ -508,9 +612,9 @@ return {option(${args[0]})};
     const check = call => kind === 'eq' ? `if (!${call}) return false;` : `if (auto rank = ${call}) return rank;`;
     const fallback = {eq:'equal(a,b)',ord:'compare(a,b)',hash:'hashValue(a)',show:'show(a)'}[kind];
     if (type.tag === 'list') {
-      ctx.add('const auto& xs = as<Ptr<Vector>>(a)->values;');
+      ctx.add('const auto& xs = as<Ptr<VectorBase>>(a)->items();');
       if (pair) {
-        ctx.add('const auto& ys = as<Ptr<Vector>>(b)->values;');
+        ctx.add('const auto& ys = as<Ptr<VectorBase>>(b)->items();');
         if (kind === 'eq') ctx.add('if (xs.size() != ys.size()) return false;');
         ctx.add(`for (std::size_t i=0; i<std::min(xs.size(),ys.size()); ++i) ${check(sub(type.item,'xs[i]','ys[i]'))}`,
           kind === 'eq' ? 'return true;' : 'return order(xs.size(),ys.size());');
@@ -555,6 +659,11 @@ return {option(${args[0]})};
         ctx.add(record && !parts.length ? 'return "{:}";'
           : `return "${record ? '{' : '#('}"+join({${parts.join(',')}}, "${record ? ', ' : ' '}")+"${record ? '}' : ')'}";`);
       }
+    } else if (type.tag === 'adt' && type.name === 'set') {
+      ctx.add('const auto& xs = *as<Ptr<HashSetBase>>(a);');
+      if(kind==='eq')ctx.add('const auto& ys = *as<Ptr<HashSetBase>>(b);','if(xs.size()!=ys.size())return false;','for(const auto& pair:xs.keys())if(!ys.contains(pair))return false;','return true;');
+      else if(kind==='hash')ctx.add('std::uint32_t sum=0;',`for(const auto& pair:xs.keys())sum+=${sub(type.args[0],'pair')};`,'return hashMix(hashMix(hashText("set"),xs.size()),sum);');
+      else ctx.add('std::vector<std::string> parts;',`for(const auto& pair:xs.keys())parts.push_back(${sub(type.args[0],'pair')});`,'return "set ["+join(parts,", ")+"]";');
     } else if (type.tag === 'adt' && (['option','result'].includes(type.name) || kind === 'show') && type.name !== 'dict') {
       const constructors = [...definitions.constructors.values()].filter(c => c.typeName === type.name);
       if (constructors.length) {
@@ -586,17 +695,51 @@ return {option(${args[0]})};
     return fn;
   }
 
+  function primitiveReplacement(nodes,trace,target) {
+    return nodes.every(n=>{
+      const info=trace.get(n);if(!info)return false;
+      if(n.kind==='application')return primitiveReplacement(info.application,trace,target);
+      if(n.kind==='scope')return primitiveReplacement(n.body,trace,target);
+      if(['literal','missing','reference'].includes(n.kind))return true;
+      if(n.kind==='capture')return !n.slots.some(s=>s.capturedName);
+      if(n.kind==='word')return n.value!==target&&info.env.has(n.value)&&!info.env.get(n.value).callable;
+      if(n.kind==='binary')return !customMethod(n,info.operatorEffects?.[0])&&primitiveReplacement(n.left,trace,target)&&primitiveReplacement(n.right,trace,target);
+      return false;
+    });
+  }
+
   function emit(nodes, stack, env, holes, trace, ctx) {
     holes.references ??= new Map();
-    for (const instruction of ir.instructions(nodes, trace, {local:env !== 'm.globals'})) {
+    if (!lifetimePlans.has(trace)) lifetimePlans.set(trace,cppLifetimes(nodes,trace,{local:env !== 'm.globals'}));
+    const lifetimes = lifetimePlans.get(trace);
+    const lowered = ir.instructions(nodes, trace, {local:env !== 'm.globals'});
+    for (let instructionIndex=0;instructionIndex<lowered.length;instructionIndex++) {
+      const instruction = lowered[instructionIndex];
       const n = instruction.source;
       const info = instruction.typing;
       if (!info) break;
       const at = loc(n);
-      const reuse = optimizeVectors && (instruction.ownership?.mode === 'move' || vectorReuse.has(n));
+      const reuse = optimizeVectors;
+      const prior = [...stack], previousMove = ctx.move;
+      const previousAliases = ctx.splitAliases;
+      ctx.splitAliases = value => ctx.pinned.has(value) || [...holes.values(),...holes.references.values()].includes(value);
+      const protectedValue = value => ctx.pinned.has(value) || stack.includes(value) || [...holes.values(),...holes.references.values()].includes(value);
+      ctx.move = (value,other = []) => { materializeQuote(value,ctx); return optimizeVectors && /^(?:(?:v|arg|a)\d+|old|item)$/.test(value) &&
+        representation(value) === 'Value' && !protectedValue(value) && !other.includes(value)
+        ? `std::move(${value})` : value; };
+      if (instruction.ir && optimizeVectors) {
+        if (lifetimes.takes.has(n)) instruction.ir.memory = {binding:'take-if-unshared',reason:'last-use-before-write-or-scope-end'};
+        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','hpush','hpop','qpush','qpushFront','qpop','qpopBack'].includes(n.value)) {
+          instruction.ir.ownership = {mode:'cow',reason:'runtime-reference-count',staticMode:instruction.ownership?.mode};
+        }
+      }
       const child = (body, initial = [], bindings = holes, into = ctx) => {
         const scope = needsLocalEnv(body) ? cloneEnv(into,env) : env;
-        const result = emit(body, initial, scope, bindings, trace, into);
+        const pinned = into.pinned;
+        into.pinned = new Set([...pinned,...(initial === stack ? [] : stack)]);
+        let result;
+        try { result = emit(body, initial, scope, bindings, trace, into); }
+        finally { into.pinned = pinned; }
         if (result.never) throw new StoppedEmission();
         return result;
       };
@@ -607,7 +750,7 @@ return {option(${args[0]})};
             const removed = new Set();
             for (const slot of n.slots) {
               const value = stack.at(-1-slot.index);
-              holes.references.set(slot, value);
+              if (!slot.capturedName) holes.references.set(slot, value);
               if (slot.capturedName) ctx.add(`${env}.bind(${string(slot.capturedName)}, ${value});`);
               if (!slot.peek) removed.add(slot.index);
             }
@@ -616,6 +759,7 @@ return {option(${args[0]})};
           }
           case 'reference':
             stack.push(holes.references.get(n));
+            holes.references.delete(n);
             break;
           case 'missing':
             if (holes.has(n)) stack.push(holes.get(n));
@@ -647,9 +791,13 @@ return {option(${args[0]})};
             stack = child(n.body, stack);
             break;
           case 'list':
-          case 'tuple':
-            stack.push(ctx.value(`${n.kind === 'list' ? 'vector' : 'tuple'}(${values(child(n.body))})`));
+          case 'tuple': {
+            const elements = child(n.body);
+            const owned = elements.map((value,i) => ctx.move(value,elements.filter((_,j) => i !== j)));
+            const native = n.kind === 'list' && vectorScalar(T.prune(info.output).item);
+            stack.push(ctx.value(native ? `scalarVector<${native}>(std::vector<${native}>{${elements.map(value=>readAs(value,native)).join(', ')}})` : `${n.kind === 'list' ? 'vector' : 'tuple'}(${values(owned)})`));
             break;
+          }
           case 'interpolation': {
             const args = take(stack, n.fields.filter(f => f.empty).length);
             let pos = 0;
@@ -663,12 +811,13 @@ return {option(${args[0]})};
           }
           case 'record': {
             const bound = bindHoles(n, stack, holes);
-            const fields = n.fields.map(f => `{${string(f.name)}, ${child(f.body, [], bound)[0]}}`);
+            const fields = n.fields.map(f => `{${string(f.name)}, ${ctx.move(child(f.body, [], bound)[0])}}`);
             stack.push(ctx.value(`record({${fields.join(', ')}})`));
             break;
           }
           case 'dict': {
-            const dict = makeDict(ctx, T.prune(T.prune(info.output).item).args[0], n);
+            const dictType=T.prune(T.prune(info.output).item);
+            const dict = makeDict(ctx, dictType.args[0], n,dictType.args[1]);
             for (let i=0; i<n.fields.length; i+=2) {
               const key = child(n.fields[i].body)[0];
               const value = child(n.fields[i+1].body)[0];
@@ -684,6 +833,7 @@ return {option(${args[0]})};
             stack.push(ctx.value(`tupleAt(${stack.pop()}, ${n.index})`));
             break;
           case 'list-index': {
+            if(n.sliceMethod){const source=stack.pop();stack.push(callSlice(ctx,n,info.indexGet,[source,...n.fields.map(f=>child(f.body)[0])]));break;}
             const source = stack.pop(), index = child(n.body)[0];
             stack.push(callIndex(ctx, n, info.indexGet, [source, index], n.optional));
             break;
@@ -714,19 +864,27 @@ return {option(${args[0]})};
               n.updating ? new Map() : holes, trace, inner);
             inner.add(result.never ? `fail(${at}, "Non-returning update returned");` : `return ${result[0]};`);
             const replace = `[&](Value old) -> Value {\n${inner.lines.join('\n')}\n}`;
-            stack.push(ctx.value(`updatePath(m, ${source}, {${path.join(', ')}}, 0, ${replace}, ${!!n.defaulting}, ${!!n.updating}, ${reuse}, ${at})`));
+            stack.push(ctx.value(`updatePath(m, ${ctx.move(source,args)}, {${path.join(', ')}}, 0, ${replace}, ${!!n.defaulting}, ${!!n.updating}, ${reuse}, ${at})`));
             break;
           }
           case 'quote': {
-            const site = registerSite(n, info.env);
-            const captured = captureEnv(ctx,env);
-            stack.push(ctx.value(`std::make_shared<Quote>(Quote{${site}, ${captured}, {}})`));
+            const site = registerSite(n, info.env,n.body,T.prune(info.output).item);
+            const names = lifetimes.captures.get(n) || [];
+            const consumer = lowered.slice(instructionIndex+1).find(i => i.source.kind !== 'quote')?.source;
+            const immediate = consumer?.kind === 'word' && !trace.get(consumer)?.env.has(consumer.value) &&
+              ['call','if','when','while','each','fold','vmap','vfilter','partitionPoint'].includes(consumer.value) &&
+              (!definitions.has(consumer.value) || consumer.value === 'partitionPoint' && definitions.get(consumer.value)[0].token.file === '<standard>') && !n.blockLabel;
+            const directEnv = immediate && !needsLocalEnv(n.body);
+            const captured = directEnv ? env : captureEnv(ctx,env,names);
+            const value = immediate ? id('v') : ctx.value(`std::make_shared<Quote>(Quote{${site}, ${captured}, {}})`);
+            knownQuotes.set(value,{node:n,env:captured,types:copyEnv(info.env),ctx,site,names,directEnv,deferred:immediate});
+            stack.push(value);
             break;
           }
           case 'local-function': {
             const site = registerSite(n, info.localEnv);
             const name = string(n.name);
-            const captured = captureEnv(ctx,env);
+            const captured = captureEnv(ctx,env,lifetimes.captures.get(n) || []);
             ctx.add(`${env}.bind(${name}, std::make_shared<Quote>(Quote{${site}, ${captured}, ${name}}));`);
             bindings(env).delete(n.name);
             break;
@@ -735,13 +893,43 @@ return {option(${args[0]})};
             const inputs = take(stack, n.patterns.length);
             const inputTypes = items(info.input);
             const types = inputTypes.slice(inputTypes.length-inputs.length).map(cppType);
-            bindPatterns(ctx,env,n.patterns,inputs,types,new Map(n.names.map((name,i)=>[name,n.mutable[i]])),at);
+            bindPatterns(ctx,env,n.patterns,inputs,types,new Map(n.names.map((name,i)=>[name,n.mutable[i]])),at,inputTypes.slice(inputTypes.length-inputs.length));
             break;
           }
           case 'update': {
             const names = n.names || [n.name];
+            const flatten=nodes=>nodes.flatMap(node=>node.kind==='scope'?flatten(node.body):node.kind==='application'?flatten(trace.get(node).application):node.kind==='capture'&&!node.slots.length?[]:[node]);
+            const ordered=flatten(n.body),operation=ordered.at(-1);
+            if(optimizeVectors&&names.length===1&&ordered.length===3&&ordered[0].kind==='word'&&ordered[0].value===names[0]&&
+                ['sinsert','sremove','qpush','qpushFront'].includes(operation?.value)&&primitiveReplacement([ordered[1]],trace,names[0])){
+              const container=T.prune(T.prune(trace.get(ordered[0]).output).item),key=container.args?.[0];
+              const primitive=key&&T.prune(key).tag==='atom'&&!lookupInstance(definitions.classes.get('hash'),[key])&&!lookupInstance(definitions.classes.get('eq'),[key]);
+              if(container.name==='deque'||container.name==='set'&&primitive){
+                const value=child([ordered[1]])[0],fn=container.name==='set'?`cellSetOp<${operation.value==='sinsert'?0:1}>`:`cellQueuePush<${operation.value==='qpush'?0:1}>`;
+                ctx.add(`${fn}(${env}.cell(${string(names[0])}),${value});`);break;
+              }
+            }
+            const simple=n.body.length===1&&n.body[0].kind==='scope'?n.body[0].body:n.body;
+            const [owner,path]=simple;
+            if(optimizeVectors&&names.length===1&&simple.length===2&&owner.kind==='word'&&owner.value===names[0]&&path.kind==='path-update'&&path.path.length===1&&path.path[0].kind==='list-index'&&!path.path[0].optional&&
+                path.fields.every(field=>primitiveReplacement(field.body,trace,names[0]))){
+              const container=T.prune(T.prune(trace.get(owner).output).item),native=vectorScalar(container);
+              const dict=container.tag==='adt'&&container.name==='dict',keyType=dict&&T.prune(container.args[0]);
+              const primitiveKey=dict&&keyType.tag==='atom'&&['int','byte','float','char','bool','string'].includes(keyType.name)&&!lookupInstance(definitions.classes.get('hash'),[keyType])&&!lookupInstance(definitions.classes.get('eq'),[keyType]);
+              if(native&&!path.defaulting||primitiveKey){
+                const index=child(path.fields[0].body)[0],inner=context();
+                const result=emit(path.fields.at(-1).body,path.updating?['old']:[],env,path.updating?new Map():holes,trace,inner);
+                if(!result.never&&result.length===1){
+                  const replace=`[&](Value old)->Value {\n${inner.lines.join('\n')}\nreturn ${result[0]};\n}`;
+                  ctx.add(native?`cellScalarSet<${native}>(m,${env}.cell(${string(names[0])}),${readAs(index,'Int')},${replace},${!!path.updating},${at});`:
+                    `cellDictSet(m,${env}.cell(${string(names[0])}),${index},${replace},${!!path.updating},${!!path.defaulting},${at});`);
+                  if(instruction.ir)instruction.ir.memory={binding:'atomic-index-update',reason:'primitive-evaluation-before-cell-transfer'};
+                  break;
+                }
+              }
+            }
             const output = child(n.body, n.fromStack ? take(stack, names.length) : []);
-            names.forEach((name, i) => ctx.add(`${env}.update(${string(name)}, ${output[i]});`));
+            names.forEach((name, i) => ctx.add(`${env}.update(${string(name)}, ${ctx.move(output[i],output.filter((_,j) => i !== j))});`));
             break;
           }
           case 'case': {
@@ -791,10 +979,13 @@ return {option(${args[0]})};
             break;
           }
           case 'word':
-            stack = word(n, info, stack, ctx, env, reuse);
+            stack = word(n, info, stack, ctx, env, reuse,lifetimes.takes.has(n));
             break;
           default:
             unsupported(n);
+        }
+        if (optimizeVectors && !['application','scope'].includes(n.kind)) for (const value of new Set(prior)) {
+          if (/^(?:v|arg|a)\d+$/.test(value) && representation(value) === 'Value' && !protectedValue(value) && !knownQuotes.get(value)?.deferred) ctx.add(`${value}.reset();`);
         }
         if (stack.never) return stack;
         if (T.isBottom(info.output)) {
@@ -804,6 +995,9 @@ return {option(${args[0]})};
       } catch (error) {
         if (error instanceof StoppedEmission) return neverValues();
         throw error;
+      } finally {
+        ctx.move = previousMove;
+        ctx.splitAliases = previousAliases;
       }
     }
     return stack;
@@ -864,10 +1058,18 @@ return {option(${args[0]})};
     return result;
   }
 
-  function makeDict(ctx, type, token) {
+  function trieScalar(type,key=false) {
+    if(!nativeHashTries||!optimizeVectors||!type)return 'Value';
+    type=T.prune(type);
+    if(key&&(lookupInstance(definitions.classes.get('hash'),[type])||lookupInstance(definitions.classes.get('eq'),[type])))return 'Value';
+    const native=cppType(type);
+    return ['Int','Byte','double'].includes(native)?native:type.numericLiterals?'Int':'Value';
+  }
+  function makeDict(ctx, type, token, valueType=null) {
     const hash = valueOperation('hash',type,token);
     const dict = id('dict');
-    ctx.add(`auto ${dict} = std::make_shared<Dict>();`);
+    const key=trieScalar(type,true),value=trieScalar(valueType);
+    ctx.add(`Ptr<DictBase> ${dict} = std::make_shared<${key==='Value'&&value==='Value'?'Dict':`NativeDict<${key},${value}>`}>();`);
     ctx.add(`${dict}->hash = [&globals=m.globals](const Value& key) { Machine m{globals,{}}; return ${hash}(m,key); };`,
       `${dict}->equal = equal;`);
     return dict;
@@ -885,9 +1087,39 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
   }
   function callback(q, effect, at) {
     const inner = context();
-    const result = callQuote(inner, q, effect, ['item'], at);
+    const known = knownQuotes.get(q);
+    const expanded = known && !known.node.blockLabel
+      ? inlineQuote(inner,q,effect,['item'],{...known,ctx:inner,env:`as<Ptr<Quote>>(${q})->env`})
+      : null;
+    const result = expanded || callQuote(inner, q, effect, ['item'], at);
     if (!result.never) inner.add(`return ${result[0]};`);
     return `[${q}](Machine& m, Value item) -> Value {\n${inner.lines.join('\n')}\n}`;
+  }
+  function directPartitionPoint(n,info,stack,ctx) {
+    const q = stack.at(-1), known = knownQuotes.get(q);
+    if (!known || known.ctx !== ctx || known.node.blockLabel || inlineDepth >= 12) return false;
+    const predicate = items(info.input).at(-1), parts = effectParts(predicate);
+    const signature = freshTypes(parts.input,parts.output,latent(predicate));
+    const probe = ir.analyze(known.node.body,signature.input,copyEnv(known.types));
+    const effects = T.effectDescription(probe.effects);
+    // Retain the ordinary function for effectful predicates, including routed
+    // break/cancel, whose handler and rollback semantics must be preserved.
+    if (effects.entries.length || effects.tails.length || T.isBottom(probe.output)) return false;
+    const [source] = take(stack,2), state = stack.map(value => ctx.value(value,representation(value)));
+    const lo = ctx.value('Int{0}','Int'), hi = ctx.value(`vectorLength(${source})`,'Int');
+    const native = vectorScalar(items(info.input).at(-2));
+    const data = native ? id('scalarData') : null;
+    if (native) ctx.add(`auto ${data} = scalarData<${native}>(${source});`);
+    ctx.add(`while (${lo} < ${hi}) {`);
+    const mid = ctx.value(`${lo} + (${hi} - ${lo}) / 2`,'Int');
+    const itemType = cppType(T.prune(items(info.input).at(-2)).item);
+    const item = ctx.value(native ? `${data}->scalars()[static_cast<std::size_t>(${mid})]` : readAs(`as<Ptr<VectorBase>>(${source})->items()[static_cast<std::size_t>(${mid})]`,itemType),native || itemType);
+    const output = inlineQuote(ctx,q,predicate,[...state,item]);
+    const condition = output.pop();
+    assign(ctx,state,output);
+    ctx.add(`if (${readAs(condition,'bool')}) ${lo} = ${mid} + 1; else ${hi} = ${mid};`, '}');
+    stack.splice(0,stack.length,...state,lo);
+    return true;
   }
   function replaceOnBreak(ctx, stack, breakResult) {
     if (!stack.length) return;
@@ -896,18 +1128,19 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     ctx.add('}');
   }
 
-  function word(n, info, stack, ctx, env, reuse) {
+  function word(n, info, stack, ctx, env, reuse,takeBinding = false) {
     const name = n.value, at = loc(n), get = key => `${env}.read(${string(key)})`;
     const label = n.handlerLabel ? `as<Ptr<Label>>(${get(n.handlerLabel)})` : 'Ptr<Label>{}';
     const pop = () => stack.pop();
     const push = expression => stack.push(ctx.value(expression));
     const inputs = () => items(info.input);
     const outCount = () => items(info.output).length;
-    const call = (q, effect, state = stack, into = ctx) => callQuote(into, q, effect, state, at);
+    const call = (q, effect, state = stack, into = ctx) => callQuote(into, q, effect, state, at,into === ctx);
     if (info.env.has(name)) {
       const callable = info.env.get(name).callable;
       const type = callable ? 'Value' : cppType(T.prune(info.output).item);
-      const value = bindings(env).get(name) || ctx.value(readAs(get(name),type),type);
+      const consumeBinding = optimizeVectors && takeBinding;
+      const value = bindings(env).get(name) || ctx.value(readAs(consumeBinding ? `${env}.take(${string(name)})` : get(name),type),type);
       if (n.ephemeral) {
         bindings(env).delete(name);
         ctx.add(`${env}.erase(${string(name)});`);
@@ -920,6 +1153,32 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     const custom = method && !method.specialCast && !method.specialEach && customMethod(n, info.effect);
     if (custom) {
       callNamed(ctx, custom, info.effect, stack);
+      return stack;
+    }
+    if (name === 'partitionPoint' && definitions.get(name)?.[0].token.file === '<standard>' && directPartitionPoint(n,info,stack,ctx)) return stack;
+    if(['repeat','repeatWith'].includes(name)&&definitions.get(name)?.[0].token.file==='<standard>'){
+      const value=stack.at(-1),known=knownQuotes.get(value);
+      if(name==='repeat'||!known?.node.blockLabel){
+        stack.pop();const inner=context();
+        const result=name==='repeat'?[value]:(known?inlineQuote(inner,value,items(info.input).at(-1),[],{...known,ctx:inner,env:`as<Ptr<Quote>>(${value})->env`}):null)??callQuote(inner,value,items(info.input).at(-1),[],at);
+        if(!result.never)inner.add(`visit(${result[0]});`);
+        stack.push(ctx.value(`stream([${value}](Machine& parent,const Visit& visit){loop(parent,[&](Machine& m){while(true){\n${inner.lines.join('\n')}\n}});})`));return stack;
+      }
+    }
+    if (name === 'unzip' && definitions.get(name)?.[0].token.file === '<standard>') {
+      const source = stack.pop(), type = items(info.input).at(-1);
+      const gathered = collect(ctx,stack,walker(source,type,n),'Ptr<Label>{}');
+      const pairs = gathered.pop(), left = id('unzipped'), right = id('unzipped');
+      const outputTypes = items(info.output), leftType = outputTypes.at(-2), rightType = outputTypes.at(-1);
+      const ln = vectorScalar(leftType), rn = vectorScalar(rightType);
+      ctx.add(`${ln ? 'std::vector<'+ln+'>' : 'Values'} ${left};`, `${rn ? 'std::vector<'+rn+'>' : 'Values'} ${right};`,
+        `${left}.reserve(as<Ptr<VectorBase>>(${pairs})->items().size());`,
+        `${right}.reserve(as<Ptr<VectorBase>>(${pairs})->items().size());`,
+        `for (const auto& pair : as<Ptr<VectorBase>>(${pairs})->items()) {`,
+        `const auto& fields = as<Ptr<Tuple>>(pair)->values;`,
+        `${left}.push_back(${ln ? 'as<'+ln+'>(fields[0])' : 'fields[0]'});`,`${right}.push_back(${rn ? 'as<'+rn+'>(fields[1])' : 'fields[1]'});`, '}');
+      gathered.push(ctx.value(vectorFactory(leftType,`std::move(${left})`)),ctx.value(vectorFactory(rightType,`std::move(${right})`)));
+      stack.splice(0,stack.length,...gathered);
       return stack;
     }
     if (definitions.has(name)) {
@@ -950,15 +1209,19 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       else push(`cast<${castType.get(conversion.destination)}>(m, ${pop()}, ${at})`);
     } else if (name === 'not') {
       stack.push(ctx.value(`!${readAs(pop(),'bool')}`,'bool'));
-    } else if (['head','tail','length','chars','bytes'].includes(name)) {
+    } else if (['chars','bytes','vchars','vbytes'].includes(name)) {
+      const kind = name.startsWith('v') ? 'textVector' : 'textStream';
+      const walk = name.endsWith('chars') ? 'walkChars' : 'walkBytes';
+      push(`${kind}<${walk}>(${stack.pop()}, ${at})`);
+    } else if (['head','tail','length'].includes(name)) {
       const value = pop();
       if (name === 'length') stack.push(ctx.value(`vectorLength(${value})`,'Int'));
-      else if (name === 'bytes') push(`bytes(${value})`);
-      else if (name === 'chars') push(`chars(${value}, ${at})`);
       else push(`${name === 'head' ? 'vectorHead' : 'vectorTail'}(${value}, ${at})`);
     } else if (name === 'hash') {
       const operation = valueOperation('hash',inputs().at(-1),n);
       push(`static_cast<Int>(${operation}(m,${pop()}))`);
+    } else if (method?.specialSlice) {
+      stack.push(callSlice(ctx,n,info.effect,take(stack,name==='sliceBetween'?3:2)));
     } else if (name === 'at' || name === 'setAt') {
       stack.push(callIndex(ctx,n,info.effect,take(stack,name === 'at' ? 2 : 3)));
     } else if (['parseInt','parseFloat','toNum'].includes(name)) {
@@ -1013,7 +1276,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       ctx.add('}', `}, ${label});`);
       replaceOnBreak(ctx,outputs,result);
       return outputs;
-    } else if (['each','fold','vmap','vfilter'].includes(name)) {
+    } else if (['each','fold','vmap','vfilter','vscan'].includes(name)) {
       return iterate(n, info, stack, ctx, label);
     } else if (name === 'compose') {
       const [a,b] = take(stack,2), types = inputs();
@@ -1023,7 +1286,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       };
       const captured = new Map([['__a',portable(types.at(-2))],['__b',portable(types.at(-1))]]);
       const body = ['__a','call','__b','call'].map(value => ({...n,kind:'word',value}));
-      const site = registerSite(n,captured,body), e = id('env');
+      const site = registerSite(n,captured,body,T.prune(info.output).item), e = id('env');
       ctx.add(`Env ${e};`, `${e}.bind("__a", ${a});`, `${e}.bind("__b", ${b});`);
       push(`std::make_shared<Quote>(Quote{${site}, ${e}, {}})`);
     } else if (name === 'handle') {
@@ -1061,24 +1324,48 @@ ${handler.lines.join('\n')}
 
   function iterate(n, info, stack, ctx, label) {
     const type = items(info.input), name = n.value, at = loc(n);
-    const q = stack.pop(), acc = name === 'fold' ? stack.pop() : null, source = stack.pop();
+    const q = stack.pop(), acc = ['fold','vscan'].includes(name) ? stack.pop() : null, source = stack.pop();
+    const split = knownSplits.get(source), quote = knownQuotes.get(q);
+    const parser = quote?.node.body.filter(node => node.kind !== 'capture');
+    if (name === 'vmap' && split?.ctx === ctx && quote?.ctx === ctx && !quote.node.blockLabel &&
+        parser.length === 1 && parser[0].kind === 'word' && ['parseInt','parseFloat'].includes(parser[0].value) &&
+        !definitions.has(parser[0].value) && !quote.types.has(parser[0].value) &&
+        !stack.includes(source) && !ctx.splitAliases?.(source) &&
+        !ctx.lines.slice(split.line+1).some(line => new RegExp('\\b'+source+'\\b').test(line))) {
+      // The stream is consumed once here. Its producer can store the two
+      // strings directly; no substring Values or type-erased walker are needed.
+      ctx.lines[split.line] = `SplitInput ${source}{as<std::string>(${split.text}), as<std::string>(${split.separator})};`;
+      representations.set(source,'SplitInput');
+      const values = id('parsed'), broken = id('breakResult');
+      const state = stack.map(value => ctx.value(value,representation(value)));
+      const number = parser[0].value === 'parseInt' ? 'Int' : 'double';
+      const native = vectorScalar(T.prune(info.output).item);
+      ctx.add(`${native ? 'std::vector<'+native+'>' : 'Values'} ${values};`, `auto ${broken} = loop(m,[&](Machine& m) {`,
+        `splitParts(${source},[&](std::string_view part) {`,
+        `${values}.push_back(${native ? 'as<'+native+'>(' : ''}parseNumberText<${number},true>(m,part,${loc(parser[0])})${native ? ')' : ''});`, '});', `},${label});`);
+      state.push(ctx.value(vectorFactory(T.prune(info.output).item,`std::move(${values})`)));
+      replaceOnBreak(ctx,state,broken);
+      return state;
+    }
     const state = stack.map(v => ctx.value(v));
     const accumulator = acc ? ctx.value(acc) : null;
-    const collecting = name === 'vmap' || name === 'vfilter';
+    const collecting = name === 'vmap' || name === 'vfilter' || name === 'vscan';
     const collected = id('collected'), broken = id('breakResult'), walk = id('walk');
     if (collecting) ctx.add(`Values ${collected};`);
+    if (name === 'vscan') ctx.add(`${collected}.push_back(${accumulator});`);
     ctx.add(`auto ${walk} = ${walker(source,type.at(acc ? -3 : -2),n)};`,
       `auto ${broken} = loop(m, [&](Machine& m) {`, `${walk}(m, [&](Value item) {`);
-    const output = callQuote(ctx,q,type.at(-1),[...state,...(acc ? [accumulator] : []),'item'],at);
+    const output = callQuote(ctx,q,type.at(-1),[...state,...(acc ? [accumulator] : []),'item'],at,true);
     if (!output.never) {
       if (name === 'vmap') ctx.add(`${collected}.push_back(${output.pop()});`);
       if (name === 'vfilter') ctx.add(`if (truth(${output.pop()})) ${collected}.push_back(item);`);
       if (acc) ctx.add(`${accumulator} = ${output.pop()};`);
+      if (name === 'vscan') ctx.add(`${collected}.push_back(${accumulator});`);
       assign(ctx,state,output);
     }
     ctx.add('});', `}, ${label});`);
-    if (acc) state.push(accumulator);
-    if (collecting) state.push(ctx.value(`vector(std::move(${collected}))`));
+    if (acc && name !== 'vscan') state.push(accumulator);
+    if (collecting) state.push(ctx.value(vectorFactory(T.prune(info.output).item,`std::move(${collected})`)));
     replaceOnBreak(ctx,state,broken);
     return state;
   }
@@ -1086,6 +1373,22 @@ ${handler.lines.join('\n')}
   function collectionWord(n, info, stack, ctx, label, reuse) {
     const name = n.value, at = loc(n), types = items(info.input);
     const push = expression => stack.push(ctx.value(expression));
+    if(name==='vreplicate'){
+      const [count,value]=take(stack,2),native=vectorScalar(T.prune(info.output).item);
+      const size=`static_cast<std::size_t>(countValue(m,${count},"vreplicate",${at}))`;
+      push(native?`scalarVector<${native}>(std::vector<${native}>(${size},${readAs(value,native)}))`:`vector(Values(${size},${value}))`);return stack;
+    }
+    if(name==='__emptySet'){
+      const type=T.prune(T.prune(info.output).item).args[0],hash=valueOperation('hash',type,n),eq=valueOperation('eq',type,n),out=id('set');
+      const native=trieScalar(type,true);
+      ctx.add(`Ptr<HashSetBase> ${out}=std::make_shared<${native==='Value'?'HashSet':`NativeSet<${native}>`}>();`,`${out}->hash=[&globals=m.globals](const Value& key){Machine m{globals,{}};return ${hash}(m,key);};`,`${out}->equal=[&globals=m.globals](const Value& a,const Value& b){Machine m{globals,{}};return ${eq}(m,a,b);};`);
+      push(out);return stack;
+    }
+    if(['sinsert','sremove','scontains','slength','sisEmpty'].includes(name)){
+      if(name==='slength'||name==='sisEmpty'){const source=stack.pop();push(name==='slength'?`static_cast<Int>(as<Ptr<HashSetBase>>(${source})->size())`:`as<Ptr<HashSetBase>>(${source})->size()==0`);return stack;}
+      const [source,key]=take(stack,2),op={sinsert:0,sremove:1,scontains:2}[name];
+      push(`setOp<${op}>(${ctx.move(source,[key])},${key})`);return stack;
+    }
     if (transforms.has(name)) {
       const mode = transforms.get(name);
       const arg = mode === 'flatten' ? null : stack.pop(), source = stack.pop();
@@ -1106,13 +1409,15 @@ walkItem(m,visit);
     }
     if (name === 'split') {
       const [source,separator] = take(stack,2);
-      push(`split(${source}, ${separator})`);
+      const line = ctx.lines.length, result = ctx.value(`split(${source}, ${separator})`);
+      knownSplits.set(result,{text:source,separator,line,ctx});
+      stack.push(result);
       return stack;
     }
     if (name === 'values') {
       const source = stack.pop();
       push(`stream([${source}](Machine&, const Visit& visit) {
-for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
+for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.second);
 })`);
       return stack;
     }
@@ -1125,7 +1430,8 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
     if (name === 'zip' || name === 'vzip') {
       const [left,right] = take(stack,2);
       const lazy = name === 'zip';
-      const combined = ctx.value(`zip(${walker(left,types.at(-2),n)}, ${walker(right,types.at(-1),n)}, ${lazy ? label : 'Ptr<Label>{}'})`);
+      const vectors=T.prune(types.at(-2)).tag==='list'&&T.prune(types.at(-1)).tag==='list';
+      const combined = ctx.value(vectors?`zipVectors(${left},${right},${lazy?label:'Ptr<Label>{}'})`:`zip(${walker(left,types.at(-2),n)}, ${walker(right,types.at(-1),n)}, ${lazy ? label : 'Ptr<Label>{}'})`);
       if (lazy) stack.push(combined);
       else return collect(ctx,stack,`[${combined}](Machine& m,const Visit& visit){ walk(m,${combined},visit); }`,label);
       return stack;
@@ -1148,11 +1454,16 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
       push(`combinatorics<Combinatorics::${name}>(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count})`);
       return stack;
     }
-    if (['deque','heap','qpush','qpushFront','qpop','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
+    if (['__emptyDeque','__emptyHeap','qpush','qpushFront','qpop','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
          'hpush','hpop','hpeek','hlength','hisEmpty'].includes(name)) {
-      if (name === 'deque' || name === 'heap') {
-        push(`std::make_shared<Collection>(Collection{${string(name)}, {}})`);
+      if (name === '__emptyDeque' || name === '__emptyHeap') {
+        push(name==='__emptyDeque'?`std::make_shared<Queue>()`:`std::make_shared<Collection>(Collection{"heap", {}})`);
         return stack;
+      }
+      if(name.startsWith('q')){
+        const op={qpush:0,qpushFront:1,qpop:2,qpopBack:3,qpeek:4,qpeekBack:5,qlength:6,qisEmpty:7}[name];
+        const item=op<2?stack.pop():'Value{}',source=stack.pop();
+        stack.push(...ctx.call(`queueOp<${op}>`,[source,item],2).slice(0,op===2||op===3?2:1));return stack;
       }
       const pushing = ['qpush','qpushFront','hpush'].includes(name);
       const item = pushing ? stack.pop() : 'Value{}', source = stack.pop();
@@ -1168,8 +1479,8 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
         .slice(0,['qpop','qpopBack','hpop'].includes(name) ? 2 : 1));
       return stack;
     }
-    if (['toVector','join','nth','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy',
-         'all','any','toDict','counts','groupBy'].includes(name)) {
+    if (['vector','join','nth','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy',
+         'all','any','dict','counts','groupBy'].includes(name)) {
       return consume(n, info, stack, ctx, label);
     }
     unsupported(n);
@@ -1179,13 +1490,13 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
     T.unify(effect.input,T.stack(T.EMPTY,type,type));
     return effect;
   }
-  function collect(ctx, stack, walk, label) {
+  function collect(ctx, stack, walk, label, resultType = null) {
     const result = id('items'), broken = id('breakResult');
     const state = stack.map(v => ctx.value(v));
     ctx.add(`Values ${result};`, `auto ${broken} = loop(m,[&](Machine& m) {
 (${walk})(m,[&](Value item){${result}.push_back(std::move(item));});
 }, ${label});`);
-    state.push(ctx.value(`vector(std::move(${result}))`));
+    state.push(ctx.value(vectorFactory(resultType,`std::move(${result})`)));
     replaceOnBreak(ctx,state,broken);
     return state;
   }
@@ -1193,10 +1504,15 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
     const name = n.value, types = items(info.input), at = loc(n);
     const withArg = ['join','nth','sortBy','maxiBy','miniBy','all','any','groupBy'].includes(name);
     const arg = withArg ? stack.pop() : null, source = stack.pop();
+    const native = vectorScalar(types.at(-1));
+    if (native && ['sort','reverse'].includes(name) && (name === 'reverse' || !customMethod({...n,value:'<'},info.comparison))) {
+      stack.push(ctx.value(`scalarOrder<${native}>(${ctx.move(source)},${name === 'reverse'},${optimizeVectors})`));
+      return stack;
+    }
     const walk = walker(source,types.at(arg ? -2 : -1),n);
-    if (name === 'toVector') return collect(ctx,stack,walk,label);
-    const dict = ['toDict','counts','groupBy'].includes(name)
-      ? makeDict(ctx,T.prune(T.prune(info.output).item).args[0],n) : null;
+    if (name === 'vector') return collect(ctx,stack,walk,label,T.prune(info.output).item);
+    const dict = ['dict','counts','groupBy'].includes(name)
+      ? makeDict(ctx,T.prune(T.prune(info.output).item).args[0],n,T.prune(T.prune(info.output).item).args[1]) : null;
     const key = arg && !['join','nth'].includes(name) ? callback(arg,types.at(-1),at) : '{}';
     const cmp = context();
     const order = info.comparison && !['groupBy','all','any'].includes(name);
@@ -1226,9 +1542,14 @@ for (const auto& pair : as<Ptr<Dict>>(${source})->entries()) visit(pair.second);
   let changed = true;
   while (changed) {
     changed = false;
-    for (const spec of invocations.values()) for (const {site,node,body,env} of sites) {
+    for (const spec of invocations.values()) for (const {site,node,body,env,arities} of sites) {
       if (spec.cases.has(site)) continue;
       spec.cases.set(site,null);
+      // A non-returning quotation can discard any preserved stack prefix.
+      const compatibleArity = arities.length === 0 || arities.some(arity =>
+        arity.never ? arity.input <= spec.input.length
+          : arity.input === spec.input.length && arity.output === spec.output.length);
+      if (!compatibleArity) continue;
       changed = true;
       const signature = freshTypes(spec.input,spec.output,spec.effects);
       let analysis;
@@ -1303,7 +1624,7 @@ ${main.lines.map(line=>'        '+line).join('\n')}
 `;
   const {includes,runtime,declarations:adtDeclarations} = emitCppRuntime(body,adts.fragments);
   if (onIR) onIR(ir.serialize());
-  return `${includes}
+  const source = `${batchIO ? '#define NYANCO_BATCH_IO 1\n' : ''}${includes}
 
 namespace nyanco {
 ${runtime}
@@ -1313,4 +1634,5 @@ namespace nyanco {
 ${adtDeclarations}
 
 ${body}`;
+  return lowerCppRc(effectCoroutines ? lowerCppCoroutines(source) : source, referenceCounting);
 }

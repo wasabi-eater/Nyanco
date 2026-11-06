@@ -1,5 +1,7 @@
 # Generated native code and executables
 /native/
+/work/
+*.obj
 *.exe
 *.dll
 *.so
@@ -23,3 +25,6 @@ coverage/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Generated browser tour
+/tour/dist/

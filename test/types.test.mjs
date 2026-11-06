@@ -29,7 +29,7 @@ test('shared stack combinators infer accumulators',()=>{
 });
 test('inference handles recursive functions, forward references, and mutual recursion',()=>{
   const p=compile('n fact = n * ((n - 1) fact)\n0 unused = 0');
-  assert.equal(p.types.get('fact'),"'a num => ..s 'a -> ..s 'a / {exn}");
+  assert.equal(p.types.get('fact'),"..s int -> ..s int");
   const recursive=compile('0 fact = 1\nn fact = n * ((n - 1) fact)\n0 even = True\nn even = (n - 1) odd\n0 odd = False\nn odd = (n - 1) even');
   assert.deepEqual(run('6 fact 10 even 9 odd',recursive),[720,true,true]);
   assert.deepEqual(run('"prefix" 6 fact',recursive),['prefix',720]);

@@ -6,4 +6,4 @@ main =
   handle @outer {
     handle @inner {print ask@inner; print ask@outer} {ask: {-> k; resume 20 k}}
   } {ask: {-> k; resume 10 k}};
-  print (toVector (fromYield @producer {yield@producer 1; yield@producer 2}))
+  print (vector (fromYield @producer {yield@producer 1; yield@producer 2}))

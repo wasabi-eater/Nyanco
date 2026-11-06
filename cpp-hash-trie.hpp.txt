@@ -1,0 +1,149 @@
+// @runtime DictTag SetTag DictEntry SetEntry
+struct DictTag {};
+struct SetTag {};
+template <typename K=Value,typename V=Value> struct DictEntry {
+    using Tag=DictTag;using Key=K;using Mapped=V;
+    K key;V value;std::size_t position=0;
+};
+template <typename K=Value> struct SetEntry {
+    using Tag=SetTag;using Key=K;
+    K key;
+};
+// @runtime HashTrieBase DictBase HashSetBase
+template <typename Tag> struct HashTrieBase {
+    std::function<std::size_t(const Value&)> hash;
+    std::function<bool(const Value&,const Value&)> equal;
+    virtual ~HashTrieBase()=default;
+    virtual Ptr<HashTrieBase> clone() const=0;
+    virtual std::size_t size() const=0;
+    virtual bool contains(const Value&) const=0;
+    virtual std::optional<Value> get(const Value&) const=0;
+    virtual void set(Value,Value)=0;
+    virtual void insertKey(Value)=0;
+    virtual void erase(const Value&)=0;
+    virtual std::vector<std::pair<Value,Value>> unorderedEntries() const=0;
+    virtual std::vector<std::pair<Value,Value>> entries() const=0;
+    virtual Values keys() const=0;
+};
+using DictBase=HashTrieBase<DictTag>;
+using HashSetBase=HashTrieBase<SetTag>;
+// @runtime HashTrie
+template <typename Entry> class HashTrie final : public HashTrieBase<typename Entry::Tag> {
+    using Key=typename Entry::Key;
+    static constexpr bool mapped=std::is_same_v<typename Entry::Tag,DictTag>;
+    struct Node;
+    using Root=Ptr<Node>;
+    struct Node {
+        std::uint32_t hash=0;
+        std::vector<Entry> bucket;
+        std::array<Root,2> branches;
+    };
+    Root root;
+    std::size_t count=0,serial=0;
+    static unsigned bit(std::uint32_t hash,unsigned depth){return(hash>>depth)&1;}
+    template <typename T> static const T& unbox(const Value& value) {
+        if constexpr(std::is_same_v<T,Value>)return value;
+        else return as<T>(value);
+    }
+    bool same(const Key& a,const Key& b) const {
+        if constexpr(std::is_same_v<Key,Value>)return this->equal(a,b);
+        else return a==b;
+    }
+    static Root merge(const Root& a,const Root& b,unsigned depth){
+        auto joined=std::make_shared<Node>();auto side=bit(a->hash,depth);
+        if(side!=bit(b->hash,depth)){joined->branches[side]=a;joined->branches[1-side]=b;}
+        else joined->branches[side]=merge(a,b,depth+1);
+        return joined;
+    }
+    Root put(Root node,std::uint32_t h,Entry entry,unsigned depth){
+        if(!node||(!node->bucket.empty()&&node->hash!=h)){
+            auto leaf=std::make_shared<Node>();leaf->hash=h;leaf->bucket.push_back(std::move(entry));++count;
+            return node?merge(node,leaf,depth):leaf;
+        }
+        auto next=node.use_count()==1?std::move(node):std::make_shared<Node>(*node);
+        if(!next->bucket.empty()){
+            for(auto& old:next->bucket)if(same(old.key,entry.key)){
+                if constexpr(mapped)old.value=std::move(entry.value);
+                return next;
+            }
+            next->bucket.push_back(std::move(entry));++count;
+        }else{auto side=bit(h,depth);next->branches[side]=put(std::move(next->branches[side]),h,std::move(entry),depth+1);}
+        return next;
+    }
+    const Entry* find(const Value& key) const {
+        const auto h=static_cast<std::uint32_t>(this->hash(key));const Key& native=unbox<Key>(key);auto node=root.get();
+        for(unsigned depth=0;node;++depth){
+            if(!node->bucket.empty()){
+                if(node->hash==h)for(const auto& entry:node->bucket)if(same(entry.key,native))return &entry;
+                return nullptr;
+            }
+            node=node->branches[bit(h,depth)].get();
+        }
+        return nullptr;
+    }
+    Root remove(Root node,const Key& key,std::uint32_t h,unsigned depth){
+        if(!node)return {};
+        auto next=node.use_count()==1?std::move(node):std::make_shared<Node>(*node);
+        if(!next->bucket.empty()){
+            if(next->hash!=h)return next;
+            auto& bucket=next->bucket;
+            for(auto i=bucket.begin();i!=bucket.end();++i)if(same(i->key,key)){bucket.erase(i);--count;break;}
+            return bucket.empty()?Root{}:next;
+        }
+        auto side=bit(h,depth);next->branches[side]=remove(std::move(next->branches[side]),key,h,depth+1);
+        return next->branches[0]||next->branches[1]?next:Root{};
+    }
+    template <typename Visitor> static void enumerate(const Root& node,const Visitor& visitor){
+        if(!node)return;for(const auto& entry:node->bucket)visitor(entry);for(const auto& child:node->branches)enumerate(child,visitor);
+    }
+public:
+    using Base=HashTrieBase<typename Entry::Tag>;
+    using Base::hash;using Base::equal;
+    Ptr<Base> clone() const override{return std::make_shared<HashTrie>(*this);}
+    std::size_t size() const override{return count;}
+    bool contains(const Value& key) const override{return find(key)!=nullptr;}
+    std::optional<Value> get(const Value& key) const override{
+        if constexpr(mapped){if(auto entry=find(key))return Value{entry->value};}
+        return {};
+    }
+    void set(Value key,Value value) override{
+        if constexpr(mapped){
+            const auto h=static_cast<std::uint32_t>(hash(key));
+            Entry entry{unbox<Key>(key),unbox<typename Entry::Mapped>(value),serial};
+            const auto before=count;
+            root=put(std::move(root),h,std::move(entry),0);
+            if(count!=before)++serial;
+        }else insertKey(std::move(key));
+    }
+    void insertKey(Value key) override{
+        if constexpr(!mapped){const auto h=static_cast<std::uint32_t>(hash(key));Entry entry{unbox<Key>(key)};root=put(std::move(root),h,std::move(entry),0);}
+    }
+    void erase(const Value& key) override{root=remove(std::move(root),unbox<Key>(key),static_cast<std::uint32_t>(hash(key)),0);}
+    std::vector<std::pair<Value,Value>> unorderedEntries() const override{
+        std::vector<std::pair<Value,Value>> result;
+        if constexpr(mapped)enumerate(root,[&](const Entry& entry){result.emplace_back(Value{entry.key},Value{entry.value});});
+        return result;
+    }
+    std::vector<std::pair<Value,Value>> entries() const override{
+        std::vector<std::pair<Value,Value>> result;
+        if constexpr(mapped){
+            if(serial==count){
+                result.resize(count);enumerate(root,[&](const Entry& entry){result[entry.position]={Value{entry.key},Value{entry.value}};});return result;
+            }
+            std::vector<const Entry*> ordered;ordered.reserve(count);
+            enumerate(root,[&](const Entry& entry){ordered.push_back(&entry);});
+            std::sort(ordered.begin(),ordered.end(),[](const Entry* a,const Entry* b){return a->position<b->position;});
+            result.reserve(count);for(auto entry:ordered)result.emplace_back(Value{entry->key},Value{entry->value});
+        }
+        return result;
+    }
+    Values keys() const override{
+        Values result;result.reserve(count);enumerate(root,[&](const Entry& entry){result.emplace_back(entry.key);});return result;
+    }
+};
+// @runtime Dict NativeDict
+template <typename K,typename V> using NativeDict=HashTrie<DictEntry<K,V>>;
+using Dict=NativeDict<Value,Value>;
+// @runtime HashSet NativeSet
+template <typename K> using NativeSet=HashTrie<SetEntry<K>>;
+using HashSet=NativeSet<Value>;
