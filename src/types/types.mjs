@@ -560,36 +560,85 @@ function envFree(env) {
 
 export function formatType(type,{names=null,variableNames=new Map(),showConstraints=true,defaultNumbers=true}={}) {
   if(defaultNumbers)defaultNumericLiterals(free(type));
-  // An open callback row may include break, while every use of that row is
-  // beneath a loop's handler. Expose that accepted operation in the signature
-  // without injecting a performed effect into the callback's inference graph.
-  const acceptsBreak=new WeakMap(),visitedTypes=new Set();
+  // Show effects removed from every use of an open input row. Keep these
+  // optional effects out of the inference graph, so a pure callback still fits.
+  const acceptedEffects=new WeakMap(),visitedTypes=new Set();
+  const sameArgs=(entry,other)=>other && entry.args.length===other.args.length &&
+    entry.args.every((arg,i)=>sameType(arg,other.args[i]));
+  const intersection=(a,b)=>new Map([...a].filter(([op,entry])=>sameArgs(entry,b?.get(op))));
   function inspect(t) {
     t=prune(t);if(visitedTypes.has(t))return;visitedTypes.add(t);
     if(t.tag==='quote' && t.effects) {
-      const states=new Map(),seen=new Map();
-      function scan(row,handled=false) {
-        row=prune(row);const bit=handled?2:1;
-        if((seen.get(row)||0)&bit)return;seen.set(row,(seen.get(row)||0)|bit);
-        if(row.tag==='var'||row.tag==='rigid'){states.set(row,(states.get(row)||0)|bit);return;}
-        for(const d of row.dependencies||[]) {
-          // Handler callback effects are another possible outward use. Do not
-          // infer that a loop handles them just from a separate masked use.
-          if(d.handlerEffects && d.handlers){
-            const handlers=prune(d.handlers);
-            if(handlers.tag==='record')for(const q of flattenRecord(handlers.row).fields.values()){const callback=prune(q);if(callback.effects)scan(callback.effects,false);}
-          }
-          if(!d.row)continue;
-          if(d.mask==='cancel') {for(const tail of effectView(d.row).tails)states.set(tail,(states.get(tail)||0)|1);continue;}
-          scan(d.row,handled || !!(d.loop && d.exclude?.includes('cancel')));
+      const callbacks=[];
+      for(let input=prune(t.input);input.tag==='push';input=prune(input.rest)){
+        const callback=prune(input.item);
+        if(callback.tag==='quote' && callback.effects){
+          const tails=[...effectView(callback.effects).tails];
+          if(tails.length)callbacks.push({callback,tails});
         }
       }
-      scan(t.effects);
-      let input=prune(t.input);
-      while(input.tag==='push') {
-        const callback=prune(input.item);
-        if(callback.tag==='quote' && callback.effects){const tails=[...effectView(callback.effects).tails];if(tails.length && tails.every(tail=>states.get(tail)===2))acceptsBreak.set(callback,t.output);}
-        input=prune(input.rest);
+      const states=new Map(),seen=new Map(),sites=new Map();
+      let nextSite=0;
+      function handledHere(dependency,handlers) {
+        if(sites.has(dependency))return sites.get(dependency);
+        const found=new Map();
+        const add=(operation,name,args)=>found.set(operation,{name,args,id:nextSite++});
+        if(dependency.loop && dependency.exclude?.includes('cancel')){
+          add('cancel','cancel',[]);add('break','break',[dependency.breakOutput||t.output]);
+        }
+        if(handlers?.tag==='record')for(const [field,callback] of flattenRecord(handlers.row).fields){
+          const operation=handlerOperation(handlers,field),op=activeEffects.get(operation);
+          const args=prune(callback).handledArgs||[];
+          if(op && args.length===op.parameters.length && args.every(Boolean))add(operation,op.group||op.name,args);
+        }
+        sites.set(dependency,found);return found;
+      }
+      function scan(row,handled) {
+        row=prune(row);
+        const key=[...handled.values()].map(entry=>entry.id).sort((a,b)=>a-b).join(',');
+        if(!seen.has(row))seen.set(row,new Set());
+        if(seen.get(row).has(key))return;
+        seen.get(row).add(key);
+        if(row.tag==='var'||row.tag==='rigid'){
+          states.set(row,states.has(row)?intersection(states.get(row),handled):handled);
+          return;
+        }
+        for(const d of row.dependencies||[]) {
+          const handlers=d.handlers && prune(d.handlers);
+          if(d.handlerEffects){
+            // Handler clauses execute outside their own handler.
+            if(handlers?.tag==='record')for(const q of flattenRecord(handlers.row).fields.values()){
+              const callback=prune(q);if(callback.effects)scan(callback.effects,handled);
+            }
+            continue;
+          }
+          if(!d.row||d.safetyOnly)continue;
+          const added=handledHere(d,handlers);
+          if(d.mask&&handled.has(d.mask)){
+            const remaining=new Map(handled);remaining.delete(d.mask);scan(d.row,remaining);
+          } else scan(d.row,added.size?new Map([...handled,...added]):handled);
+        }
+      }
+      if(callbacks.length){
+        const unhandled=new Map(),returned=new Set();
+        // A returned quotation or stream can expose the row on a later call.
+        function scanReturned(value){
+          value=prune(value);if(returned.has(value))return;returned.add(value);
+          if(value.effects)scan(value.effects,unhandled);
+          for(const child of children(value))scanReturned(child);
+        }
+        scan(t.effects,unhandled);
+        scanReturned(t.output);
+      }
+      for(const {callback,tails} of callbacks){
+        const common=tails.slice(1).reduce((all,tail)=>intersection(all,states.get(tail)),states.get(tails[0])||new Map());
+        const families=new Map();
+        for(const entry of common.values()){
+          const family=activeFamilies.get(entry.name);
+          if(family?.operations.every(op=>sameArgs(entry,common.get(op.name))))families.set(entry.name,entry);
+        }
+        const earlier=acceptedEffects.get(callback);
+        acceptedEffects.set(callback,earlier?intersection(earlier,families):families);
       }
     }
     for(const child of children(t))inspect(child);
@@ -632,8 +681,9 @@ export function formatType(type,{names=null,variableNames=new Map(),showConstrai
   }
   function renderEffects(t) {
     if(!t.effects)return '';
-    const view=effectView(t.effects),parts=[...new Set(view.entries.map(e=>[e.name+(e.target?'@'+e.target:(e.skip?'^'+e.skip:'')),...e.args.map(a=>sortOf(prune(a))==='row'?`(${renderStack(a)})`:render(a))].join(' ')))].sort();
-    if(acceptsBreak.has(t) && !parts.includes('cancel')){parts.push('cancel');parts.push(`break (${renderStack(acceptsBreak.get(t))})`);parts.sort();}
+    const view=effectView(t.effects),accepted=[...acceptedEffects.get(t)?.values()||[]]
+      .filter(entry=>!view.entries.some(e=>e.name===entry.name&&!e.target&&!e.skip));
+    const parts=[...new Set([...view.entries,...accepted].map(e=>[e.name+(e.target?'@'+e.target:(e.skip?'^'+e.skip:'')),...e.args.map(a=>sortOf(prune(a))==='row'?`(${renderStack(a)})`:render(a))].join(' ')))].sort();
     const tails=[...view.tails].map(render).sort();
     return parts.length||tails.length ? ` / {${parts.join(', ')}${tails.length?` | ${tails.join(', ')}`:''}}` : '';
   }
