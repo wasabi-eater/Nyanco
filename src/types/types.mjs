@@ -679,7 +679,7 @@ function builtinSchemes() {
   for(const kind of ['deque','heap']){
     const prefix=kind==='deque'?'q':'h';
     add('__empty'+kind[0].toUpperCase()+kind.slice(1),()=>{const s=row(),a=variable();return quote(s,push(s,adt(kind,[a])));});
-    for(const suffix of (kind==='deque'?['push','pushFront','pop','popHead','popBack','peek','peekBack','length','isEmpty']:['push','pop','peek','length','isEmpty']))add(prefix+suffix,()=>{
+    for(const suffix of (kind==='deque'?['push','pushFront','pop','popFront','popBack','peek','peekBack','length','isEmpty']:['push','pop','peek','length','isEmpty']))add(prefix+suffix,()=>{
       const s=row(),a=variable(),c=adt(kind,[a]);if(kind==='heap'&&['push','pop'].includes(suffix))requireClass('ord',a);
       return quote(suffix.startsWith('push')?stack(s,c,a):push(s,c),suffix.startsWith('push')?push(s,c):suffix.startsWith('pop')?stack(s,adt('option',[a]),c):push(s,suffix.startsWith('peek')?adt('option',[a]):suffix==='length'?INT:BOOL));
     });

@@ -22,7 +22,7 @@ assign('vector','vscan vreplicate');put('vector','scan','vscan');put('vector','r
 put('vector','push','vpush');assigned.add('push');assigned.add('vpush');
 assign('deque','deque toDeque');
 assign('heap','heap toHeap');
-for(const [module,prefix,names] of [['deque','q','push pushFront pop popHead popBack peek peekBack length isEmpty'],['heap','h','push pop peek length isEmpty']])aliases(module,prefix,names);
+for(const [module,prefix,names] of [['deque','q','push pushFront pop popFront popBack peek peekBack length isEmpty'],['heap','h','push pop peek length isEmpty']])aliases(module,prefix,names);
 aliases('vector','v','map filter flatMap flatten take takeWhile skip skipWhile zip');
 assign('stream','each map filter flatMap flatten fold sum product count countIf zip zipWith unzip take takeWhile skip skipWhile max maxi maxiBy min mini miniBy all any nth sort sortBy windows chunks chunkBy groupBy permutations combinations combinationsWithReplacement cartesianProduct powerset fromYield repeat repeatWith toVector');
 assign('set','set toSet sinsert sremove scontains slength sisEmpty sunion sintersection sdifference');

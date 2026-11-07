@@ -785,7 +785,7 @@ return {option(${args[0]})};
         ? `std::move(${value})` : value; };
       if (instruction.ir && optimizeVectors) {
         if (lifetimes.takes.has(n)) instruction.ir.memory = {binding:'take-if-unshared',reason:'last-use-before-write-or-scope-end'};
-        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','hpush','hpop','qpush','qpushFront','qpop','qpopHead','qpopBack'].includes(n.value)) {
+        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','hpush','hpop','qpush','qpushFront','qpop','qpopFront','qpopBack'].includes(n.value)) {
           instruction.ir.ownership = {mode:'cow',reason:'runtime-reference-count',staticMode:instruction.ownership?.mode};
         }
       }
@@ -1593,14 +1593,14 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       push(`combinatorics<Combinatorics::${name}>(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count})`);
       return stack;
     }
-    if (['__emptyDeque','__emptyHeap','qpush','qpushFront','qpop','qpopHead','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
+    if (['__emptyDeque','__emptyHeap','qpush','qpushFront','qpop','qpopFront','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
          'hpush','hpop','hpeek','hlength','hisEmpty'].includes(name)) {
       if (name === '__emptyDeque' || name === '__emptyHeap') {
         push(name==='__emptyDeque'?`std::make_shared<Queue>()`:`std::make_shared<Collection>(Collection{"heap", {}})`);
         return stack;
       }
       if(name.startsWith('q')){
-        const op={qpush:0,qpushFront:1,qpop:2,qpopHead:2,qpopBack:3,qpeek:4,qpeekBack:5,qlength:6,qisEmpty:7}[name];
+        const op={qpush:0,qpushFront:1,qpop:2,qpopFront:2,qpopBack:3,qpeek:4,qpeekBack:5,qlength:6,qisEmpty:7}[name];
         const item=op<2?stack.pop():'Value{}',source=stack.pop();
         const [container,itemOption]=ctx.call(`queueOp<${op}>`,[source,item],2);
         if(op===2||op===3) stack.push(itemOption,container);

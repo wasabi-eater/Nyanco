@@ -48,7 +48,7 @@ main =
 | `[a]` | リテラル `[]`、変換 `vector`、末尾追加 `vpush`、`head`、`tail`、`length` |
 | `dict k v` | リテラル `[:]`、tuple列からの変換 `dict`、`values`、`counts`、`countsBy` |
 | `set a` | `set`、`sinsert`、`sremove`、`scontains`、`sunion`、`sintersection`、`sdifference` |
-| `deque a` | `deque`、`qpush`、`qpushFront`、`qpopHead`、`qpopBack`、`qpeek`、`qpeekBack` |
+| `deque a` | `deque`、`qpush`、`qpushFront`、`qpopFront`、`qpopBack`、`qpeek`、`qpeekBack` |
 | `heap a` | `heap`、`hpush`、`hpop`、`hpeek` |
 
 `vector`、`dict`、`set`、`deque`、`heap` は入力を走査してコンテナに変換します。空のsetやdequeは `set []`、`deque []` と書きます。辞書のキーとsetの要素には `hash` 制約が必要です。辞書で同じキーを挿入すると値を置き換えます。辞書・setの走査順には依存できません。`values` は辞書の値のstreamを返します。
@@ -57,7 +57,7 @@ main =
 
 `partitionPoint xs predicate` は、真が先・偽が後になる境界の添字を返します。ソート済みのvectorに対する `binarySearch xs key` と `binarySearchBy xs key project` は、一致した添字を `Ok`、見つからない場合の挿入位置を `Err` で返します。
 
-`qpopHead`、`qpopBack`、`hpop` は `option 'a`、更新後のコンテナの順に返します。空なら取り出した要素は `None` です。`qpop` は `qpopHead` の別名です。heapは最大値を先に取り出し、比較には `ord` が必要です。`peek` 系は `option` だけを返します。
+`qpopFront`、`qpopBack`、`hpop` は `option 'a`、更新後のコンテナの順に返します。空なら取り出した要素は `None` です。前端を取り出す操作は `std.deque.popFront` としても呼べます。`qpop` は `qpopFront` の別名です。heapは最大値を先に取り出し、比較には `ord` が必要です。`peek` 系は `option` だけを返します。
 
 ## Option、Result、例外
 

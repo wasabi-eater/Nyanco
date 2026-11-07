@@ -110,7 +110,7 @@ test('C++ updates use ambient operands and preserve extra results through paths 
     9; xs.?[0] ! swap; print; print xs
     deque [1,2] -> mut queue
     queue -> before
-    loop {queue ! qpopHead; ?? cancel -> x; print (x * 2)}
+    loop {queue ! qpopFront; ?? cancel -> x; print (x * 2)}
     print (toVector before)
     print (qisEmpty queue)
 `);

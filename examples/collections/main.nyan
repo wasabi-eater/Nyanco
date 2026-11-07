@@ -1,7 +1,7 @@
 main =
     print (vpush [1, 2] 3)
     deque [1, 2]; qpushFront 0; qpush 3
-    qpopHead; swap; print; print
+    qpopFront; swap; print; print
     heap [3, 1, 4, 2] -> mut h
     h ! hpop; print
     h ! hpop; print

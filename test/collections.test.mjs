@@ -12,8 +12,8 @@ test('deque operations preserve aliases, handle both ends, and return options',(
  const vm=new VM(compile(''));
  assert.deepEqual(vm.evaluate('toDeque [1,2]; qpushFront 0; qpush 3; toVector'),[[0,1,2,3]]);
  assert.deepEqual(vm.evaluate('toDeque [1,2]; dup; qpop; swap; drop; toVector; swap; toVector'),[[2],[1,2]]);
- assert.deepEqual(vm.evaluate('toDeque [1,2]; qpopBack; swap; unwrap; swap; qpopHead; swap; unwrap; swap; qisEmpty'),[2,1,true]);
- assert.equal(format(vm.evaluate('deque []; qpopHead')[0]),'None');
+ assert.deepEqual(vm.evaluate('toDeque [1,2]; qpopBack; swap; unwrap; swap; qpopFront; swap; unwrap; swap; qisEmpty'),[2,1,true]);
+ assert.equal(format(vm.evaluate('deque []; qpopFront')[0]),'None');
  assert.deepEqual(vm.evaluate('toDeque [1,2]; dup; qpeekBack; unwrap; swap; qlength'),[2,2]);
  assert.deepEqual(vm.evaluate('0; each (toDeque [1,2,3]) {+};'),[6]);
  assert.deepEqual(vm.evaluate('0; each (toDeque [1,2,3]) {+; cancel}'),[0]);
@@ -67,7 +67,7 @@ main =
  print (sort (toHeap [3,1,4,2]))
  print (sort (toDeque (toHeap [3,1,4,2])))
  toDeque [3,1,4,2]; toHeap; hpeek; print
- loop {q ! std.deque.popHead; ?? cancel -> x; print (x * 2)}
+ loop {q ! std.deque.popFront; ?? cancel -> x; print (x * 2)}
  print (qisEmpty q)
 `;
 test('standard collection modules and native backend match interpreter including custom ord',()=>{

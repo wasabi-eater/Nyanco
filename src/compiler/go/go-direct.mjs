@@ -478,7 +478,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       if(name==='__emptyDeque'||name==='__emptyHeap'){v.push(ctx.value(`&Collection{kind:${str(name==='__emptyDeque'?'deque':'heap')}}`));return;}
       const pushing=['qpush','qpushFront','hpush'].includes(name),value=pushing?pop():'nil',source=pop();
       let less='nil';if(name==='hpush'||name==='hpop'){const item=pushing?topTypes.at(-1):T.prune(topTypes.at(-1)).args[0],cmp=comparisonFunction(item,true);less=`func(a,b any)bool{return ${cmp}(m,a,b)<0}`;}
-      const [container,item]=ctx.call('m.collectionOp',[str(name==='qpopHead'?'qpop':name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);
+      const [container,item]=ctx.call('m.collectionOp',[str(name==='qpopFront'?'qpop':name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);
       if(name.startsWith('qpop')||name==='hpop')v.push(item,container);
       else v.push(container);
       return;
