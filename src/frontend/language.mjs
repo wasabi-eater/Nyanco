@@ -1127,7 +1127,7 @@ export class VM {
     if(request.operation.name==='put'){this.output(this.expect(request.args[0],'string',request.token));return [];}
     if(request.operation.name==='read')return this.input();
     if(request.operation.name==='exn')throw new LanguageError(`Exception: ${request.args[0]}`,request.token);
-    throw new LanguageError(`Unhandled effect: ${request.operation.name}`,request.token);
+    throw new LanguageError(`Unhandled effect: ${request.operation.qualifiedName||request.operation.name}`,request.token);
   }
   finish(generator) {
     try {

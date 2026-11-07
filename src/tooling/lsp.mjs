@@ -189,7 +189,7 @@ export class LanguageService {
       const imported=[];for(const unit of doc.program?.modules?.root.files||[])if(sameSource(unit.file,doc.uri))for(const [alias,imp] of unit.imports){if(moduleTypeSymbol(imp))imported.push(alias);for(const name of imp.module.exports.keys())imported.push(alias+'.'+name);}
       const standard=standardModuleNames().flatMap(module=>[module,...[...standardModule(module).exports.keys()].map(name=>module+'.'+name)]);
       const names=new Set([...imported,...standard,...builtinNames(),...defs.keys(),...defs.constructors.keys(),...defs.methods.keys(),...defs.effects.keys(),...keywords]);
-      return [...names].filter(n=>!n.startsWith('__tc_')&&!n.startsWith('@')&&!/^nyancoModule/i.test(n)).sort().map(label=>({label,kind:keywords.includes(label)?14:3,...(doc.program?.types.has(label)?{detail:doc.program.types.get(label)}:{})}));
+      return [...names].filter(n=>!defs.effects.get(n)?.qualifiedName&&!n.startsWith('__tc_')&&!n.startsWith('@')&&!/^nyancoModule/i.test(n)).sort().map(label=>({label,kind:keywords.includes(label)?14:3,...(doc.program?.types.has(label)?{detail:doc.program.types.get(label)}:{})}));
     }
     if(method==='textDocument/hover'){
       for(const {token,type} of doc.occurrences.variables?.values()||[]){

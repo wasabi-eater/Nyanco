@@ -1,0 +1,13 @@
+import "std.worklist"
+
+drain : -> / {worklist int, io}
+drain =
+    worklist.push 3
+    worklist.push 7
+    print worklist.peek
+    loop {worklist.pop; ?? cancel; print}
+
+main : -> / {io}
+main =
+    withHeap (heap []) {drain}
+    withDeque (deque []) {drain}

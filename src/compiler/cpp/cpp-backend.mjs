@@ -2,7 +2,7 @@ import {createTypedIR} from '../typed-ir.mjs';
 import {emitCppRuntime} from './cpp-runtime.mjs';
 import {withStandardFunctions} from '../../runtime/builtin-functions.mjs';
 import {withOption} from '../../runtime/builtin-option.mjs';
-import {ioEffects} from '../../runtime/builtin-effects.mjs';
+import {ioEffects, worklistOperations} from '../../runtime/builtin-effects.mjs';
 import {lookupInstance} from '../../types/class-relations.mjs';
 import {cppLifetimes} from './cpp-lifetimes.mjs';
 import {parseExpression} from '../../frontend/language.mjs';
@@ -61,6 +61,8 @@ const binaryNames = new Set([
   ...bitwise.keys(), ...bitPositions, '++', '::', 'vpush', 'push', 'Push', 'concat', 'cons', '..', '..=', 'range'
 ]);
 const canReuse = new Set(['++', '::', 'vpush', 'push', 'Push', 'concat']);
+const nativeWorklistOperations = new Map(Object.entries(worklistOperations)
+  .map(([name,word]) => [word,name[0].toUpperCase()+name.slice(1)]));
 
 function literal(node, type = node.numericKind === 'float' ? 'float' : 'int') {
   const v = node.value;
@@ -442,20 +444,21 @@ export function transpileCpp(program, {
     existing.set(key, site);
     return site;
   }
-  function invocation(effect) {
+  function invocation(effect, tailHandler = false) {
     const {input, output} = effectParts(effect);
-    const key = signatureKey(input, output, effect);
+    const key = signatureKey(input, output, effect) + (tailHandler ? ':handler' : '');
     if (invocations.has(key)) return invocations.get(key);
     if (invocations.size >= 500) throw new Error('C++ quotation call specialization limit exceeded');
     const fn = `invoke${invocations.size}`;
     const spec = {
-      fn, input, output, key, effects:latent(effect), cases:new Map(),
-      header:`${resultType(output.length)} ${fn}(${['Machine& m','const Value& value','const std::string& at',...params(input.length)].join(', ')})`
+      fn, input, output, key, tailHandler, effects:latent(effect), cases:new Map(),
+      header:`${resultType(output.length)} ${fn}(${['Machine& m','const Value& value','const std::string& at',
+        ...(tailHandler ? ['const Ptr<Continuation>& tailContinuation'] : []), ...params(input.length)].join(', ')})`
     };
     invocations.set(key, spec);
     return spec;
   }
-  function inlineQuote(ctx,q,effect,stack,override = null) {
+  function inlineQuote(ctx,q,effect,stack,override = null,tail = false) {
     const known = override || knownQuotes.get(q);
     if (!known || known.ctx !== ctx || known.node.blockLabel || inlineDepth >= 12) return null;
     const parts = effectParts(effect), signature = freshTypes(parts.input,parts.output,latent(effect));
@@ -463,26 +466,30 @@ export function transpileCpp(program, {
     T.unify(analysis.output,signature.output,known.node);
     if (typedDispatch) T.specializeEffects(analysis.effects,signature.effects,known.node);
     if(nativeLocals&&known.lifetimes)lifetimePlans.set(analysis.trace,known.lifetimes);
+    const enclosingTail = ctx.tailPositions;
+    const inheritsTail = tail && stack.length === parts.input.length;
     // The caller can need its original state on another branch or cancellation.
     const inputs = take(stack,parts.input.length).map(value => ctx.value(ctx.consumableInputs?.has(value)?`std::move(${value})`:value,representation(value)));
     const local = needsLocalEnv(known.node.body) ? cloneEnv(ctx,known.env) : known.env;
     inlineDepth++;
+    ctx.tailPositions = inheritsTail ? tailPositions(known.node.body,analysis.trace) : null;
     let result;
     try { result = emit(known.node.body,inputs,local,new Map(),analysis.trace,ctx); }
-    finally { inlineDepth--; }
+    finally { inlineDepth--; ctx.tailPositions = enclosingTail; }
     ir.describe(analysis.trace,{kind:'inline-quotation',site:known.site},parts.input,parts.output);
     if (result.never) return result;
     stack.push(...result);
     return stack;
   }
-  function callQuote(ctx, q, effect, stack, at, allowInline = false) {
+  function callQuote(ctx, q, effect, stack, at, {allowInline = false, handlerContinuation = null, tail = false} = {}) {
     if (allowInline) {
-      const result = inlineQuote(ctx,q,effect,stack);
+      const result = inlineQuote(ctx,q,effect,stack,null,tail);
       if (result) return result;
     }
     materializeQuote(q,ctx);
-    const spec = invocation(effect);
-    stack.push(...ctx.call(spec.fn, ['m', q, at, ...take(stack, spec.input.length)], spec.output.length));
+    const spec = invocation(effect, !!handlerContinuation);
+    const handler = handlerContinuation ? [handlerContinuation] : [];
+    stack.push(...ctx.call(spec.fn, ['m', q, at, ...handler, ...take(stack, spec.input.length)], spec.output.length));
     if (T.isBottom(T.prune(effect).output)) {
       ctx.add(`fail(${at}, "Non-returning quotation returned");`);
       return neverValues();
@@ -1225,7 +1232,9 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     const push = expression => stack.push(ctx.value(expression));
     const inputs = () => items(info.input);
     const outCount = () => items(info.output).length;
-    const call = (q, effect, state = stack, into = ctx) => callQuote(into, q, effect, state, at,into === ctx);
+    const call = (q, effect, state = stack, into = ctx, tail = false) => callQuote(into,q,effect,state,at,{
+      allowInline:into === ctx,tail:tail && into === ctx && ctx.tailPositions?.has(n)
+    });
     if (info.env.has(name)) {
       const callable = info.env.get(name).callable;
       const type = callable ? 'Value' : localType(T.prune(info.output).item);
@@ -1288,6 +1297,26 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       stack.splice(0,stack.length,...gathered);
       return stack;
     }
+    if ((name === 'withHeap' || name === 'withDeque') && definitions.get(name)?.[0].token.file === '<standard>') {
+      const [initial,q] = take(stack,2);
+      const [containerType,bodyType] = inputs().slice(-2);
+      const state = id('worklist');
+      if (name === 'withHeap') {
+        const item = T.prune(containerType).args[0], cmp = context();
+        const less = callBinary(cmp,{...n,value:'<'},'a','b',comparisonEffect('<',item));
+        ctx.add(`NativeHeapWorklist ${state}(${ctx.move(initial,[q])}, [&](const Value& a, const Value& b) {
+${cmp.lines.join('\n')}
+return truth(${less});
+});`);
+      } else ctx.add(`NativeDequeWorklist ${state}(${ctx.move(initial,[q])});`);
+      const inner = context(), body = call(q,bodyType,[],inner);
+      inner.add(body.never ? `fail(${at}, "Non-returning body returned");` : `return ${values(body)};`);
+      const action = `withNativeWorklist(m, ${state}, [&](Machine& m) -> Values {
+${inner.lines.join('\n')}
+}, ${label})`;
+      stack.push(...dynamicResults(ctx,action,outCount()-stack.length));
+      return stack;
+    }
     if (definitions.has(name)) {
       callNamed(ctx, name, info.effect, stack);
       return stack;
@@ -1304,7 +1333,18 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       const args = take(stack, count);
       const target = n.target ? `labelTarget(${get(n.target)}, ${at})` : 'nullptr';
       const results = operation.syntax.output[0]?.tag === 'stack-row' ? items(info.effect.output).length : operation.outputCount;
-      stack.push(...dynamicResults(ctx, `m.perform(Event{${string(name)}, ${at}, ${values(args)}, ${operation.never}, ${target}})`, results));
+      const worklist = operation.qualifiedName && nativeWorklistOperations.get(name);
+      const event = destination => `m.perform(Event{${string(name)}, ${at}, ${values(args)}, ${operation.never}, ${destination}})`;
+      if (worklist) {
+        const destination = n.target ? ctx.value(target,'const void*') : target;
+        const state = id('route'), result = results ? ctx.value('Value{}') : null;
+        ctx.add(`if (auto* ${state} = nativeWorklistTarget(m, ${destination})) {`,
+          `${result ? result+' = ' : ''}${state}->runWorklist(WorklistOperation::${worklist}, ${args[0] ?? 'Value{}'});`, '} else {');
+        if (result) ctx.add(`${result} = std::move(${event(destination)}.at(0));`);
+        else ctx.add(`${event(destination)};`);
+        ctx.add('}');
+        if (result) stack.push(result);
+      } else stack.push(...dynamicResults(ctx,event(target),results));
       return stack;
     }
     if (binaryNames.has(name)) {
@@ -1347,7 +1387,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     else if (name === 'writeRef') {
       const [ref,value] = take(stack,2);
       ctx.add(`writeBorrow(${ref}, ${value}, ${at});`);
-    } else if (name === 'call') return call(pop(), inputs().at(-1));
+    } else if (name === 'call') return call(pop(), inputs().at(-1),stack,ctx,true);
     else if (name === 'dip') {
       const [saved,q] = take(stack,2);
       const result = call(q,inputs().at(-1));
@@ -1357,10 +1397,10 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       const [condition, yes, no] = take(stack,name === 'if' ? 3 : 2);
       const types = inputs(), outputs = items(info.output).map(cppType).map(type => ctx.value(type+'{}',type));
       ctx.add(`if (${readAs(condition,'bool')}) {`);
-      const first = call(yes,types.at(no ? -2 : -1),[...stack]);
+      const first = call(yes,types.at(no ? -2 : -1),[...stack],ctx,true);
       if (!first.never) assign(ctx,outputs,first);
       ctx.add('} else {');
-      const second = no ? call(no,types.at(-1),[...stack]) : stack;
+      const second = no ? call(no,types.at(-1),[...stack],ctx,true) : stack;
       if (!second.never) assign(ctx,outputs,second);
       ctx.add('}');
       return outputs;
@@ -1407,7 +1447,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
         const ref = handler.value(`field(${handlers}, ${string(type.handlerField || effect)})`);
         const count = effectParts(type).input.length - 1;
         const inputs = Array.from({length:count}, (_, i) => `args.at(${i})`);
-        const result = call(ref,type,[...inputs,'Value{k}'],handler);
+        const result = callQuote(handler,ref,type,[...inputs,'Value{k}'],at,{handlerContinuation:effectCoroutines ? 'k' : null});
         handler.add(result.never ? `fail(${at}, "Non-returning handler returned");` : `return ${values(result)};`);
         entries.push(`{${string(effect)}, [&](const Values& args, Ptr<Continuation> k) -> Values {
 ${handler.lines.join('\n')}
@@ -1419,6 +1459,8 @@ ${handler.lines.join('\n')}
       const k = pop();
       const parts = effectParts(inputs().at(-1));
       const args = take(stack,parts.input.length);
+      if (ctx.tailPositions?.has(n) && stack.length === 0)
+        ctx.add(`if (resumeTail(${k}, tailContinuation, ${values(args)}, ${at})) return {};`);
       stack.push(...dynamicResults(ctx,`resume(${k}, ${values(args)}, ${at})`,parts.output.length));
     } else if (name === 'fromYield') {
       const q = pop(), inner = context();
@@ -1491,7 +1533,7 @@ ${handler.lines.join('\n')}
     const previousConsumable=ctx.consumableInputs;
     if(direct&&name!=='vfilter')ctx.consumableInputs=new Set([item]);
     let output;
-    try{output=callQuote(ctx,q,type.at(-1),[...state,...(acc ? [accumulator] : []),item],at,true);}
+    try{output=callQuote(ctx,q,type.at(-1),[...state,...(acc ? [accumulator] : []),item],at,{allowInline:true});}
     finally{ctx.consumableInputs=previousConsumable;}
     if (!output.never) {
       if (name === 'vmap') {const value=output.pop();ctx.add(`${collected}.push_back(${readAs(ctx.move(value,output),collectedNative||'Value')});`);}
@@ -1682,6 +1724,16 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
 
   // Quotations are monomorphized at reachable invocation signatures, just like
   // named functions. A quotation value contains its site and lexical bindings.
+  function tailPositions(nodes, trace, sites = new Set()) {
+    const last = nodes.findLast(node => node.kind !== 'capture' || node.slots.length);
+    const info = trace.get(last);
+    if (!info) return sites;
+    if (last.kind === 'scope') tailPositions(last.body, trace, sites);
+    if (last.kind === 'application') tailPositions(info.application, trace, sites);
+    if (last.kind === 'case') for (const branch of last.branches) tailPositions(branch.body, trace, sites);
+    if (last.kind === 'word') sites.add(last);
+    return sites;
+  }
   let changed = true;
   while (changed) {
     changed = false;
@@ -1710,6 +1762,7 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
         throw error;
       }
       const ctx = context();
+      if (spec.tailHandler && !node.blockLabel) ctx.tailPositions = tailPositions(body,analysis.trace);
       scalarBindings.delete('local');
       cellBindings.delete('local');
       const results = emit(body,arguments_(spec.input.length),'local',new Map(),analysis.trace,ctx);

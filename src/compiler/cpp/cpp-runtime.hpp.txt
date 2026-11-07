@@ -271,6 +271,9 @@ struct Stream { std::function<void(Machine&, const Visit&)> walk; };
 struct Continuation {
     bool active = true, used = false, never = false;
     std::function<Values(Values)> resume;
+// @if-runtime resumeTail
+    std::optional<Values> tailReply;
+// @end-runtime
 };
 // @runtime Borrow
 struct Borrow { Ptr<Cell> owner; bool active = true, suspended = false; };
@@ -314,7 +317,8 @@ struct QueueNode {
 };
 struct Queue { Ptr<QueueNode> front,back; std::size_t size=0; };
 inline Values queueItems(const Queue& queue){Values out,back;for(auto p=queue.front;p;p=p->next)out.push_back(p->value);for(auto p=queue.back;p;p=p->next)back.push_back(p->value);out.insert(out.end(),back.rbegin(),back.rend());return out;}
-template <int Operation> inline Results<2> queueOp(Value source,const Value& value){
+template <int Operation, bool KeepPeekState = false>
+inline Results<2> queueOp(Value source,const Value& value){
     auto old=std::move(std::any_cast<Ptr<Queue>&>(source));
     if constexpr(Operation==6)return {static_cast<Int>(old->size),{}};
     if constexpr(Operation==7)return {old->size==0,{}};
@@ -325,6 +329,7 @@ template <int Operation> inline Results<2> queueOp(Value source,const Value& val
         auto& side=backwards?result->back:result->front;
         auto& other=backwards?result->front:result->back;
         if(!side){for(auto p=other;p;p=p->next)side=std::make_shared<QueueNode>(p->value,side);other.reset();}
+        if constexpr(KeepPeekState)return {result,side?option(side->value):option()};
         if(!side)return {Operation<4?Value{result}:option(),option()};
         Value item=side->value;
         if constexpr(Operation<4){side=side->next;--result->size;return {result,option(std::move(item))};}
@@ -793,9 +798,15 @@ using Route = std::function<Values(Event)>;
 // @runtime Handler
 using Handler = std::function<Values(const Values&, Ptr<Continuation>)>;
 // @runtime Machine !perform !exception
+// @if-runtime WorklistRoute
+struct WorklistRoute;
+// @end-runtime
 struct Machine {
     Env& globals;
     Route route;
+// @if-runtime WorklistRoute
+    WorklistRoute* worklist = nullptr;
+// @end-runtime
     Values perform(Event event);
     [[noreturn]] void exception(const std::string& message, const std::string& at);
 };
@@ -857,6 +868,9 @@ std::optional<Values> loop(Machine& parent, Body body, Ptr<Label> label = {}, bo
             throw Abort{&scope, event.name == "break" ? std::optional<Values>(std::move(event.arguments)) : std::nullopt};
         return parent.perform(std::move(event));
     }};
+// @if-runtime WorklistRoute
+    child.worklist = parent.worklist;
+// @end-runtime
     try { body(child); }
     catch (Abort& stop) {
         if (stop.owner != &scope) throw;
@@ -871,6 +885,16 @@ inline Values resume(const Value& value, Values arguments, const std::string& at
     if (!k->active || k->used) fail(at, "Continuation is expired or already resumed");
     k->used = true;
     return k->resume(std::move(arguments));
+}
+// @runtime resumeTail
+inline bool resumeTail(const Value& value, const Ptr<Continuation>& current, Values arguments, const std::string& at) {
+    const auto& k = as<Ptr<Continuation>>(value);
+    if (k.get() != current.get()) return false;
+    if (k->never) fail(at, "Cannot resume a non-returning effect");
+    if (!k->active || k->used) fail(at, "Continuation is expired or already resumed");
+    k->used = true;
+    k->tailReply.emplace(std::move(arguments));
+    return true;
 }
 
 // Suspending a worker retains the C++ call frames across a user effect.
@@ -953,7 +977,15 @@ Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& 
                 return drive();
             };
             struct Expire { Ptr<Continuation> k; ~Expire() { k->active = false; k->resume = {}; } } expire{k};
-            return handler->second(event->arguments, k);
+            auto answer = handler->second(event->arguments, k);
+// @if-runtime resumeTail
+            if (k->tailReply) {
+                // Unwind this handler before servicing another operation.
+                worker.send(std::move(*k->tailReply));
+                continue;
+            }
+// @end-runtime
+            return answer;
         }
         return worker.finish();
     };
@@ -980,6 +1012,9 @@ Values labelBlock(Machine& parent, Body body) {
         if (event.target == &scope) event.target = nullptr;
         return parent.perform(std::move(event));
     }};
+// @if-runtime WorklistRoute
+    child.worklist = parent.worklist;
+// @end-runtime
     return body(child, label);
 }
 
@@ -1729,7 +1764,7 @@ enum class CollectionOp { qpush, qpushFront, qpop, qpopBack, qpeek, qpeekBack, q
                           hpush, hpop, hpeek, hlength, hisEmpty };
 template <CollectionOp Op>
 inline Results<2> collectionOp(Value value, const Value& item,
-                               std::function<bool(const Value&,const Value&)> less, bool reuse) {
+                               const std::function<bool(const Value&,const Value&)>& less, bool reuse) {
     auto old = std::move(std::any_cast<Ptr<Collection>&>(value));
     const auto& xs = old->values;
     if constexpr (Op == CollectionOp::hlength || Op == CollectionOp::qlength) return {static_cast<Int>(xs.size()),{}};
@@ -1752,6 +1787,69 @@ inline Results<2> collectionOp(Value value, const Value& item,
         return {result,option(popped)};
     }
     return {result,{}};
+}
+// @runtime WorklistRoute WorklistOperation nativeWorklistTarget
+enum class WorklistOperation { Push, Pop, Peek };
+struct WorklistRoute {
+    const RoutedLabel* scope = nullptr;
+    virtual ~WorklistRoute() = default;
+    virtual Value runWorklist(WorklistOperation operation, const Value& item) = 0;
+};
+inline WorklistRoute* nativeWorklistTarget(Machine& m, const void* target) {
+    auto* state = m.worklist;
+    return state && (!target || target == state->scope) ? state : nullptr;
+}
+// @runtime NativeHeapWorklist
+struct NativeHeapWorklist final : WorklistRoute {
+    Value pending;
+    std::function<bool(const Value&,const Value&)> less;
+    NativeHeapWorklist(Value initial, std::function<bool(const Value&,const Value&)> compare)
+        : pending(std::move(initial)), less(std::move(compare)) {}
+    Value runWorklist(WorklistOperation operation, const Value& item) override {
+        if (operation == WorklistOperation::Peek)
+            return collectionOp<CollectionOp::hpeek>(pending, {}, less, true)[0];
+        auto result = operation == WorklistOperation::Push
+            ? collectionOp<CollectionOp::hpush>(std::move(pending), item, less, true)
+            : collectionOp<CollectionOp::hpop>(std::move(pending), {}, less, true);
+        pending = std::move(result[0]);
+        return std::move(result[1]);
+    }
+};
+// @runtime NativeDequeWorklist
+struct NativeDequeWorklist final : WorklistRoute {
+    Value pending;
+    explicit NativeDequeWorklist(Value initial) : pending(std::move(initial)) {}
+    Value runWorklist(WorklistOperation operation, const Value& item) override {
+        Results<2> result;
+        switch (operation) {
+            case WorklistOperation::Push: result = queueOp<0>(std::move(pending), item); break;
+            case WorklistOperation::Pop: result = queueOp<2>(std::move(pending), {}); break;
+            // Retain the normalized front so repeated peeks do not reverse the back again.
+            case WorklistOperation::Peek: result = queueOp<4, true>(std::move(pending), {}); break;
+        }
+        pending = std::move(result[0]);
+        return std::move(result[1]);
+    }
+};
+// @runtime withNativeWorklist
+template <typename Body>
+Values withNativeWorklist(Machine& parent, WorklistRoute& state, Body body, Ptr<Label> label) {
+    const RoutedLabel scope(std::move(label));
+    state.scope = &scope;
+    Machine child{parent.globals, [&](Event event) -> Values {
+        std::optional<WorklistOperation> operation;
+        if (event.name == "__worklistPush") operation = WorklistOperation::Push;
+        else if (event.name == "__worklistPop") operation = WorklistOperation::Pop;
+        else if (event.name == "__worklistPeek") operation = WorklistOperation::Peek;
+        if (!operation || !accepts(event, scope)) return parent.perform(std::move(event));
+        if (*operation == WorklistOperation::Push) {
+            state.runWorklist(*operation, event.arguments.at(0));
+            return {};
+        }
+        return {state.runWorklist(*operation, {})};
+    }};
+    child.worklist = &state;
+    return body(child);
 }
 // @runtime Consumption Consume consume
 struct Consumption { Value value; std::optional<Values> broken; };

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile,VM} from '../language.mjs';
+import {compileModule,standardTokens} from '../modules.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
@@ -45,15 +46,19 @@ main =
     print "class EffectWorker \\{ std::function<void(Value)> Task<int> main()"
 `;
 function vm(program){const out=[];new VM({...program,output:s=>out.push(s),maxDepth:2000}).evaluate('main');return out.join('\n')+'\n';}
-function native(code,input=''){
+function native(code,input='',frameLimit=0){
  const dir=mkdtempSync(join(tmpdir(),'nyanco-coroutines-'));
  try{
   // Count allocated coroutine frames, including abandonment and error paths.
   // The pool may cache storage; every constructed frame must still be released.
-  code=code.replace('struct TaskPromiseBase {','struct TaskPromiseBase {\ninline static std::size_t liveFrames=0;')
-    .replace('return frames().allocate(size);','auto memory=frames().allocate(size);++liveFrames;return memory;')
+  const entry='return nyanco::runTask(coroutineMain());';
+  if(frameLimit)assert.ok(code.includes(entry));
+  const peakCheck=frameLimit
+   ? `if(nyanco::TaskPromiseBase::peakFrames>${frameLimit}){std::cerr<<"Too many coroutine frames: "<<nyanco::TaskPromiseBase::peakFrames;return 78;}` : '';
+  code=code.replace('struct TaskPromiseBase {','struct TaskPromiseBase {\ninline static std::size_t liveFrames=0, peakFrames=0;')
+    .replace('return frames().allocate(size);','auto memory=frames().allocate(size);if(++liveFrames>peakFrames)peakFrames=liveFrames;return memory;')
     .replace('frames().deallocate(memory,size);','--liveFrames;frames().deallocate(memory,size);')
-    .replace('return nyanco::runTask(coroutineMain());','auto status=nyanco::runTask(coroutineMain());if(nyanco::TaskPromiseBase::liveFrames){std::cerr<<"Leaked coroutine frames";return 77;}return status;');
+    .replace(entry,`auto status=nyanco::runTask(coroutineMain());if(nyanco::TaskPromiseBase::liveFrames){std::cerr<<"Leaked coroutine frames";return 77;}${peakCheck}return status;`);
   const file=join(dir,'main.cpp'),exe=join(dir,'main.exe');writeFileSync(file,code);
   const args=compiler==='cl'?['/nologo','/std:c++20','/EHsc','/utf-8','/O2','/bigobj',file,'/Fe:'+exe]:['-std=c++20','-O2',file,'-o',exe];
   const build=spawnSync(compiler,args,{cwd:dir,encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stdout+build.stderr);
@@ -67,6 +72,61 @@ test('resumable boundaries use C++20 tasks, while synchronous programs retain di
  assert.ok(transpileCpp(p,{effectCoroutines:false}).includes('class EffectWorker'));
  const pure=transpileCpp(compile('square n = n * n\nmain = square 3; print'));
  assert.doesNotMatch(pure,/#include <coroutine>|co_await|class Task/);
+});
+test('the standard worklist handlers preserve priority and FIFO ordering in C++',{skip:!available},()=>{
+ const program=compileModule(new URL('../examples/worklist/main.nyan',import.meta.url).href);
+ const result=native(transpileCpp(program,{batchIO:true,referenceCounting:'local'}));
+ assert.equal(result.status,0,result.stderr);
+ assert.equal(result.stdout.replaceAll('\r\n','\n'),'(Some 7)\n7\n3\n(Some 3)\n3\n7\n');
+});
+test('tail resumption releases frames before the next operation',{skip:!available},()=>{
+ const program=compile(`effect tick : -> int
+handlers n = {tick: {-> k; case
+    | n > 0 ? if (n > 1) {resume n k} {resume 1 k}
+    otherwise resume 0 k
+    end}}
+main =
+    handle {0; each (0 .. 10000) {drop; tick; +}; 7} (handlers 2); print; print
+    handle {tick; tick; +} {tick: {-> k; resume 10 k; + 1}}; print
+`);
+ const code=transpileCpp(program,{referenceCounting:'local'}), result=native(code,'',64);
+ assert.match(code,/if \(resumeTail\(/);
+ assert.equal(result.status,0,result.stderr);
+ assert.equal(result.stdout.replaceAll('\r\n','\n'),'7\n20000\n22\n');
+});
+test('native worklists preserve snapshots and respect labels, mask and user handlers',{skip:!available},()=>{
+ const previous=new Map();previous.moduleTokens=standardTokens;
+ const program=compile(`main =
+    heap [1] -> h
+    withHeap h @outer {
+        std.worklist.push 3
+        withDeque (deque [10]) {
+            std.worklist.push 20
+            std.worklist.push@outer 7
+            mask std.worklist.push {std.worklist.push 5}
+            handle {std.worklist.pop; print} {std.worklist.pop: {-> k; resume (Some 99) k}}
+            print std.worklist.peek
+            print std.worklist.peek
+            print std.worklist.pop
+            print std.worklist.pop
+            print std.worklist.pop
+        }
+        print std.worklist.pop
+        print std.worklist.pop
+        print std.worklist.peek
+        11, 12
+    }
+    print; print
+    print (hpeek h)
+`,'<worklist-routing>',previous);
+ const expected='(Some 99)\n(Some 10)\n(Some 10)\n(Some 10)\n(Some 20)\nNone\n(Some 7)\n(Some 5)\n(Some 3)\n12\n11\n(Some 1)\n';
+ assert.equal(vm(program),expected);
+ const code=transpileCpp(program,{referenceCounting:'local'});
+ assert.match(code,/NativeHeapWorklist worklist/);
+ assert.match(code,/NativeDequeWorklist worklist/);
+ const result=native(code);
+ assert.equal(result.status,0,result.stderr);
+ assert.equal(result.stdout.replaceAll('\r\n','\n'),expected);
 });
 test('coroutine handlers, labels, aborts, mutation and lazy cursors match VM and the baseline',{skip:!available},()=>{
  const p=compile(source),expected=vm(p);
@@ -99,6 +159,8 @@ main =
     [Key 1: "ok"].[Key 1]; print
     sort [Key 3,Key 1,Key 2]; print
     set [Key 1,Key 1,Key 2]; slength; print
+    withHeap (heap [Key 3,Key 1]) {std.worklist.push (Key 5); print std.worklist.pop}
 `;
- const p=compile(text),r=native(transpileCpp(p));assert.equal(r.status,0,r.stderr);assert.equal(r.stdout.replaceAll('\r\n','\n'),vm(p));
+ const previous=new Map();previous.moduleTokens=standardTokens;
+ const p=compile(text,'<comparison-effects>',previous),r=native(transpileCpp(p));assert.equal(r.status,0,r.stderr);assert.equal(r.stdout.replaceAll('\r\n','\n'),vm(p));
 });

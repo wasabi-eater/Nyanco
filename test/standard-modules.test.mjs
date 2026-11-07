@@ -15,7 +15,8 @@ function fixture(files,fn){const dir=mkdtempSync(join(tmpdir(),'nyanco-stdlib-')
 
 test('std.prelude publicly reexports every existing standard word, class, type and effect',()=>{
  const definitions=compile('').definitions,prelude=standardModule('std.prelude');
- for(const names of [builtinNames(),[...definitions.keys()].filter(n=>!n.startsWith('__')),[...definitions.classes.keys()],[...definitions.methods.keys()],[...definitions.effects.keys()],[...definitions.constructors.keys()]])
+ const effects=[...definitions.effects.values()].filter(op=>!op.qualifiedName).map(op=>op.name);
+ for(const names of [builtinNames(),[...definitions.keys()].filter(n=>!n.startsWith('__')),[...definitions.classes.keys()],[...definitions.methods.keys()],effects,[...definitions.constructors.keys()]])
   for(const name of names)assert.ok(prelude.exports.has(name==='push'?'vpush':name),name);
  assert.equal(standardModule('std.vector').exports.get('map').internal,'vmap');
  assert.equal(standardModule('std.stream').exports.get('map').internal,'map');
@@ -29,6 +30,11 @@ test('std.prelude publicly reexports every existing standard word, class, type a
  assert.equal(standardModule('std.vector').exports.get('push').internal,'vpush');
  assert.ok(prelude.exports.has('vpush'));assert.ok(!prelude.exports.has('push'));
  assert.equal(prelude.exports.get('map').internal,'map');
+ for(const operation of ['push','pop','peek']){
+  const symbol=standardModule('std.worklist').exports.get(operation);
+  assert.equal(definitions.effects.get(symbol.internal).qualifiedName,'std.worklist.'+operation);
+  assert.ok(!prelude.exports.has(operation));
+ }
  assert.doesNotThrow(()=>compileModule(fileURLToPath(new URL('../std/prelude.nyan',import.meta.url))));
 });
 
@@ -47,6 +53,22 @@ main = increment [1, 2]; vmap [3] {+ 1}; std.option.Some 5; equal 2 2; std.io.pu
  assert.equal(p.modules.prelude.exports.get('vmap').internal,'vmap');
  assert.deepEqual(new VM(p).evaluate('increment [1, 2]'),[[2,3]]);
 }));
+
+test('worklist effects are polymorphic, scoped and replaceable',()=>{
+ const path=fileURLToPath(new URL('../examples/worklist/main.nyan',import.meta.url));
+ const program=compileModule(path),output=[];
+ new VM({...program,output:line=>output.push(line)}).evaluate('main');
+ assert.deepEqual(output,['(Some 7)','7','3','(Some 3)','3','7']);
+ const previous=new Map();previous.moduleTokens=standardTokens;
+ const evaluate=source=>new VM(compile('main = '+source,'<worklist>',previous)).evaluate('main');
+ assert.throws(()=>evaluate("withHeap (heap ['x']) {std.worklist.push 1}"),/Cannot unify/);
+ assert.deepEqual(evaluate('withDeque (deque [1]) below; std.worklist.pop; std.worklist.peek'),
+  evaluate('Some 1; None'));
+ assert.deepEqual(evaluate('handle {std.worklist.pop} {std.worklist.pop: {-> k; resume (Some 5) k}}'),
+  evaluate('Some 5'));
+ assert.deepEqual(evaluate("withHeap (heap [1]) @outer {withDeque (deque ['x']) {std.worklist.push@outer 5; std.worklist.pop}; std.worklist.pop}"),
+  evaluate("Some 'x'; Some 5"));
+});
 
 test('pub import reexports selected standard members under new names',()=>fixture({
  'lib/main.nyan':`pub import "std.vector" {map as transform, vector}

@@ -1,5 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {compile,builtinNames,lex,declarationGroups} from './language.mjs';
+import {worklistOperations} from '../runtime/builtin-effects.mjs';
 
 // Standard modules expose the native primitives through the same symbol shape
 // used by directory modules. The prelude is a set of public reexports of them.
@@ -7,7 +8,7 @@ const groups=new Map();
 const standard=new Map();
 const put=(module,name,internal=name,kind='function')=>{
   const exports=groups.get(module)||new Map();groups.set(module,exports);
-  const access=new Map(kind==='effect'?[['type','pub'],['value','pub']]:[[['data','type','class'].includes(kind)?'type':'value','pub']]);
+  const access=new Map(kind==='effect'?[['type','pub'],['value','pub']]:[[['data','type','class','effect-family'].includes(kind)?'type':'value','pub']]);
   const old=exports.get(name);
   exports.set(name,{name,internal,kind,kinds:new Set([...(old?.kinds||[]),kind]),access:new Map([...old?.access||[],...access]),visibility:'pub',token:{file:`<std.${module}>`,line:1,col:1,value:name}});
 };
@@ -22,6 +23,9 @@ assign('vector','vscan vreplicate');put('vector','scan','vscan');put('vector','r
 put('vector','push','vpush');assigned.add('push');assigned.add('vpush');
 assign('deque','deque toDeque');
 assign('heap','heap toHeap');
+assign('worklist','withHeap withDeque');
+put('worklist','worklist','worklist','effect-family');
+for(const [name,internal] of Object.entries(worklistOperations))put('worklist',name,internal,'effect');
 for(const [module,prefix,names] of [['deque','q','push pushFront pop popFront popBack peek peekBack length isEmpty'],['heap','h','push pop peek length isEmpty']])aliases(module,prefix,names);
 aliases('vector','v','map filter flatMap flatten take takeWhile skip skipWhile zip');
 assign('stream','each map filter flatMap flatten fold sum product count countIf zip zipWith unzip take takeWhile skip skipWhile max maxi maxiBy min mini miniBy all any nth sort sortBy windows chunks chunkBy groupBy permutations combinations combinationsWithReplacement cartesianProduct powerset fromYield repeat repeatWith toVector');
@@ -45,7 +49,7 @@ for(const name of definitions.keys())if(!name.startsWith('__')&&!assigned.has(na
 for(const name of ['vector','deque','heap','stream','dict','set','range','option','result','int','float','byte','char','bool','string'])
   put(({deque:'deque',heap:'heap',vector:'vector',stream:'stream',dict:'dict',set:'set',range:'numeric',option:'option',result:'result',string:'text'})[name]||'numeric',name,name,'data');
 for(const name of definitions.classes.keys())put(({slice:'vector',streem:'stream',indexGet:'vector',indexSet:'vector',bits:'bits',num:'numeric',into:'numeric'})[name]||'classes',name,name,'class');
-for(const name of definitions.effects.keys())put(['read','put'].includes(name)?'io':'effects',name,name,'effect');
+for(const [name,op] of definitions.effects)if(!op.qualifiedName)put(['read','put'].includes(name)?'io':'effects',name,name,'effect');
 for(const name of definitions.constructors.keys())put(['None','Some'].includes(name)?'option':'result',name,name,'constructor');
 for(const name of definitions.methods.keys())if(!groups.get('classes')?.has(name)&&!assigned.has(name))put('classes',name,name,'method');
 

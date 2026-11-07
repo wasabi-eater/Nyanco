@@ -1,5 +1,6 @@
 import {installUnwrap,installOrElse,installContainerFunctions,isStandardResult} from './builtin-results.mjs';
 import {isStandardOption} from './builtin-option.mjs';
+import {worklistOperations} from './builtin-effects.mjs';
 import {installOperatorClasses} from '../types/operator-classes.mjs';
 import {parseExpression} from '../frontend/language.mjs';
 // Ordinary functions retain stack/effect polymorphism and use the same lowering.
@@ -46,6 +47,16 @@ xs.?[position]; case
  add('countsBy',[],'map, counts');
  add('deque',['xs'],'fold xs __emptyDeque {qpush}');
  add('heap',['xs'],'fold xs __emptyHeap {hpush}');
+ if(isStandardOption(result)){
+  const handleWorklist = (push,pop,peek)=>`mut pending <- initial
+handle body {
+    ${worklistOperations.push}: {-> item k; pending ! ${push} item; resume k},
+    ${worklistOperations.pop}: {-> k; pending ! ${pop}; -> item; resume item k},
+    ${worklistOperations.peek}: {-> k; resume (${peek} pending) k}
+}`;
+  add('withHeap',['initial','body'],handleWorklist('hpush','hpop','hpeek'));
+  add('withDeque',['initial','body'],handleWorklist('qpush','qpopFront','qpeek'));
+ }
  add('set',['xs'],'fold xs __emptySet {sinsert}');
  add('sunion',['xs','ys'],'fold ys xs {sinsert}');
  add('sintersection',['xs','ys'],'filter xs {scontains ys _}; set');

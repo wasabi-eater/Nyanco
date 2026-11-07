@@ -18,3 +18,4 @@ pub import "std.effects" {exn, yield, break, cancel, borrowMut}
 pub import "std.deque" {deque, toDeque, push as qpush, pushFront as qpushFront, pop as qpop, popFront as qpopFront, popBack as qpopBack, peek as qpeek, peekBack as qpeekBack, length as qlength, isEmpty as qisEmpty}
 pub import "std.heap" {heap, toHeap, push as hpush, pop as hpop, peek as hpeek, length as hlength, isEmpty as hisEmpty}
 pub import "std.borrow" {mutref, readRef, writeRef}
+pub import "std.worklist" {withHeap, withDeque}

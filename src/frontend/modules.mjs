@@ -13,10 +13,10 @@ const fail=(message,t)=>{throw new LanguageError(message,t);};
 const key=file=>process.platform==='win32'?resolve(file).toLowerCase():resolve(file);
 const pathOf=file=>file.startsWith('file:')?fileURLToPath(file):resolve(file);
 
-// A renamed import still refers to the type named after the directory itself.
+// A renamed import still refers to the type or effect family named after the module.
 export function moduleTypeSymbol(imp){
  const symbol=imp.module.exports.get(imp.module.standard?imp.module.dir.split('.').at(-1):basename(imp.module.dir));
- return symbol?.access.has('type')&&(symbol.kinds.has('data')||symbol.kinds.has('type'))?symbol:null;
+ return symbol?.access.has('type')&&['data','type','effect-family'].some(kind=>symbol.kinds.has(kind))?symbol:null;
 }
 function typePosition(group,index){
  const first=group[0]?.value,where=group.findIndex(t=>t.value==='where');

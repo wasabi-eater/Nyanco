@@ -90,7 +90,7 @@ async function repl() {
       else if (input === ':stack') stdout.write(format(stack) + '\n');
       else if (input.startsWith(':type ')) {const type=vm.infer(input.slice(6),'<repl-type>');stdout.write((color?highlight(type):type)+'\n');}
       else if (input === ':clear') { stack = []; stdout.write('[]\n'); }
-      else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys(),...vm.definitions.modulePublicNames||[],...standardModuleNames().flatMap(module=>[module,...[...standardModule(module).exports.keys()].map(name=>module+'.'+name)])])].filter(n=>!/^nyancoModule/i.test(n)&&!n.startsWith('__tc_')).join(' ') + '\n');
+      else if (input === ':words') stdout.write([...new Set([...builtinNames(), ...(vm.definitions.effects?.keys()||[]), ...(vm.definitions.constructors?.keys() || []), ...(vm.definitions.methods?.keys() || []), ...[...vm.definitions.keys()].filter(n=>!n.startsWith('__tc_')), ...vm.globals.keys(),...vm.definitions.modulePublicNames||[],...standardModuleNames().flatMap(module=>[module,...[...standardModule(module).exports.keys()].map(name=>module+'.'+name)])])].filter(n=>!vm.definitions.effects?.get(n)?.qualifiedName&&!/^nyancoModule/i.test(n)&&!n.startsWith('__tc_')).join(' ') + '\n');
       else if (input.startsWith(':load ')) {
         const path = input.slice(6).trim();
         await install(null,path,true);

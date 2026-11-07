@@ -59,6 +59,23 @@ main =
 
 `qpopFront`、`qpopBack`、`hpop` は `option 'a`、更新後のコンテナの順に返します。空なら取り出した要素は `None` です。前端を取り出す操作は `std.deque.popFront` としても呼べます。`qpop` は `qpopFront` の別名です。heapは最大値を先に取り出し、比較には `ord` が必要です。`peek` 系は `option` だけを返します。
 
+### エフェクト経由のコンテナ操作
+
+`std.worklist.push x` は要素を追加し、`std.worklist.pop` は次の要素を取り出します。`std.worklist.peek` は次の要素を残したまま参照します。`pop` と `peek` は空の場合に `None` を返します。型注釈では3つの操作を `std.worklist 'a` とまとめて書けます。
+
+`withHeap initial { ... }` は最大値を先に、`withDeque initial { ... }` は追加した順に取り出します。どちらも初期コンテナを受け取り、空のスタックでquotationを実行して、その結果を呼び出し元に積みます。他のエフェクトは外へ伝わります。直接操作する `hpush` や `qpush` も使えます。
+
+```nyanco
+drain =
+    std.worklist.push 3
+    std.worklist.push 7
+    loop {std.worklist.pop; ?? cancel; print}
+
+main =
+    withHeap (heap []) {drain}    -- 7, 3
+    withDeque (deque []) {drain}  -- 3, 7
+```
+
 ## Option、Result、例外
 
 `option 'a` は `None` と `Some 'a`、`result 'a 'err` は `Ok 'a` と `Err 'err` からなります。`omap`、`ofilter`、`oflatMap`、`oflatten`、`ozip` と、`rmap`、`rflatMap`、`rflatten`、`rzip` で中身を処理できます。
