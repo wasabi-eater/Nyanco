@@ -1758,6 +1758,7 @@ export function occurrenceTypes(definitions,file) {
   const info=loweringTypes(definitions),result=new Map();
   result.substitutions=new Map();
   result.variables=new Map();
+  result.localTypes=new Map();
   result.localSignatures=[];
   result.stacks=[];
   let nextStackSequence=0;
@@ -1770,15 +1771,18 @@ export function occurrenceTypes(definitions,file) {
     // Explicitly quantified parameters remain generic in editor displays.
     defaultNumericLiterals(variables,undefined,trace.signatureVariables);
     for(const [node,t] of trace){
-      const save=(token,effect)=>{
+      const save=(token,effect,local)=>{
         if(effect&&token.file===file){
           const key=`${token.line}:${token.col}`,actual=instantiate(generalize(effect),false,null,false);
           const actualNames=new Map();result.set(key,formatType(actual,{names:actualNames,defaultNumbers:false}));
-          const scheme=info.functions.get(token.value);
+          const scheme=local||info.functions.get(token.value);
           if(scheme){
             const originalNames=new Map(),bindings=new Map();
-            formatType(scheme.type,{names:originalNames});
-            const generic=instantiate(scheme,false,bindings);
+            const definition=formatType(scheme.type,{names:originalNames,defaultNumbers:!local});
+            if(local)result.localTypes.set(key,definition);
+            // A local scheme can share captured variables with the enclosing
+            // clause. Compare detached types when computing hover substitutions.
+            const generic=instantiate(local?{type:scheme.type,vars:free(scheme.type)}:scheme,false,bindings,!local);
             try{
               unify(generic,actual,token);
               const substitutions=[];
@@ -1792,7 +1796,8 @@ export function occurrenceTypes(definitions,file) {
           }
         }
       };
-      save(node,t.effect);
+      const local=node.kind==='word'?t.env.get(node.value):null;
+      save(node,t.effect,local?.callable?local:null);
       if(node.kind==='comparison-chain')node.operators.forEach((op,i)=>save(op,t.operatorEffects?.[i]));
       else if(t.operatorEffects?.length)save(node,t.operatorEffects[0]);
     }
@@ -1809,7 +1814,11 @@ export function occurrenceTypes(definitions,file) {
     for(const [token,t] of trace){
       if(token.file!==file||token.kind!=='local-function')continue;
       const scheme=t.localEnv?.get(token.name);
-      if(scheme)result.localSignatures.push({token,type:formatType(scheme.type,{defaultNumbers:false})});
+      if(!scheme)continue;
+      const type=formatType(scheme.type,{defaultNumbers:false});
+      result.localSignatures.push({token,type});
+      const declarations=token.parameterized?token.body[0].branches.map(branch=>branch.token):[token];
+      for(const declaration of declarations)result.localTypes.set(`${declaration.line}:${declaration.col}`,type);
     }
     const sequence=nodes=>{const id=nextStackSequence++;for(const node of nodes||[])visit(node,true,id);};
     const visit=(node,emit,sequenceID)=>{

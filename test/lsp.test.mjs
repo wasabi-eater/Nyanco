@@ -118,6 +118,38 @@ test('hover shows polymorphic definitions and separately instantiated occurrence
   service.update(uri,source.replace('integer : -> int','integer : -> float'),2);
   assert.match(hover(2).split('この項の型')[1],/float/);
 });
+test('hover shows local function declarations and instantiations in their lexical scope',()=>{
+  const service=new LanguageService();
+  const lines=[
+    'identity x = "global"',
+    'main =',
+    '    call {',
+    '        identity x = x',
+    '        identity 4; drop',
+    '        identity "hi"; drop',
+    '    }',
+    '    identity 1',
+    '    flag True = 1',
+    '    flag False = 0',
+    '    flag False'
+  ];
+  assert.deepEqual(service.update(uri,lines.join('\n'),1).diagnostics,[]);
+  const hover=(line,name)=>{
+    const start=lines[line].indexOf(name);
+    const result=service.request('textDocument/hover',{textDocument:{uri},position:{line,character:start+1}});
+    assert.deepEqual(result?.range,{start:{line,character:start},end:{line,character:start+name.length}});
+    return result.contents.value;
+  };
+  assert.match(hover(3,'identity'),/定義時の型[\s\S]*identity : \.\.s 'a -> \.\.s 'a/);
+  for(const [line,type] of [[4,'int'],[5,'string']]){
+    const text=hover(line,'identity');
+    assert.match(text,/identity : \.\.s 'a -> \.\.s 'a/);
+    assert.ok(text.includes(`identity : ..s ${type} -> ..s ${type}`));
+    assert.ok(text.includes(`'a = ${type}`));
+  }
+  assert.match(hover(7,'identity'),/identity : \.\.s int -> \.\.s string/);
+  for(const line of [8,9,10])assert.match(hover(line,'flag'),/flag : \.\.s bool -> \.\.s int/);
+});
 test('hover substitutions retain parameter identity and show structured types',()=>{
   const service=new LanguageService();
   service.update(uri,"keep x y = x\nmain : -> int\nmain = keep 1 \"hi\"",1);

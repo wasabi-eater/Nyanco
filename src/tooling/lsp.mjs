@@ -199,16 +199,19 @@ export class LanguageService {
         return {contents:{kind:'markdown',value:'```nyanco\n'+label+'\n```'},range:span};
       }
     }
-    const token=this.token(doc,params.position);if(!token||this.local(doc,token))return null;
+    const token=this.token(doc,params.position);if(!token)return null;
     if(method==='textDocument/definition'){
+      if(this.local(doc,token))return null;
       const defs=doc.program?.definitions,t=defs?.get(token.value)?.[0]?.token||defs?.constructors.get(token.value)?.token||defs?.methods.get(token.value)?.token||defs?.dataTypes.get(token.value)?.token;
       return t?{uri:t.file,range:range(t)}:null;
     }
     if(method==='textDocument/hover'){
-      const type=this.type(doc,token.value);
+      const key=`${token.line}:${token.col}`,localType=doc.occurrences.localTypes?.get(key);
+      if(!localType&&!doc.occurrences.has(key)&&this.local(doc,token))return null;
+      const type=localType||this.type(doc,token.value);
       const declaration=doc.symbols.some(s=>s.name===token.value&&s.selectionRange.start.line===token.line-1&&s.selectionRange.start.character===token.col-1);
-      const actual=doc.occurrences.get(`${token.line}:${token.col}`)||(declaration?type:null);
-      const substitutions=doc.occurrences.substitutions?.get(`${token.line}:${token.col}`)||[];
+      const actual=doc.occurrences.get(key)||(declaration?type:null);
+      const substitutions=doc.occurrences.substitutions?.get(key)||[];
       const mapping=substitutions.length?'\n\n型変数の対応\n\n```nyanco\n'+substitutions.map(s=>s.variable+' = '+(doc.program?.modules?.display(s.type)||s.type)).join('\n')+'\n```':'';
       const display=doc.program?.modules?.display||String;
       const block=t=>'```nyanco\n'+(token.sourceName||token.value)+' : '+display(t)+'\n```';
