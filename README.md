@@ -2,6 +2,12 @@
 
 Nyanco（ニャンコ）は、スタックを使って処理をつなぐ、静的型付きの連結型（concatenative）関数型言語です。型推論、パターンマッチ、型クラス、代数的エフェクトを備えています。実験段階の言語で、構文や標準ライブラリは変わることがあります。
 
+## Nyanco Language Tour
+
+**[ブラウザでNyancoを試す](https://wasabi-eater.github.io/Nyanco/)**
+
+インストール不要で、サンプルを編集・実行しながら学べます。スタックの基本から型クラス、ストリーム、エフェクト、モジュールまで順に試せます。
+
 ## はじめのプログラム
 
 Node.js 20以降があれば、リポジトリのルートから実行できます。次のコードを `hello.nyan` に保存してください。
@@ -18,22 +24,6 @@ node cli.mjs --single-file hello.nyan
 `35` と表示されます。`;` で区切られた処理は左から順に進み、スタックに残した値を次の処理が受け取ります。この例では、1から5までの範囲から奇数を選び、それぞれを二乗して合計します。`{_ * _}` の `_` は、`map` が渡した同じ要素を参照します。
 
 `node cli.mjs` だけで実行すると、対話環境（REPL）が開きます。`:type` で式の型を調べられます。
-
-## Nyanco Language Tour
-
-Language Tourでは、ブラウザ上でサンプルを編集・実行しながら、スタックの基本から型クラス、ストリーム、エフェクト、モジュールまで学べます。リポジトリのルートで次のコマンドを実行し、端末に表示されるURLを開いてください。
-
-```sh
-npm run tour
-```
-
-`npm run tour:build` で静的配信用ファイルを `tour/dist/` に生成できます。
-
-### GitHub Pagesで公開する
-
-GitHubリポジトリの **Settings → Pages → Build and deployment** で、**Source** に **GitHub Actions** を選びます。[`Deploy Language Tour`](.github/workflows/pages.yml) は `main` へのpushでツアーをビルドして公開します。初回は設定後に、**Actions → Deploy Language Tour → Run workflow** から `main` を選んで手動で実行できます。
-
-公開URLはWorkflowの実行結果に表示されます。通常のプロジェクトサイトでは `https://<ユーザー名>.github.io/<リポジトリ名>/` です。[GitHub Pagesの設定ガイド](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site)
 
 ## 機能とドキュメント
 
