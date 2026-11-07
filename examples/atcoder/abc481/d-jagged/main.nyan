@@ -14,9 +14,7 @@ main =
     vreplicate n 0 -> mut done
     deque []; qpush (s - 1) -> mut queue
     while {qisEmpty queue; not} do
-        qpop queue -> rest item
-        queue <<- rest
-        unwrap item -> v
+        queue ! qpopHead; unwrap -> v
         when (done.[v] == 0) do
             done.[v] <<- 1
             graph.[v] -> neighbors

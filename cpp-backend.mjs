@@ -785,7 +785,7 @@ return {option(${args[0]})};
         ? `std::move(${value})` : value; };
       if (instruction.ir && optimizeVectors) {
         if (lifetimes.takes.has(n)) instruction.ir.memory = {binding:'take-if-unshared',reason:'last-use-before-write-or-scope-end'};
-        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','hpush','hpop','qpush','qpushFront','qpop','qpopBack'].includes(n.value)) {
+        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','hpush','hpop','qpush','qpushFront','qpop','qpopHead','qpopBack'].includes(n.value)) {
           instruction.ir.ownership = {mode:'cow',reason:'runtime-reference-count',staticMode:instruction.ownership?.mode};
         }
       }
@@ -916,11 +916,26 @@ return {option(${args[0]})};
             });
             const inner = context();
             const local = cloneEnv(inner,env);
-            const result = emit(n.fields.at(-1).body, n.updating ? ['old'] : [], local,
+            const optional = n.path.some(part => part.optional);
+            const ambient = n.updating && !T.isBottom(info.output)
+              ? items(T.prune(info.output).rest).map((type, i) => {
+                const native = cppType(type);
+                return ctx.value(optional ? readAs(stack[i], native) : native + '{}', native);
+              })
+              : [];
+            inner.pinned = new Set([...ctx.pinned,...stack]);
+            const result = emit(n.fields.at(-1).body, n.updating ? [...stack,'old'] : [], local,
               n.updating ? new Map() : holes, trace, inner);
-            inner.add(result.never ? `fail(${at}, "Non-returning update returned");` : `return ${result[0]};`);
+            if (result.never) inner.add(`fail(${at}, "Non-returning update returned");`);
+            else {
+              const replacement = result.pop();
+              assign(inner, ambient, result);
+              inner.add(`return ${replacement};`);
+            }
             const replace = `[&](Value old) -> Value {\n${inner.lines.join('\n')}\n}`;
-            stack.push(ctx.value(`updatePath(m, ${ctx.move(source,args)}, {${path.join(', ')}}, 0, ${replace}, ${!!n.defaulting}, ${!!n.updating}, ${reuse}, ${at})`));
+            const updated = ctx.value(`updatePath(m, ${ctx.move(source,args)}, {${path.join(', ')}}, 0, ${replace}, ${!!n.defaulting}, ${!!n.updating}, ${reuse}, ${at})`);
+            if (n.updating) stack = ambient;
+            stack.push(updated);
             break;
           }
           case 'quote': {
@@ -970,7 +985,8 @@ return {option(${args[0]})};
             }
             const simple=n.body.length===1&&n.body[0].kind==='scope'?n.body[0].body:n.body;
             const [owner,path]=simple;
-            if(nativeLocals&&optimizeVectors&&names.length===1&&simple.length===2&&owner.kind==='word'&&owner.value===names[0]&&path.kind==='path-update'&&path.updating&&!path.defaulting&&path.path.length===1&&path.path[0].kind==='list-index'&&!path.path[0].optional){
+            const isolatedPath=!path?.updating||(!stack.length&&!items(info.output).length);
+            if(nativeLocals&&optimizeVectors&&isolatedPath&&names.length===1&&simple.length===2&&owner.kind==='word'&&owner.value===names[0]&&path.kind==='path-update'&&path.updating&&!path.defaulting&&path.path.length===1&&path.path[0].kind==='list-index'&&!path.path[0].optional){
               const container=T.prune(T.prune(trace.get(owner).output).item),row=container.tag==='list'&&T.prune(container.item),native=row&&vectorScalar(row);
               const parts=flatten(path.fields.at(-1).body),push=parts.at(-1);
               if(native&&parts.length===2&&push.kind==='word'&&['vpush','push','Push','::'].includes(push.value)&&!definitions.has(push.value)&&!customMethod(push,trace.get(push)?.effect)&&
@@ -981,7 +997,7 @@ return {option(${args[0]})};
                 break;
               }
             }
-            if(optimizeVectors&&names.length===1&&simple.length===2&&owner.kind==='word'&&owner.value===names[0]&&path.kind==='path-update'&&path.path.length===1&&path.path[0].kind==='list-index'&&!path.path[0].optional&&
+            if(optimizeVectors&&isolatedPath&&names.length===1&&simple.length===2&&owner.kind==='word'&&owner.value===names[0]&&path.kind==='path-update'&&path.path.length===1&&path.path[0].kind==='list-index'&&!path.path[0].optional&&
                 path.fields.every(field=>primitiveReplacement(field.body,trace,names[0]))){
               const container=T.prune(T.prune(trace.get(owner).output).item),native=vectorScalar(container);
               const dict=container.tag==='adt'&&container.name==='dict',keyType=dict&&T.prune(container.args[0]);
@@ -998,8 +1014,10 @@ return {option(${args[0]})};
                 }
               }
             }
-            const output = child(n.body, n.fromStack ? take(stack, names.length) : []);
-            names.forEach((name, i) => writeBinding(ctx,env,name,ctx.move(output[i],output.filter((_,j) => i !== j))));
+            const output = child(n.body, n.updating ? stack : n.fromStack ? take(stack, names.length) : []);
+            const replacements = take(output, names.length);
+            if(n.updating) stack = output;
+            names.forEach((name, i) => writeBinding(ctx,env,name,ctx.move(replacements[i],replacements.filter((_,j) => i !== j))));
             break;
           }
           case 'case': {
@@ -1575,16 +1593,19 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       push(`combinatorics<Combinatorics::${name}>(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count})`);
       return stack;
     }
-    if (['__emptyDeque','__emptyHeap','qpush','qpushFront','qpop','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
+    if (['__emptyDeque','__emptyHeap','qpush','qpushFront','qpop','qpopHead','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
          'hpush','hpop','hpeek','hlength','hisEmpty'].includes(name)) {
       if (name === '__emptyDeque' || name === '__emptyHeap') {
         push(name==='__emptyDeque'?`std::make_shared<Queue>()`:`std::make_shared<Collection>(Collection{"heap", {}})`);
         return stack;
       }
       if(name.startsWith('q')){
-        const op={qpush:0,qpushFront:1,qpop:2,qpopBack:3,qpeek:4,qpeekBack:5,qlength:6,qisEmpty:7}[name];
+        const op={qpush:0,qpushFront:1,qpop:2,qpopHead:2,qpopBack:3,qpeek:4,qpeekBack:5,qlength:6,qisEmpty:7}[name];
         const item=op<2?stack.pop():'Value{}',source=stack.pop();
-        stack.push(...ctx.call(`queueOp<${op}>`,[source,item],2).slice(0,op===2||op===3?2:1));return stack;
+        const [container,itemOption]=ctx.call(`queueOp<${op}>`,[source,item],2);
+        if(op===2||op===3) stack.push(itemOption,container);
+        else stack.push(container);
+        return stack;
       }
       const pushing = ['qpush','qpushFront','hpush'].includes(name);
       const item = pushing ? stack.pop() : 'Value{}', source = stack.pop();
@@ -1596,8 +1617,9 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
         const less = callBinary(cmp,{...n,value:'<'},'a','b',effect);
         compare = `[&](const Value& a, const Value& b) { ${cmp.lines.join(' ')} return truth(${less}); }`;
       }
-      stack.push(...ctx.call(`collectionOp<CollectionOp::${name}>`,[source,item,compare,String(reuse)],2)
-        .slice(0,['qpop','qpopBack','hpop'].includes(name) ? 2 : 1));
+      const [container,itemOption]=ctx.call(`collectionOp<CollectionOp::${name}>`,[source,item,compare,String(reuse)],2);
+      if(name==='hpop') stack.push(itemOption,container);
+      else stack.push(container);
       return stack;
     }
     if (['vector','join','nth','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy',

@@ -1,3 +1,5 @@
+import {typeIR} from './types.mjs';
+
 // Lexical lifetimes for the C++ RC backend. Bindings, rather than spellings,
 // distinguish shadowed names. A write ends the old generation of a mutable
 // binding; quotation captures are uses and are protected by shared Cell RC.
@@ -42,7 +44,12 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
           walk(n.body,new Map(scope));
           const writes = (n.names || [n.name]).map(name => lookup(name,scope,info)).filter(Boolean);
           writes.forEach(binding => used.add(binding));
-          events.push({writes});
+          const effects = typeIR.effectDescription(info.updateEffects);
+          // An effect can abandon this update before it commits. Keep the
+          // previous cell contents available until the replacement is ready.
+          if (typeIR.isBottom(info.output) || effects.entries.length || effects.tails.length)
+            events.push({reads:writes});
+          else events.push({writes});
           continue;
         }
         if (n.kind === 'quote' || n.kind === 'local-function') {

@@ -25,14 +25,16 @@ export function analyzeOwnership(region,types){
    i.ownership={mode:'view',reason:'pattern-shared-storage'};
    i.arguments.forEach(escape);
   }else if((vector||heap)&&i.op==='call'){
-   const kind=types[i.resultTypes[0]]?.kind;
-   const supported=vector?kind==='list':types[i.resultTypes[0]]?.name==='heap';
+   const resultIndex=name==='hpop'?1:0;
+   const resultType=types[i.resultTypes[resultIndex]];
+   const supported=vector?resultType?.kind==='list':resultType?.name==='heap';
    const aliased=i.arguments.slice(1).some(id=>resources.get(id)===resource);
    const dead=![...liveAfter.get(i)].some(id=>referenced(id).has(resource));
    const move=supported&&resource!==undefined&&!escaped.has(resource)&&!aliased&&dead;
    i.ownership={mode:move?'move':'copy',reason:move?'fresh-last-use':resource===undefined?'shared-input':escaped.has(resource)?'escaped':aliased?'self-alias':!dead?'live-alias':'unsupported-type'};
    i.arguments.slice(1).forEach(escape);
-   if(i.results[0]!==undefined){if(move)resources.set(i.results[0],resource);else if(supported)fresh(i.results[0]);}
+   const result=i.results[resultIndex];
+   if(result!==undefined){if(move)resources.set(result,resource);else if(supported)fresh(result);}
   }else if(i.op==='quote'){
    const body=i.regions.find(r=>r.id===i.children.find(c=>c.role==='body')?.region);
    if(i.results[0]!==undefined){held.set(i.results[0],new Set(i.arguments.flatMap(id=>[...referenced(id)])));callbacks.set(i.results[0],body?.retention);}

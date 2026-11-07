@@ -95,6 +95,30 @@ test('jagged row pushes preserve snapshots and errors with bounded copied elemen
  native(code,run=>{const r=run();assert.equal(r.stdout,expected(p));assert.ok(Number(r.stderr.trim())<256,r.stderr);});
 });
 
+test('C++ updates use ambient operands and preserve extra results through paths and loops',{skip:!available},()=>{
+ const p=compile(`main =
+    [] -> mut v
+    [1,2,3]; each {v ! vpush}
+    v ! dup
+    v ! vpush 4
+    print; print v
+    while {True} {5; v ! vpush, when True {cancel}}
+    print v
+    [[1]] -> mut rows; 2; rows.[0] ! vpush; print rows
+    [10] -> mut xs
+    8; xs.?[9] ! swap; print
+    9; xs.?[0] ! swap; print; print xs
+    deque [1,2] -> mut queue
+    queue -> before
+    loop {queue ! qpopHead; ?? cancel -> x; print (x * 2)}
+    print (toVector before)
+    print (qisEmpty queue)
+`);
+ const out='[1, 2, 3]\n[1, 2, 3, 4]\n[1, 2, 3, 4]\n[[1, 2]]\n8\n10\n[9]\n2\n4\n[1, 2]\nTrue\n';
+ assert.equal(expected(p),out);
+ for(const nativeLocals of [true,false])native(transpileCpp(p,{nativeLocals,referenceCounting:'local'}),run=>assert.equal(run().stdout,out));
+});
+
 test('jagged graph sample uses row updates without general coroutine path machinery',{skip:!available},()=>{
  const root=fileURLToPath(new URL('..',import.meta.url)),p=compileModule(join(root,'examples/atcoder/abc481/d-jagged/main.nyan'));
  const code=transpileCpp(p,{batchIO:true,noSourcePaths:true,referenceCounting:'local'});

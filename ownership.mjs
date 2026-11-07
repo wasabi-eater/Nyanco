@@ -37,7 +37,16 @@ export function vectorOwnership(definitions,nodes,{local=false}={}) {
     forget();continue;
    }
    if(n.kind==='path-update'){
-    const original=pop();for(const f of n.fields)walk(f.body,[],new Map(env),remaining,locals).forEach(escape);
+    const original=pop();
+    if(n.updating){
+     // A fresh root is held aside while its replacement runs. Values on the
+     // enclosing stack can be exchanged with the replacement, so forget them.
+     if(original?.unique&&n.path.length===1&&n.path[0].kind==='list-index')reusable.add(n);
+     escape(original);forget();
+     n.fields.forEach(f=>unit(f.body,true));
+     stack.push(null);continue;
+    }
+    for(const f of n.fields)walk(f.body,[],new Map(env),remaining,locals).forEach(escape);
     if(n.path.length===1&&n.path[0].kind==='list-index'){if(original?.unique)reusable.add(n);stack.push({unique:true});}else{escape(original);stack.push(null);}continue;
    }
    // Any other construct can store, duplicate, suspend or expose a value.

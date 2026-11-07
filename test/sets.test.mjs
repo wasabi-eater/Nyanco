@@ -100,7 +100,8 @@ test('new vector helpers and primitive mutable updates match VM and preserve abo
     repeat 3; take 4; toVector; print
     0 -> mut n
     repeatWith {n ! + 1; n}; take 3; toVector; print
-    deque []; qpush 1; qpushFront 2; qpop; print; toVector; print
+    deque []; qpush 1; qpushFront 2 -> mut q
+    q ! qpopHead; print; print (toVector q)
 `;
  const {program,output}=run(text);assert.equal(native(program),output.join('\n')+'\n');
 });

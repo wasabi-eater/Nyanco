@@ -26,7 +26,7 @@ test('parallel targets use the same RHS precedence and preserve one capture snap
  assert.deepEqual(run('main = 2 -> mut x; 3 -> mut y; x, y ! (_1 + _, _1); x, y').stack,[5,2]);
  assert.deepEqual(run('main = 2 -> mut x; 3 -> mut y; x, y <<- y, x + y; x, y').stack,[3,5]);
  assert.deepEqual(run('main = 1 -> mut x; 2 -> mut y; 3 -> mut z; x, y, z ! _1, _, _2; x, y, z').stack,[2,3,1]);
- assert.throws(()=>run('main = 3 -> mut x; x ! + 1, 2'),/produce 1/);
+ assert.deepEqual(run('main = 3 -> mut x; x ! + 1, 2; x').stack,[4,2]);
  assert.throws(()=>run('main = 0 -> x; x <<- 1, + 2'),/immutable/);
  const vm=new VM({warning:()=>{}});vm.evaluate('1 -> mut x; 2 -> mut y');
  assert.throws(()=>vm.evaluate('x, y <<- 3, 1 / 0'),/zero/);assert.deepEqual(vm.evaluate('x, y'),[1,2]);
@@ -39,6 +39,14 @@ test('field and index updates accept comma commands and preserve aliases',()=>{
  assert.deepEqual(run('main = #(1,2) -> mut t; t.0 ! + 1, * 3; t.0').stack,[6]);
 });
 
+test('modifications consume the current stack and leave surplus values in order',()=>{
+ assert.deepEqual(run('main = [] -> mut v; [1,2,3]; each {v ! vpush}; v').stack,[[1,2,3]]);
+ assert.deepEqual(run('main = 1 -> mut x; 2 -> mut y; 3; x, y ! _2, _1, _; x, y').stack,[3,1,2]);
+ assert.deepEqual(run('main = 5; {x: 2} with x ! swap -> r; r.x').stack,[2,5]);
+ assert.deepEqual(run('main = [10] -> mut xs; 8; xs.?[9] ! swap; 9; xs.?[0] ! swap; xs').stack,[8,10,[9]]);
+ assert.throws(()=>run('main = [10] -> mut xs; xs.?[0] ! dup'),/Type error/);
+});
+
 test('Go and VM agree on uniform comma precedence for mutable updates',()=>{
  const source=`main =
   3 -> mut x; x ! + 1, * 2; print x;
@@ -48,7 +56,10 @@ test('Go and VM agree on uniform comma precedence for mutable updates',()=>{
   {xs: [1,2]} -> mut r; r -> old;
   r.xs.[1] ! + 1, * 2; print r; print old;
   r.xs.[0] <<- 3, * 4; print r;
-  f mut z = z ! + 1, * 2; z;; print (f 5)`;
+  f mut z = z ! + 1, * 2; z;; print (f 5);
+  [] -> mut v; [1,2,3]; each {v ! vpush}; print v;
+  [[1]] -> mut rows; 2; rows.[0] ! vpush; print rows;
+  [10] -> mut xs; 8; xs.?[9] ! swap; print; 9; xs.?[0] ! swap; print; print xs`;
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-reassign-'));
  try{const file=join(dir,'main.go'),exe=join(dir,'main.exe');writeFileSync(file,transpileGo(p));const build=spawnSync('go',['build','-o',exe,file],{encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(build.status,0,build.stderr);const result=spawnSync(exe,[],{encoding:'utf8',windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,output.join('\n')+'\n');}finally{rmSync(dir,{recursive:true,force:true});}
 });

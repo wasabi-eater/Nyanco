@@ -679,9 +679,9 @@ function builtinSchemes() {
   for(const kind of ['deque','heap']){
     const prefix=kind==='deque'?'q':'h';
     add('__empty'+kind[0].toUpperCase()+kind.slice(1),()=>{const s=row(),a=variable();return quote(s,push(s,adt(kind,[a])));});
-    for(const suffix of (kind==='deque'?['push','pushFront','pop','popBack','peek','peekBack','length','isEmpty']:['push','pop','peek','length','isEmpty']))add(prefix+suffix,()=>{
+    for(const suffix of (kind==='deque'?['push','pushFront','pop','popHead','popBack','peek','peekBack','length','isEmpty']:['push','pop','peek','length','isEmpty']))add(prefix+suffix,()=>{
       const s=row(),a=variable(),c=adt(kind,[a]);if(kind==='heap'&&['push','pop'].includes(suffix))requireClass('ord',a);
-      return quote(suffix.startsWith('push')?stack(s,c,a):push(s,c),suffix.startsWith('push')?push(s,c):suffix.startsWith('pop')?stack(s,c,adt('option',[a])):push(s,suffix.startsWith('peek')?adt('option',[a]):suffix==='length'?INT:BOOL));
+      return quote(suffix.startsWith('push')?stack(s,c,a):push(s,c),suffix.startsWith('push')?push(s,c):suffix.startsWith('pop')?stack(s,adt('option',[a]),c):push(s,suffix.startsWith('peek')?adt('option',[a]):suffix==='length'?INT:BOOL));
     });
   }
   for(const name of ['readRef','writeRef']){const s=row(),r=variable(),a=variable(),ref=adt('mutref',[r,a]);out.set(name,generalize(quote(name==='readRef'?push(s,ref):stack(s,ref,a),name==='readRef'?push(s,a):s,effects([{name:'borrowMut',args:[r]}]))));}
@@ -935,11 +935,18 @@ class Inference {
         });
         node.targetTokens?.forEach((token,i)=>this.traceVariable(token,bindings[i].type));
         const initial=[];if(node.fromStack)for(const name of names){let value;[current,value]=this.pop(current,node);initial.unshift(value);}
-        const output=this.sequence(node.body,stack(EMPTY,...initial),new Map(env),bound);
+        const effectStart=this.effectSink.dependencies.length;
+        const output=this.sequence(node.body,node.updating?current:stack(EMPTY,...initial),new Map(env),bound);
+        if(trace)trace.updateEffects=effects([],this.effectSink.dependencies.slice(effectStart));
         if(isBottom(output))current=BOTTOM;
         else {
           const values=names.map(()=>variable());
-          try{unify(output,stack(EMPTY,...values),node);}catch(error){throw new StaticTypeError(`Assignment operand must consume 0 and produce ${names.length} value(s). ${error.message}`,node);}
+          if(node.updating){
+            current=output;
+            for(let i=values.length-1;i>=0;i--)[current,values[i]]=this.pop(current,node);
+          }else {
+            try{unify(output,stack(EMPTY,...values),node);}catch(error){throw new StaticTypeError(`Assignment operand must consume 0 and produce ${names.length} value(s). ${error.message}`,node);}
+          }
           values.forEach((value,i)=>{checkNeverPromises(value,bindings[i].type,node);checkEffectPromises(value,bindings[i].type,node);unify(bindings[i].type,value,node);});
         }
       } else if(node.kind==='borrow') {
@@ -1030,14 +1037,17 @@ class Inference {
       } else if(node.kind==='dict'){const key=variable(),value=variable();for(let j=0;j<node.fields.length;j+=2){unify(key,this.single(node.fields[j].body,env,bound,node),node);unify(value,this.single(node.fields[j+1].body,env,bound,node),node);}requireClass('hash',key,node);current=push(current,adt('dict',[key,value]));
       } else if(node.kind==='path-update') {
         let original;[current,original]=this.pop(current,node);
+        const ambient=current,optional=node.path.some(part=>part.optional);
         const args=node.fields.slice(0,-1).map(f=>this.single(f.body,env,bound,node));
         if(args.some(isBottom)){current=BOTTOM;}else {
           const replace=(type,depth)=>{
             if(depth===node.path.length){
               if(!node.updating)return this.single(node.fields.at(-1).body,env,bound,node);
-              const result=this.sequence(node.fields.at(-1).body,stack(EMPTY,type),new Map(env)),item=variable();
-              if(isBottom(result))return BOTTOM;
-              unify(result,stack(EMPTY,item),node);return item;
+              const result=this.sequence(node.fields.at(-1).body,push(ambient,type),new Map(env));
+              if(isBottom(result))return optional?type:BOTTOM;
+              let item;[current,item]=this.pop(result,node);
+              if(optional)unify(current,ambient,node);
+              return item;
             }
             const part=node.path[depth],item=variable();
             if(part.kind==='field') {
@@ -1055,7 +1065,9 @@ class Inference {
             this.effectSink.dependencies.push({row:get.effects,...(part.optional||node.defaulting?{exclude:['exn']}:{})},{row:set.effects});
             if(trace){trace.indexPaths??=[];trace.indexPaths[depth]={get,set};}return type;
           };
-          const result=replace(original,0);current=isBottom(result)?BOTTOM:push(current,result);
+          const result=replace(original,0);
+          if(optional&&node.updating&&!isBottom(result))unify(original,result,node);
+          current=isBottom(result)?BOTTOM:push(current,result);
         }
       } else if(node.kind==='list-index') {
         if(node.optional && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('Optional indexing requires data option a = None | Some a',node);

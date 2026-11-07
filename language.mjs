@@ -178,7 +178,15 @@ function layoutQuotations(tokens) {
 }
 
 let nextStackCapture=0;
+const receiverFirstUpdates = new Set(['vpush','push','Push','qpush','qpushFront','hpush','sinsert','sremove']);
+
 function parseTokens(tokens, inherited = null, constructors = new Map()) {
+  // A bare collection update uses the current value as the receiver and
+  // takes the missing item from the stack. Explicit arguments keep their order.
+  const modification = rhs => receiverFirstUpdates.has(rhs[0]?.value) &&
+    rhs[0].kind === 'word' && (rhs.length === 1 || rhs[1].kind === ',')
+    ? [{...rhs[0],value:'swap',sourceName:undefined},{...rhs[0],kind:',',value:','},...rhs]
+    : rhs;
   tokens=recordShorthands(layoutQuotations(tokens));
   // Layout separators belong to expression bodies, not declaration headers.
   // Keep the separator on the previous line so case/local-definition layout
@@ -470,7 +478,8 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
           if(['(','[','{'].includes(t.kind))depth++;if([')',']','}'].includes(t.kind))depth--;i++;
         }
         if(start===i)throw new LanguageError('Update requires a replacement value',tokens[i]||token);
-        fields.push({body:parseTokens(tokens.slice(start,i),operation.value==='!'?{parents:context.parents}:context,constructors)});
+        const updating=operation.value==='!',rhs=tokens.slice(start,i);
+        fields.push({body:parseTokens(updating?modification(rhs):rhs,updating?{parents:context.parents}:context,constructors)});
         updates.push({...token,kind:'path-update',path,fields,updating:operation.value==='!',defaulting:operation.value==='??='});
         if(!braced)return updates;
         if([';',','].includes(tokens[i]?.kind)){i++;while(tokens[i]?.layout)i++;continue;}
@@ -585,9 +594,10 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
         if(access)rhs=[targets[0],{...operator,kind:'word',value:'with'},{...operator,kind:'{',value:'{'},...access,{...operator,kind:'word',value:operator.value==='!'?'!':operator.value==='??<-'?'??=':'='},...rhs,{...operator,kind:'}',value:'}'}];
         if(operator.value==='!'&&!access) {
           const prefix=targets.flatMap((t,j)=>j?[{...operator,kind:',',value:','},t]:[t]);
-          rhs.unshift(...prefix,{...operator,kind:';',value:';'});
+          rhs=[...prefix,{...operator,kind:';',value:';'},...(names.length===1?modification(rhs):rhs)];
         }
-        nodes.push({...targets[0],kind:'update',name:names[0],names,targetTokens:targets,body:parseTokens(rhs,operator.value==='!'&&!access?{parents:context.parents}:context,constructors)});
+        const updating=operator.value==='!';
+        nodes.push({...targets[0],kind:'update',name:names[0],names,targetTokens:targets,updating,body:parseTokens(rhs,updating&&!access?{parents:context.parents}:context,constructors)});
         if(i<tokens.length && ![';',';;',','].includes(tokens[i].kind) && tokenLine(tokens[i])>tokenLine(operator))startClause(tokens[i]);
         continue;
       }
@@ -1404,8 +1414,11 @@ export class VM {
             const cell=env.get(name);if(cell?.kind!=='cell')throw new LanguageError(`Cannot assign to immutable variable: ${name}`,t);return cell;
           });
           if(t.fromStack)this.need(stack,names.length,t);
-          const values=t.fromStack?stack.splice(-names.length):[];yield* this.run(t.body,values,new Map(env),missing);
-          if(values.length!==names.length)throw new LanguageError(`Assignment requires ${names.length} value(s); produced ${values.length}`,t);
+          const result=t.updating?stack:t.fromStack?stack.splice(-names.length):[];
+          yield* this.run(t.body,result,new Map(env),missing);
+          if(!t.updating&&result.length!==names.length)throw new LanguageError(`Assignment requires ${names.length} value(s); produced ${result.length}`,t);
+          this.need(result,names.length,t);
+          const values=result.splice(-names.length);
           cells.forEach((cell,i)=>{if(!this.journal.has(cell))this.journal.set(cell,cell.value);cell.value=values[i];});
         }
         else if (t.kind === 'scope') yield* this.run(t.body, stack, new Map(env), missing);
@@ -1508,9 +1521,12 @@ export class VM {
           const vm=this;
           function* copy(value,depth) {
             if(depth===t.path.length){
-              const result=t.updating?[value]:[];
+              const result=t.updating?stack:[];
+              if(t.updating)result.push(value);
               yield* vm.run(t.fields.at(-1).body,result,new Map(env),t.updating?new Map():missing);
-              if(result.length!==1)throw new LanguageError('Update must produce exactly one value',t);return result[0];
+              if(!t.updating&&result.length!==1)throw new LanguageError('Update must produce exactly one value',t);
+              vm.need(result,1,t);
+              return result.pop();
             }
             const part=t.path[depth];
             if(part.kind==='field') {
@@ -1808,8 +1824,8 @@ for(const [name,count] of Object.entries(collectionOperations))define(name,count
  if(name.endsWith('length')){s.push(size);return;}
  if(name.endsWith('isEmpty')){s.push(size===0);return;}
  const [next,item,found]=kind==='deque'?queuePop(c,name==='qpopBack'||name==='qpeekBack'):name==='hpop'?yield* heapPop(c,less):[c,c.items[0],size>0];
- if(name==='qpop'||name==='qpopBack'||name==='hpop')s.push(next);
  s.push({kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[item]:[]});
+ if(name.startsWith('qpop')||name==='hpop')s.push(next);
 });
 
 define('readRef',1,(vm,s,t)=>{const ref=s.pop();if(ref?.kind!=='mutref'||!ref.live)throw new LanguageError('Borrowed reference is outside its lifetime',t);s.push(ref.cell.value);});

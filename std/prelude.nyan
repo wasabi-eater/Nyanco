@@ -15,6 +15,6 @@ pub import "std.stack" {nop, dup, drop, swap, over, rot}
 pub import "std.core" {%, &&, *, +, ++, -, .&., .., ..=, .<<., .>>., .|., /, /=, ::, <, <=, ==, >, >=, ^, at, concat, exn, hash, not, setAt, show, ||, catch}
 pub import "std.classes" {unwrap, or, orElse, add, sub, mul, div, mod, pow, eq, ord, and, shl, shr, append, hash, show, unwrapOr, unwrapOrElse, hasValue}
 pub import "std.effects" {exn, yield, break, cancel, borrowMut}
-pub import "std.deque" {deque, toDeque, push as qpush, pushFront as qpushFront, pop as qpop, popBack as qpopBack, peek as qpeek, peekBack as qpeekBack, length as qlength, isEmpty as qisEmpty}
+pub import "std.deque" {deque, toDeque, push as qpush, pushFront as qpushFront, pop as qpop, popHead as qpopHead, popBack as qpopBack, peek as qpeek, peekBack as qpeekBack, length as qlength, isEmpty as qisEmpty}
 pub import "std.heap" {heap, toHeap, push as hpush, pop as hpop, peek as hpeek, length as hlength, isEmpty as hisEmpty}
 pub import "std.borrow" {mutref, readRef, writeRef}

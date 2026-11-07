@@ -180,13 +180,22 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const pathValue=`path${next++}`;ctx.lines.push(`${pathValue}:=[]UpdatePart{${path}}`);
         if(n.defaulting||n.path.some(p=>p.optional)){
           const inner=context(),e=`e${next++}`;inner.lines.push(`${e}:=${env}.clone();_=${e}`);
-          const replacement=emit(n.fields.at(-1).body,n.updating?['old']:[],e,n.updating?new Map():holes,trace,inner);
-          if(replacement.never)inner.lines.push('return nil');else inner.lines.push(`return ${replacement[0]}`);
+          const ambient=n.updating?values.map(value=>ctx.value(value)):[];
+          const result=emit(n.fields.at(-1).body,n.updating?[...values,'old']:[],e,n.updating?new Map():holes,trace,inner);
+          if(result.never)inner.lines.push('return nil');
+          else {
+            const replacement=result.pop();
+            if(ambient.length)inner.lines.push(`${ambient}=${result}`);
+            inner.lines.push(`return ${replacement}`);
+          }
+          if(n.updating)values=ambient;
           values.push(ctx.value(`m.modifyUpdate(${original},${pathValue},func(old any) any{${inner.lines.join(';')}},${!!n.defaulting},${at})`));
           continue;
         }
         const old=n.updating?ctx.value(`m.readUpdatePath(${original},${pathValue},${at})`):null;
-        const replacement=child(n.fields.at(-1).body,n.updating?[old]:[],n.updating?new Map():holes)[0];
+        const result=child(n.fields.at(-1).body,n.updating?[...values,old]:[],n.updating?new Map():holes);
+        const replacement=result.pop();
+        if(n.updating)values=result;
         values.push(ctx.value(`m.copyUpdate(${original},${pathValue},${replacement},${at},${(optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n)))})`));
       }
       else if(n.kind==='list-index'){
@@ -232,8 +241,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         ctx.lines.push(`if !${matched} {fail(${at},"No matching case branch")}`);
         values=outputs;
       } else if(n.kind==='update') {
-        const result=child(n.body,n.fromStack?values.splice(-(n.names||[n.name]).length):[]);
-        (n.names||[n.name]).forEach((name,i)=>ctx.lines.push(`${env}.update(${str(name)},${result[i]},${at})`));
+        const names=n.names||[n.name];
+        const result=child(n.body,n.updating?values:n.fromStack?values.splice(-names.length):[]);
+        const replacements=result.splice(-names.length);
+        if(n.updating)values=result;
+        names.forEach((name,i)=>ctx.lines.push(`${env}.update(${str(name)},${replacements[i]},${at})`));
       } else if(n.kind==='binary' || n.kind==='comparison-chain') {
         const missing=missingOperands([n]).filter(h=>!holes.has(h)),bindings=new Map(holes),vs=missing.length?values.splice(-missing.length):[];
         bindings.references=holes.references;
@@ -466,7 +478,10 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       if(name==='__emptyDeque'||name==='__emptyHeap'){v.push(ctx.value(`&Collection{kind:${str(name==='__emptyDeque'?'deque':'heap')}}`));return;}
       const pushing=['qpush','qpushFront','hpush'].includes(name),value=pushing?pop():'nil',source=pop();
       let less='nil';if(name==='hpush'||name==='hpop'){const item=pushing?topTypes.at(-1):T.prune(topTypes.at(-1)).args[0],cmp=comparisonFunction(item,true);less=`func(a,b any)bool{return ${cmp}(m,a,b)<0}`;}
-      const outputs=ctx.call('m.collectionOp',[str(name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);v.push(outputs[0]);if(['qpop','qpopBack','hpop'].includes(name))v.push(outputs[1]);return;
+      const [container,item]=ctx.call('m.collectionOp',[str(name==='qpopHead'?'qpop':name),source,value,less,String(optimizeVectors&&info.ownership?.mode==='move')],2);
+      if(name.startsWith('qpop')||name==='hpop')v.push(item,container);
+      else v.push(container);
+      return;
     }
     if(name==='readRef'){const ref=pop();v.push(ctx.value(`readBorrow(${ref},${at})`));return;}
     if(name==='writeRef'){const value=pop(),ref=pop();ctx.lines.push(`writeBorrow(${ref},${value},${at})`);return;}
