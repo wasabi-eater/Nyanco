@@ -69,8 +69,8 @@ main =
   handle {print (invoke q)} {ask: {-> k; resume 7 k}};
   handle {print (invoke q)} {ask: {-> k; resume 9 k}};
   print (f 2);
-  each [1] @outer {drop; each [2] @inner {drop; cancel@outer}; print "bad"};
-  print (toVector (fromYield @a {yield@a 1; yield@a 2}));
+  (each [1] @outer below; drop; each [2] @inner below; drop; cancel@outer; print "bad");
+  print (toVector (fromYield @a below; yield@a 1; yield@a 2));
   print (toVector (map [1,2,3] @a {when ($ == 2) {cancel@a}; * 2}));
   print (handle @h {ask@h; + 1} {ask: {-> k; resume zero k}})`;
  const {p,output}=run(source),dir=mkdtempSync(join(tmpdir(),'nyanco-block-label-'));

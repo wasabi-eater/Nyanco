@@ -327,7 +327,14 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       if (done()) return [missing(tokens[i - 1] || opener)];
       const t = tokens[i++];
       if(t.kind==='interpolation')return [{...t,fields:t.parts.map(part=>({empty:part.length===0,body:parseTokens(part,context,constructors)}))}];
-      if(t.kind==='word' && t.value.startsWith('@')) {
+      const isLabel=t.kind==='word' && t.value.startsWith('@');
+      if(t.kind==='word' && (t.value==='below' || isLabel && tokens[i]?.kind==='word' && tokens[i].value==='below')) {
+        const marker=isLabel?tokens[i++]:t;
+        if(below)throw new LanguageError('Only one below is allowed per call',marker);
+        below=isLabel?{...marker,labelName:t.value.slice(1)}:marker;
+        return [below];
+      }
+      if(isLabel) {
         if(tokens[i]?.kind==='{'){const opener=tokens[i++];return [{...t,kind:'quote',labelName:t.value.slice(1),body:scope('}',opener,{parents:[context,...context.parents||[]]})}];}
         return [{...t,kind:'label',name:t.value.slice(1),body:expression()}];
       }
@@ -425,11 +432,6 @@ function parseTokens(tokens, inherited = null, constructors = new Map()) {
       if (['(', '[', '{'].includes(t.kind)) {
         const body = scope({ '(': ')', '[': ']', '{': '}' }[t.kind], t, t.kind!=='{'?context:{parents:[context,...context.parents||[]]});
         return [{ ...t, kind: { '(': 'scope', '[': 'list', '{': 'quote' }[t.kind], body }];
-      }
-      if(t.kind==='word' && t.value==='below') {
-        if(below)throw new LanguageError('Only one below is allowed per call',t);
-        below=t;
-        return [t];
       }
       if (t.kind === 'word' && /^(?:_+|\$+)\d*$/.test(t.value)) return [slot(t)];
       if (isOperator(t)) throw new LanguageError('Unexpected binary operator', t);

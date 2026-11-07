@@ -98,7 +98,7 @@ test('native worklists preserve snapshots and respect labels, mask and user hand
  const previous=new Map();previous.moduleTokens=standardTokens;
  const program=compile(`main =
     heap [1] -> h
-    withHeap h @outer {
+    (withHeap h @outer below
         std.worklist.push 3
         withDeque (deque [10]) {
             std.worklist.push 20
@@ -115,7 +115,7 @@ test('native worklists preserve snapshots and respect labels, mask and user hand
         print std.worklist.pop
         print std.worklist.peek
         11, 12
-    }
+    )
     print; print
     print (hpeek h)
 `,'<worklist-routing>',previous);

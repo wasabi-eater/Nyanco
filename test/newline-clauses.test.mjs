@@ -173,6 +173,21 @@ main =
   assert.deepEqual(run('using = 7\nmain = using').stack,[7]);
 });
 
+test('labelled below quotations route effects within the captured commands',()=>{
+  const source=`effect ask : -> int
+main =
+  (handle @outer below {ask: {-> k; resume 10 k}}
+    handle @inner below {ask: {-> k; resume 20 k}}; print ask@outer; print ask@inner)
+  (each [1,2] @outer below
+    -> x
+    each [3,4] @inner below; drop; print x; cancel@outer)
+  print "after"
+`;
+  assert.deepEqual(run(source).output,['10','20','1','after']);
+  assert.throws(()=>compile('main = (each [1] @outer below; drop); cancel@outer'),/Unknown effect label/);
+  assert.throws(()=>compile('main = handle @outer below @inner below; nop'),/Only one below/);
+});
+
 test('do quotations close on dedent and support inline bindings',()=>{
   const source=`main =
   n <- -1

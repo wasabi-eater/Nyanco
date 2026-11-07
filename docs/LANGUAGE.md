@@ -210,7 +210,7 @@ main =
     print -- 4
 ```
 
-`loop @outer {...}` や `handle @outer {...} handlers` はquotationにラベルを付けます。`cancel@outer`、`ask@outer`、`yield@outer` のように操作の宛先を指定できます。`mask ask {...}` はそのブロックから出る `ask` に対して最も内側のハンドラーを1つ飛ばし、`mask ask@outer {...}` は宛先を指定します。
+`loop @outer {...}` や `handle @outer {...} handlers` はquotationにラベルを付けます。`each xs @outer below` のように、`below` で作るquotationにも同じ位置にラベルを書けます。`cancel@outer`、`ask@outer`、`yield@outer` のように操作の宛先を指定できます。`mask ask {...}` はそのブロックから出る `ask` に対して最も内側のハンドラーを1つ飛ばし、`mask ask@outer {...}` は宛先を指定します。
 
 ## 可変借用
 
