@@ -2206,3 +2206,47 @@ node cli.mjs main.nyan --emit-cpp main.cpp --rc local
 参照コピーの比重が高い例では約2倍、ABC481 Dでは約1.09倍でした。一方、辞書ではこの測定で約4%遅くなり、handlerやzipの差も小さいものでした。測定間のばらつきもあり、常に速くなる最適化ではありません。GCC・Clangでの速度比較は未実施です。
 
 正しさの検証では、派生型へのcastと複数継承、COWのsnapshot、sliceのview、quotationのcapture、継続の再開・放棄・失効、例外を扱い、ローカル参照カウンタの制御ブロックが実行後に残らないことも確認しています。`node bench/atcoder.mjs --rc local` でABC480・ABC481のA〜Dのサンプル・小規模ランダム入力・大規模入力を再検証できます。
+
+## C++のローカル変数・capture・ジャグ配列
+
+C++ターゲットでは、ローカル束縛をC++の変数で保持し、可変束縛は `NativeCell<T>` に格納します。例えば整数の状態は `NativeCell<Int>`、vectorの状態は `NativeCell<Ptr<VectorBase>>` です。既知のローカル変数の読み書きには、文字列キーの環境検索を使いません。
+
+`when`・`if`・`while`・`each`などへ直接渡すquotationは、元のローカル変数やセルを参照して展開します。寿命解析の結果を展開後の本体にも引き継ぎ、更新直前の最後の使用では、共有されていない値をセルから移して再利用します。quotationを返したり保存したりする場合は捕捉環境を作ります。可変変数には同じセルを登録するため、その後の更新もclosureから見えます。動的な呼び出しやborrowでは共通セルインターフェースへ変換し、元の型付きセルと値を共有します。
+
+数値vectorとrangeの直接走査では、要素をboxed値にして汎用callbackへ渡す処理を省き、型付きのC++ループを生成します。`cancel`・`break`・ラベル・effectのルーティングは従来の境界で処理します。一般のvectorを一度だけ消費すると判定でき、実行時にも保存領域が単独所有なら、`vmap`などの要素を移して渡します。元のvectorにsnapshotやviewがある場合は共有数が残るため、この移動は行いません。
+
+```nyanco
+main =
+    vreplicate 3 [] -> mut adjacent
+    adjacent.[0] ! vpush 1
+    adjacent.[0] ! vpush 2
+    adjacent.[1] ! vpush 2
+    adjacent -> snapshot
+    adjacent.[0] ! vpush 3
+    print snapshot -- [[1, 2], [2], []]
+    print adjacent -- [[1, 2, 3], [2], []]
+```
+
+このような数値vectorの行への追加は、添字と追加する値を先に評価・検査してから、外側のvectorと行のそれぞれでCOWを判定します。単独所有なら外側のvector全体をコピーせずに行を更新します。独自の演算子・添字instanceや、元の変数を参照する更新式は汎用処理を使います。`unzip`はstreamを走査しながら2本のvectorを作り、tupleを全件保持する中間vectorを作りません。
+
+ABC481 Dのジャグ配列版は `examples/atcoder/abc481/d-jagged/main.nyan` です。`graph.[v]`で隣接頂点を取り出せます。一次元のCSR版も `examples/atcoder/abc481/d/main.nyan` に残しています。
+
+```sh
+node cli.mjs examples/atcoder/abc481/d-jagged/main.nyan --procon > main.cpp
+node bench/graph-performance.mjs
+```
+
+ベンチマークはCSRの環境テーブル版・ローカル変数版、訪問状態をint vectorにしたCSR版、ジャグ配列版を比較します。各版で公式サンプル・小規模ランダム入力と、chain・star・ladderの大型入力の出力を確認します。予備実行後の3回の中央値を `native/graphs/results.json` に保存します。コンパイルとプロセス起動を除き、出力のflushとデータの破棄を含めて測ります。例えば `node bench/graph-performance.mjs jagged-native` で一つの版を選べます。以前の生成C++が手元にある場合は、`--baseline-cpp old.cpp` で同じ条件の比較に加えられます。
+
+JavaScript APIの `transpileCpp(program, {nativeLocals:false})` は、比較用に環境テーブルを使う版を生成します。通常のCLI出力では最適化が有効です。読みやすいIRには `native-local`・`native-cell`・`lexical-capture`・`typed-row-update` といった格納方法も表示します。汎用のquotation・stream・effectの境界には引き続き `Value` を使うため、生成C++全体から `std::any` がなくなる変更ではありません。
+
+2026-11-07、Windows / MSVC `/O2`、プロセス起動を除く3回の中央値は次のとおりです。chainとstarは20万頂点・20万辺、ladderは10万頂点・199,998辺です。単位はmsです。
+
+| 版 | chain | star | ladder |
+| --- | ---: | ---: | ---: |
+| 保存してあった最適化前のC++（CSR、set） | 1286.05 | 1279.93 | 816.50 |
+| 同じNyancoコードを最適化後に生成（CSR、set） | 364.29 | 404.95 | 223.96 |
+| CSR、訪問状態をint vectorへ変更 | 195.71 | 238.82 | 157.01 |
+| ジャグ配列、訪問状態はint vector | 223.55 | 253.87 | 159.75 |
+
+元のNyancoコードを変えずに約3.2〜3.6倍の速度になりました。ジャグ配列版は、同じ訪問状態の表現を使うCSR版に近い速度になっています。AtCoder上のGCCによる再提出時間を表す測定ではありません。ここまでの変更後も、Rust版との差を埋めるには汎用境界やコンテナ実装に残る負荷の削減が必要です。

@@ -17,6 +17,9 @@ template <std::size_t N> using Results = std::array<Value, N>;
 template <typename T> using Ptr = std::shared_ptr<T>;
 // @runtime as
 template <typename T> const T& as(const Value& value) { return std::any_cast<const T&>(value); }
+template <typename T> requires (!std::is_same_v<T,Value>) const T& as(const T& value) { return value; }
+// @runtime takeAs
+template <typename T> T takeAs(Value& value) { T result=std::move(std::any_cast<T&>(value));value.reset();return result; }
 // @runtime is
 template <typename T> bool is(const Value& value) { return value.type() == typeid(T); }
 // @runtime fail
@@ -66,8 +69,7 @@ template <typename T> struct VectorStorage final : VectorBase {
     }
 };
 using Vector = VectorStorage<Value>;
-template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Value value,bool reuse) {
-    auto base = std::move(std::any_cast<Ptr<VectorBase>&>(value));
+template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Ptr<VectorBase> base,bool reuse) {
     auto* typed = dynamic_cast<VectorStorage<T>*>(base.get());
     Ptr<VectorStorage<T>> result;
     if (typed && reuse && base.use_count() == 1 && !typed->owner)
@@ -82,6 +84,9 @@ template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Value value,bo
         result = std::make_shared<VectorStorage<T>>(std::move(data));
     }
     result->invalidate();return result;
+}
+template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Value value,bool reuse) {
+    return vectorWritable<T>(std::move(std::any_cast<Ptr<VectorBase>&>(value)),reuse);
 }
 template <typename T> inline Ptr<VectorStorage<T>> vectorStorageView(Ptr<VectorStorage<T>> source,std::size_t start,std::size_t count) {
     auto result=std::make_shared<VectorStorage<T>>(std::vector<T>{});
@@ -100,8 +105,7 @@ template <typename T> inline Value scalarVector(Values data) {
     for (const auto& item : data) result.push_back(as<T>(item));
     return scalarVector<T>(std::move(result));
 }
-template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Value& value) {
-    const auto& base = as<Ptr<VectorBase>>(value);
+template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Ptr<VectorBase>& base) {
     if (auto typed = std::dynamic_pointer_cast<ScalarVector<T>>(base)) return typed;
     if (auto typed = std::dynamic_pointer_cast<ScalarVector<T>>(base->nativeCache)) return typed;
     std::vector<T> data; data.reserve(base->size());
@@ -110,6 +114,7 @@ template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Value& value)
     base->nativeCache = result;
     return result;
 }
+template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Value& value) { return scalarData<T>(as<Ptr<VectorBase>>(value)); }
 template <typename T> inline Ptr<ScalarVector<T>> scalarWritable(Value value, bool reuse) {
     return vectorWritable<T>(std::move(value),reuse);
 }
@@ -188,8 +193,33 @@ template <int Operation> inline Value setOp(Value source,const Value& key) {
     if constexpr(Operation==0)result->insertKey(key);else result->erase(key);
     return result;
 }
-// @runtime Cell Env
-struct Cell { Value value; bool mutable_; bool borrowed = false; };
+// @runtime Cell Env takeCell NativeCell takeLocal
+struct Cell {
+    Value value; bool mutable_; bool borrowed = false;
+    explicit Cell(Value data={},bool mut=false):value(std::move(data)),mutable_(mut){}
+    virtual ~Cell()=default;
+    virtual Value read() const{return value;}
+    virtual Value take(){Value result=std::move(value);value.reset();return result;}
+    virtual void write(Value data){value=std::move(data);}
+};
+template<typename T> struct NativeCell final : Cell {
+    T value;
+    explicit NativeCell(T data):Cell({},true),value(std::move(data)){}
+    Value read() const override{return value;}
+    Value take() override{Value result=std::move(value);value=T{};return result;}
+    void write(Value data) override{
+        if constexpr(std::is_same_v<T,Value>)value=std::move(data);
+        else value=std::move(std::any_cast<T&>(data));
+    }
+};
+template<typename T> T takeLocal(const Ptr<NativeCell<T>>& cell){
+    if(cell.use_count()!=1||cell->borrowed)return cell->value;
+    T result=std::move(cell->value);cell->value=T{};return result;
+}
+inline Value takeCell(const Ptr<Cell>& cell) {
+    if (cell.use_count() != 1 || cell->borrowed) return cell->read();
+    return cell->take();
+}
 struct Env {
     using Bindings = std::unordered_map<std::string, Ptr<Cell>>;
     Ptr<Bindings> bindings = std::make_shared<Bindings>();
@@ -201,13 +231,11 @@ struct Env {
         if (found == bindings->end()) throw std::runtime_error("Missing generated binding: " + name);
         return found->second;
     }
-    Value read(const std::string& name) const { return cell(name)->value; }
+    Value read(const std::string& name) const { return cell(name)->read(); }
     Value take(const std::string& name) {
         auto& binding = bindings->at(name);
-        if (bindings.use_count() != 1 || binding.use_count() != 1 || binding->borrowed) return binding->value;
-        Value result = std::move(binding->value);
-        binding->value.reset();
-        return result;
+        if (bindings.use_count() != 1 || binding.use_count() != 1 || binding->borrowed) return binding->read();
+        return binding->take();
     }
     Env select(std::initializer_list<std::string> names) const {
         Env result;
@@ -221,7 +249,10 @@ struct Env {
         writable();
         (*bindings)[name] = std::make_shared<Cell>(Cell{std::move(value), mutable_});
     }
-    void update(const std::string& name, Value value) { cell(name)->value = std::move(value); }
+    void bindCell(const std::string& name, const Ptr<Cell>& cell) {
+        writable();(*bindings)[name]=cell;
+    }
+    void update(const std::string& name, Value value) { cell(name)->write(std::move(value)); }
     void erase(const std::string& name) { writable(); bindings->erase(name); }
 };
 // @runtime Quote
@@ -247,8 +278,9 @@ struct Borrow { Ptr<Cell> owner; bool active = true, suspended = false; };
 struct BorrowScope {
     Ptr<Borrow> ref, parent;
     explicit BorrowScope(const Ptr<Cell>& cell) {
-        if (is<Ptr<Borrow>>(cell->value)) {
-            parent = as<Ptr<Borrow>>(cell->value);
+        const auto value=cell->read();
+        if (is<Ptr<Borrow>>(value)) {
+            parent = as<Ptr<Borrow>>(value);
             if (!parent->active || parent->suspended) throw std::runtime_error("Invalid mutable reborrow");
             ref = std::make_shared<Borrow>(Borrow{parent->owner});
             parent->suspended = true;
@@ -955,13 +987,13 @@ Values labelBlock(Machine& parent, Body body) {
 inline Value readBorrow(const Value& value, const std::string& at) {
     const auto& ref = as<Ptr<Borrow>>(value);
     if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
-    return ref->owner->value;
+    return ref->owner->read();
 }
 // @runtime writeBorrow
 inline void writeBorrow(const Value& value, Value replacement, const std::string& at) {
     const auto& ref = as<Ptr<Borrow>>(value);
     if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
-    ref->owner->value = std::move(replacement);
+    ref->owner->write(std::move(replacement));
 }
 // @runtime findIndex
 inline std::optional<Value> findIndex(const Value& value, const Value& index) {
@@ -1240,28 +1272,44 @@ inline Value textVector(const Value& value, const std::string& at) {
     WalkText(as<std::string>(value),at,[&](Value item){ result.push_back(std::move(item)); });
     return vector(std::move(result));
 }
+// @runtime vectorElement
+template <typename T> inline T vectorElement(Machine& m,const Ptr<VectorBase>& source,Int index,const std::string& at) {
+    if(index<0||static_cast<UInt>(index)>=source->size())m.exception("Index out of bounds: "+show(Value{index}),at);
+    const auto& item=source->items()[static_cast<std::size_t>(index)];
+    if constexpr(std::is_same_v<T,Value>)return item;
+    else return as<T>(item);
+}
 // @runtime vectorLength
-inline Int vectorLength(const Value& value) {
+template <typename Source> inline Int vectorLength(const Source& value) {
     return static_cast<Int>(as<Ptr<VectorBase>>(value)->size());
 }
-// @runtime scalarAt scalarFind scalarSetAt scalarSlice scalarOrder
-template <typename T> inline std::optional<Value> scalarFind(const Value& source,Int index) {
+// @runtime scalarAt scalarFind
+template <typename T,typename Source> inline std::optional<Value> scalarFind(const Source& source,Int index) {
     auto data = scalarData<T>(source);
     if (index < 0 || static_cast<UInt>(index) >= data->size()) return {};
     return Value{data->scalars()[static_cast<std::size_t>(index)]};
 }
-template <typename T> inline T scalarAt(Machine& m,const Value& source,Int index,const std::string& at) {
+template <typename T,typename Source> inline T scalarAt(Machine& m,const Source& source,Int index,const std::string& at) {
     auto data = scalarData<T>(source);
     if (index < 0 || static_cast<UInt>(index) >= data->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
     return data->scalars()[static_cast<std::size_t>(index)];
 }
+// @runtime scalarSetNative
+template <typename T> inline Ptr<VectorBase> scalarSetNative(Machine& m,Ptr<VectorBase> source,Int index,T value,bool reuse,const std::string& at) {
+    if (index < 0 || static_cast<UInt>(index) >= source->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
+    auto data = vectorWritable<T>(std::move(source),reuse);
+    data->values[static_cast<std::size_t>(index)] = value;
+    return data;
+}
+// @runtime scalarSetAt
 template <typename T> inline Value scalarSetAt(Machine& m,Value source,Int index,T value,bool reuse,const std::string& at) {
     if (index < 0 || static_cast<UInt>(index) >= as<Ptr<VectorBase>>(source)->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
     auto data = scalarWritable<T>(std::move(source),reuse);
     data->values[static_cast<std::size_t>(index)] = value;
     return Ptr<VectorBase>(std::move(data));
 }
-template <typename T> inline Value scalarSlice(Machine& m,const Value& source,Int start,Int end,bool from,const std::string& at) {
+// @runtime scalarSlice scalarOrder
+template <typename T,typename Source> inline Value scalarSlice(Machine& m,const Source& source,Int start,Int end,bool from,const std::string& at) {
     auto data = scalarData<T>(source);
     const auto size = static_cast<Int>(data->size());
     if (from) end = size - 1;
@@ -1281,28 +1329,58 @@ template <typename T> inline Value scalarOrder(Value source,bool reverse,bool re
 // finish before the cell's value is consumed and immediately replaced.
 template <typename T,typename Replace>
 void cellScalarSet(Machine& m,const Ptr<Cell>& cell,Int index,const Replace& replace,bool updating,const std::string& at){
+    Value old,source=cell->read();
+    if(updating)old=scalarAt<T>(m,source,index,at);
+    auto value=replace(std::move(old));
+    if(index<0||static_cast<UInt>(index)>=as<Ptr<VectorBase>>(source)->size())m.exception("Index out of bounds: "+show(Value{index}),at);
+    source.reset();cell->write(scalarSetAt<T>(m,cell->take(),index,as<T>(value),true,at));
+}
+template <typename T,typename Replace>
+void cellScalarSet(Machine& m,const Ptr<NativeCell<Ptr<VectorBase>>>& cell,Int index,const Replace& replace,bool updating,const std::string& at){
     Value old;
     if(updating)old=scalarAt<T>(m,cell->value,index,at);
     auto value=replace(std::move(old));
-    if(index<0||static_cast<UInt>(index)>=as<Ptr<VectorBase>>(cell->value)->size())m.exception("Index out of bounds: "+show(Value{index}),at);
-    cell->value=scalarSetAt<T>(m,std::move(cell->value),index,as<T>(value),true,at);
+    if(index<0||static_cast<UInt>(index)>=cell->value->size())m.exception("Index out of bounds: "+show(Value{index}),at);
+    cell->value=scalarSetNative<T>(m,std::move(cell->value),index,as<T>(value),true,at);
 }
 template <typename Replace>
 void cellDictSet(Machine& m,const Ptr<Cell>& cell,const Value& key,const Replace& replace,bool updating,bool defaulting,const std::string& at){
-    const auto found=as<Ptr<DictBase>>(cell->value)->get(key);
+    const auto found=as<Ptr<DictBase>>(cell->read())->get(key);
     if(defaulting&&found)return;
     if(updating&&!found)m.exception("Dictionary key not found: "+show(key),at);
     auto value=replace(found?*found:Value{});
-    cell->value=setIndex(m,std::move(cell->value),key,value,at,true);
+    cell->write(setIndex(m,cell->take(),key,value,at,true));
 }
 // @runtime cellSetOp cellQueuePush
-template <int Operation> void cellSetOp(const Ptr<Cell>& cell,const Value& key){cell->value=setOp<Operation>(std::move(cell->value),key);}
-template <int Operation> void cellQueuePush(const Ptr<Cell>& cell,const Value& key){cell->value=queueOp<Operation>(std::move(cell->value),key)[0];}
+template <int Operation> void cellSetOp(const Ptr<Cell>& cell,const Value& key){cell->write(setOp<Operation>(cell->take(),key));}
+template <int Operation> void cellQueuePush(const Ptr<Cell>& cell,const Value& key){cell->write(queueOp<Operation>(cell->take(),key)[0]);}
+// @runtime cellRowPush
+template<typename T> Ptr<VectorBase> rowPush(Ptr<VectorBase> source,Int index,T item){
+    auto outer=vectorWritable<Value>(std::move(source),true);
+    auto& slot=outer->values[static_cast<std::size_t>(index)];
+    auto inner=vectorWritable<T>(std::move(std::any_cast<Ptr<VectorBase>&>(slot)),true);
+    inner->values.push_back(item);slot=Ptr<VectorBase>(std::move(inner));return outer;
+}
+template<typename T> void cellRowPush(Machine& m,const Ptr<NativeCell<Ptr<VectorBase>>>& cell,Int index,T item,const std::string& at){
+    if(index<0||static_cast<UInt>(index)>=cell->value->size())m.exception("Index out of bounds: "+show(Value{index}),at);
+    cell->value=rowPush<T>(std::move(cell->value),index,item);
+}
+template<typename T> void cellRowPush(Machine& m,const Ptr<Cell>& cell,Int index,T item,const std::string& at){
+    auto source=cell->read();
+    if(index<0||static_cast<UInt>(index)>=as<Ptr<VectorBase>>(source)->size())m.exception("Index out of bounds: "+show(Value{index}),at);
+    source.reset();source=cell->take();cell->write(rowPush<T>(takeAs<Ptr<VectorBase>>(source),index,item));
+}
 // @runtime vectorHead
 inline Value vectorHead(const Value& value, const std::string& at) {
     const auto& xs = as<Ptr<VectorBase>>(value)->items();
     if (xs.empty()) fail(at, "head: empty list");
     return xs.front();
+}
+// @runtime scalarHead
+template<typename T,typename Source> T scalarHead(const Source& source,const std::string& at){
+    auto data=scalarData<T>(source);
+    if(!data->size())fail(at,"head: empty list");
+    return data->scalars().front();
 }
 // @runtime vectorTail
 inline Value vectorTail(const Value& value, const std::string& at) {

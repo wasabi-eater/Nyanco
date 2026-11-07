@@ -1,0 +1,31 @@
+-- Adjacency lists: graph.[v] is the vector of destinations from vertex v.
+ints = read; split " "; vmap {parseInt}
+
+main =
+    ints -> [n m s t]
+    vreplicate n [] -> mut adjacent
+    each (0 .. m) do -> _
+        ints -> [a b]
+        adjacent.[a - 1] ! vpush (b - 1)
+    adjacent; vmap {sort} -> graph
+
+    vreplicate n 1000000000 -> mut dist
+    dist.[s - 1] <<- 0
+    vreplicate n 0 -> mut done
+    deque []; qpush (s - 1) -> mut queue
+    while {qisEmpty queue; not} do
+        qpop queue -> rest item
+        queue <<- rest
+        unwrap item -> v
+        when (done.[v] == 0) do
+            done.[v] <<- 1
+            graph.[v] -> neighbors
+            when (length neighbors > 0) do
+                head neighbors -> free
+                each neighbors do -> b
+                    if (b == free) {0} {1} -> cost
+                    dist.[v] + cost -> candidate
+                    when (candidate < dist.[b]) do
+                        dist.[b] <<- candidate
+                        if (cost == 0) {queue ! qpushFront b} {queue ! qpush b}
+    if (dist.[t - 1] == 1000000000) {-1} {dist.[t - 1]}; print

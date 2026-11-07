@@ -81,6 +81,12 @@ main =
 
 ## C++生成の改善
 
+ABC481 Dには、一次元CSRの `abc481/d/main.nyan` に加えて、隣接リストをvectorのvectorで保持する `abc481/d-jagged/main.nyan` もあります。後者は `graph.[v]` をそのまま走査します。`node bench/graph-performance.mjs` で両方の出力と速度を比較できます。ベンチマークの生成C++には計測用のmainが付くため、提出用のコードは次のように生成してください。
+
+```sh
+node cli.mjs examples/atcoder/abc481/d-jagged/main.nyan --procon > main.cpp
+```
+
 - vector同士の `zip` は、コルーチン用スレッドを介さず添字で並行走査します。ABC480 Bの最大ケースは、この変更により約1.97秒から約0.04秒になりました。
 - 組み込み `repeat` / `repeatWith` は直接ループとして走査します。callbackの実行順序と中断処理は維持します。
 - hash trieの更新は共有されていないノードを再利用します。共有された経路だけをコピーし、辞書・集合の過去の値を保持します。hashが衝突した場合はeqで区別します。

@@ -123,7 +123,7 @@ main = sum (Branch (Leaf 2) (Leaf 3))`));
   assert.match(source, /std::variant<Constructors\.\.\.> value/);
   assert.match(source, /using AdtFamily\d+ = AdtValue<\d+, AdtCtor\d+, AdtCtor\d+>;/);
   assert.match(source, /makeAdt<AdtFamily\d+>\(AdtCtor\d+\{\{v\d+, v\d+\}\}\)/);
-  assert.match(source, /PatternKind::constructor, \{\}[^\n]+AdtCtor\d+::tag/);
+  assert.match(source, /->tag\(\) == AdtCtor\d+::tag/);
   assert.doesNotMatch(source, /struct Adt \{ std::string|x\.name == std::string\("(Leaf|Branch)"/);
 });
 
