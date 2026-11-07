@@ -7,7 +7,7 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {builtinNames,compile,VM} from '../language.mjs';
 import {compileModule,standardTokens} from '../modules.mjs';
-import {standardModule} from '../std-modules.mjs';
+import {standardModule} from '../src/frontend/std-modules.mjs';
 import {transpileGo} from '../go-backend.mjs';
 import {LanguageService} from '../lsp.mjs';
 

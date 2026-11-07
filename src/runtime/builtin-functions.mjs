@@ -1,7 +1,7 @@
 import {installUnwrap,installOrElse,installContainerFunctions,isStandardResult} from './builtin-results.mjs';
 import {isStandardOption} from './builtin-option.mjs';
-import {installOperatorClasses} from './operator-classes.mjs';
-import {parseExpression} from './language.mjs';
+import {installOperatorClasses} from '../types/operator-classes.mjs';
+import {parseExpression} from '../frontend/language.mjs';
 // Ordinary functions retain stack/effect polymorphism and use the same lowering.
 export function withStandardFunctions(definitions){
  const result=Object.assign(new Map(definitions),definitions),token={file:'<standard>',line:1,col:1};

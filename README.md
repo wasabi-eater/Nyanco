@@ -27,8 +27,8 @@ node cli.mjs --single-file hello.nyan
 
 ## 機能とドキュメント
 
-- **文法と型** — このREADMEの[実行順](#実行順)から言語の基本を読めます。型推論やスタック効果の詳しい説明は[型システム](TYPE_SYSTEM.md)にあります。
-- **エディター** — VS Codeでは構文の色分け、型の表示、診断、補完、`main` の実行を利用できます。[VS Codeの設定](editors/vscode/README.md)と[Language Serverの設定](LANGUAGE_SERVER.md)を参照してください。
+- **文法と型** — このREADMEの[実行順](#実行順)から言語の基本を読めます。型推論やスタック効果の詳しい説明は[型システム](docs/TYPE_SYSTEM.md)にあります。
+- **エディター** — VS Codeでは構文の色分け、型の表示、診断、補完、`main` の実行を利用できます。[VS Codeの設定](editors/vscode/README.md)と[Language Serverの設定](docs/LANGUAGE_SERVER.md)を参照してください。
 - **コード生成** — CLIの `--emit-cpp` と `--emit-go` でC++20またはGoのソースを生成できます。[C++20へのトランスパイル](#c20へのトランスパイル)にはビルド方法や競技プログラミング向けのオプションがあります。
 - **実例** — [サンプル集](examples/)に言語機能の使い方があり、[競技プログラミングの解答例](examples/atcoder/README.md)では生成したC++の検証と計測も行えます。
 
@@ -301,7 +301,7 @@ node cli.mjs --check new.nyan
 
 `npm test`で全テストを実行します。旧構文の回帰fixtureは専用adapterから現在の型検査・VM・Go生成へASTを渡し、既存機能の後退を検出します。新構文は`test/prefix-syntax.test.mjs`、`test/prefix-native.test.mjs`で直接検証します。
 
-詳細は[型システム](TYPE_SYSTEM.md)、変更前の記述は[migration/v037/README.md](migration/v037/README.md)を参照してください。
+詳細は[型システム](docs/TYPE_SYSTEM.md)、変更前の記述は[migration/v037/README.md](migration/v037/README.md)を参照してください。
 
 
 ## エフェクトグループ（0.40）
@@ -1018,7 +1018,9 @@ iterateは0.56.1から初期状態を最初に生成します。takeで最初の
 
 ## Gitでの管理
 
-このフォルダーがGitリポジトリのルートです。ソース・テスト・サンプル・migration・仕様書を記録します。`native/`内の生成済みGoソースと実行ファイル、依存パッケージ、ローカル設定は`.gitignore`で除外します。
+実装は `src/` にあります。`frontend/` はパーサーと言語の入口、`types/` は型検査、`runtime/` は組み込み処理や値の実装、`compiler/` は中間表現とC++・Goの生成、`tooling/` はCLI・LSP・フォーマッターです。ルートの `cli.mjs` と `lsp.mjs` はコマンドの入口です。
+
+仕様とエディター設定の説明は [`docs/`](docs/) にあります。生成物を置く `native/` と `tour/dist/`、依存パッケージ、ローカル設定は `.gitignore` で除外しています。
 
 ```sh
 git status

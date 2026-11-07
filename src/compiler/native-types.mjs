@@ -1,4 +1,4 @@
-import {typeIR} from './types.mjs';
+import {typeIR} from '../types/types.mjs';
 
 export const T={...typeIR,prune:t=>{let next=typeIR.prune(t);while(true){const rep=typeIR.aliasRepresentation(next);if(rep===next)return next;next=typeIR.prune(rep);}}};
 T.numericName=t=>typeIR.numericName(T.prune(t));

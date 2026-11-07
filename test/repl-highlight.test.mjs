@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {stripVTControlCharacters} from 'node:util';
-import {highlight,createReplInterface} from '../repl-highlight.mjs';
+import {highlight,createReplInterface} from '../src/tooling/repl-highlight.mjs';
 
 test('REPL highlighting preserves unfinished syntax, Unicode, nested interpolation and escapes',()=>{
   const sources=['data option \'a = Some \'a | None',"'a' 'あ' '\\u{1f408}'",'3.14 + 2e-3; __1 $$ ~',

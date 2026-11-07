@@ -5,8 +5,8 @@ import {lowerName,instanceKey} from './type-names.mjs';
 import {typeSyntax} from './type-syntax.mjs';
 import {operatorSpecs,standardOperatorClasses,primitiveOperatorClass,operatorFallback,builtinInstance,installOperatorClasses} from './operator-classes.mjs';
 // Layout-based type class declarations are expanded into ordinary checked functions.
-import {LanguageError} from './language.mjs';
-import {tokenLine} from './source-layout.mjs';
+import {LanguageError} from '../frontend/language.mjs';
+import {tokenLine} from '../frontend/source-layout.mjs';
 export function expandClasses(groups,definitions,previous,builtins,globals) {
   const classes=new Map([...definitions.classes||previous.classes||[]].map(([n,c])=>[n,{...c,methods:new Map(c.methods),instances:new Map(c.instances)}]));
   const methods=new Map(definitions.methods||previous.methods||[]),ordinary=[],pending=[];

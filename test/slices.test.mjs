@@ -9,7 +9,7 @@ import {transpileGo} from '../go-backend.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
 import {verifyTypedIR} from '../typed-ir.mjs';
 import {LanguageService} from '../lsp.mjs';
-import {canMutateVector} from '../vector-view.mjs';
+import {canMutateVector} from '../src/runtime/vector-view.mjs';
 
 const evaluate=(source,optimizeVectors=true)=>{
  const output=[],program=compile(source),vm=new VM({...program,optimizeVectors,output:s=>output.push(s)});

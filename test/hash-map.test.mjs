@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {emptyDict,dictGet,dictSet,dictEntries} from '../hash-map.mjs';
+import {emptyDict,dictGet,dictSet,dictEntries} from '../src/runtime/hash-map.mjs';
 import {compile,VM} from '../language.mjs';
 import {transpileGo} from '../go-backend.mjs';
 import {spawnSync} from 'node:child_process';

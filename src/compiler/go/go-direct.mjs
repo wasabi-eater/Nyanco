@@ -1,18 +1,18 @@
-import {createTypedIR} from './typed-ir.mjs';
-import {collectionOperations} from './collections.mjs';
-import {lookupInstance} from './class-relations.mjs';
-import {withStandardFunctions} from './builtin-functions.mjs';
-import {combinationNames} from './combinatorics.mjs';
-import {vectorOwnership} from './ownership.mjs';
-import {transforms,streamTransforms,countTransform,callbackTransform} from './iteration.mjs';
-import {withOption} from './builtin-option.mjs';
-import {ioEffects} from './builtin-effects.mjs';
-import {instanceKey} from './type-names.mjs';
+import {createTypedIR} from '../typed-ir.mjs';
+import {collectionOperations} from '../../runtime/collections.mjs';
+import {lookupInstance} from '../../types/class-relations.mjs';
+import {withStandardFunctions} from '../../runtime/builtin-functions.mjs';
+import {combinationNames} from '../../runtime/combinatorics.mjs';
+import {vectorOwnership} from '../ownership.mjs';
+import {transforms,streamTransforms,countTransform,callbackTransform} from '../../runtime/iteration.mjs';
+import {withOption} from '../../runtime/builtin-option.mjs';
+import {ioEffects} from '../../runtime/builtin-effects.mjs';
+import {instanceKey} from '../../types/type-names.mjs';
 import {readFileSync} from 'node:fs';
-import {parseExpression} from './language.mjs';
-import {checkExpression,formatType,missingOperands,StaticTypeError} from './types.mjs';
+import {parseExpression} from '../../frontend/language.mjs';
+import {checkExpression,formatType,missingOperands,StaticTypeError} from '../../types/types.mjs';
 
-import {T,tuple,neverValues,StoppedEmission,items,effectParts,copyEnv,freshTypes} from './native-types.mjs';
+import {T,tuple,neverValues,StoppedEmission,items,effectParts,copyEnv,freshTypes} from '../native-types.mjs';
 
 const str=JSON.stringify;
 const lit=(v,type='int',source=null)=>v?.kind==='scalar'?`Char(${v.value.codePointAt(0)})`:typeof v==='string'?str(v):typeof v==='boolean'?String(v):`${type==='float'?'float64':type==='byte'?'uint8':'int64'}(${source??v})`;

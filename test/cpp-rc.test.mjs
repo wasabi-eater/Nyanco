@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile,VM} from '../language.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
-import {lowerCppRc} from '../cpp-rc.mjs';
+import {lowerCppRc} from '../src/compiler/cpp/cpp-rc.mjs';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';

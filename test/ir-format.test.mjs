@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile} from '../language.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
-import {formatTypedIR} from '../ir-format.mjs';
+import {formatTypedIR} from '../src/compiler/ir-format.mjs';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';

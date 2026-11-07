@@ -52,7 +52,7 @@ for(const name of definitions.methods.keys())if(!groups.get('classes')?.has(name
 // The prelude source is parsed here, so its pub imports are the source of truth
 // for unqualified standard names in the module loader.
 const prelude=new Map();
-const preludeSource=readFileSync(new URL('./std/prelude.nyan',import.meta.url),'utf8');
+const preludeSource=readFileSync(new URL('../../std/prelude.nyan',import.meta.url),'utf8');
 for(const group of declarationGroups(lex(preludeSource,'<std.prelude>'))){
   if(group[0]?.value!=='pub'||group[1]?.value!=='import'||typeof group[2]?.value!=='string')throw new Error('Invalid std.prelude import');
   const module=group[2].value.slice(4),exports=groups.get(module);

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compile,VM,format} from '../language.mjs';
 import {standardTokens} from '../modules.mjs';
-import {standardModule} from '../std-modules.mjs';
+import {standardModule} from '../src/frontend/std-modules.mjs';
 import {LanguageService} from '../lsp.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
 import {transpileGo} from '../go-backend.mjs';

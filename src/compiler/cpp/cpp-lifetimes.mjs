@@ -1,4 +1,4 @@
-import {typeIR} from './types.mjs';
+import {typeIR} from '../../types/types.mjs';
 
 // Lexical lifetimes for the C++ RC backend. Bindings, rather than spellings,
 // distinguish shadowed names. A write ends the old generation of a mutable

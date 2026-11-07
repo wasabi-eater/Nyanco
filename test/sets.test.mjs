@@ -4,7 +4,7 @@ import {compile,VM,format} from '../language.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
 import {standardTokens} from '../modules.mjs';
 import {LanguageService} from '../lsp.mjs';
-import {emptyDict,dictSet,dictGet,dictDelete,dictEntries} from '../hash-map.mjs';
+import {emptyDict,dictSet,dictGet,dictDelete,dictEntries} from '../src/runtime/hash-map.mjs';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
