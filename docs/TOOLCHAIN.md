@@ -28,7 +28,7 @@ c++ -std=c++20 -O2 -pthread main.cpp -o main
 
 WindowsのVisual Studio開発者コマンドプロンプトでは、`cl /std:c++20 /EHsc /utf-8 /O2 /bigobj main.cpp` でビルドできます。
 
-競技プログラミング向けの `--procon` は、ソースパスを省いたC++を標準出力に書き、出力をバッファします。`--emit-cpp main.cpp` を併用するとファイルに直接書き込みます。入力前に出力をflushする必要がある場合は `--interactive-io` を指定します。[解答例とベンチマーク](../examples/atcoder/README.md)を参照してください。
+競技プログラミング向けの `--procon` は、ローカルのソースパスを省いたC++を標準出力に書き、出力をバッファします。生成コードの先頭には、C++ランタイムテンプレートの出典として [Nyancoのリポジトリ](https://github.com/wasabi-eater/Nyanco) をコメントで記載します。`--emit-cpp main.cpp` を併用するとファイルに直接書き込みます。入力前に出力をflushする必要がある場合は `--interactive-io` を指定します。[解答例とベンチマーク](../examples/atcoder/README.md)を参照してください。
 
 ```sh
 node cli.mjs main.nyan --emit-go main.go
