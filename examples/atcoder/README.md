@@ -34,7 +34,7 @@ c++ -std=c++20 -O2 -pthread main.cpp -o main
 # MSVCのDeveloper Command Promptでは
 cl /nologo /std:c++20 /EHsc /utf-8 /O2 main.cpp /Fe:main.exe
 
-# 8問の公式サンプルと小規模の独立した正解生成器による検査
+# 8問を独自の小規模入力と正解生成器で検査
 node --test test/atcoder.test.mjs
 
 # C++に変換して全ケースを検査・計測する
@@ -46,7 +46,7 @@ node bench/atcoder.mjs abc481_d
 
 `--procon` はデフォルトで非対話問題用のバッファ付き入出力を使います。入力前にflushする場合は `--interactive-io` を指定します。`bench/atcoder.mjs` はWindowsではPATH上の `cl`、それ以外では `c++` を使います。MSVCの場合はDeveloper Command PromptまたはDeveloper PowerShellで実行してください。
 
-ベンチマークは公式サンプル20件、小規模225件、最大規模など10件の計255件で出力を照合します。Aは小さい入力を全列挙し、残りはseed固定のランダム入力です。例えばABC481 Dの小規模の正解生成器は、解答とは別のDijkstra法を使用します。ABC480 Dの最大入力の期待値はJavaScriptの `BigInt` で計算し、64bitの和を検査します。
+ベンチマークは小規模225件と最大規模など10件の計235件で出力を照合します。小規模テストではAの入力を全列挙し、ほかの問題はseed固定のランダム入力を生成します。例えばABC481 Dの小規模の正解生成器は、解答とは別のDijkstra法を使用します。ABC480 Dの最大入力の期待値はJavaScriptの `BigInt` で計算し、64bitの和を検査します。
 
 生成C++・実行ファイル・計測JSONは `native/atcoder/` に保存されます。`results.json` は実行するたびに、今回選択した問題の結果で置き換わります。不一致・異常終了・タイムアウトはエラーとなり、2秒を超えた場合は各結果の `withinLimit` が `false` になります。
 

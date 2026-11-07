@@ -16,7 +16,6 @@ const source=`main =
         read; split " "; vmap {parseInt} -> [ty f t];
         if (ty == 1) {r} {c}; partitionPoint _ {<= t} - partitionPoint _ {< f}; print
 `;
-const sample='5 7 5 6\n1 1\n2 3\n2 5\n4 3\n5 7\n1 2 4\n2 3 5\n1 3 3\n2 1 7\n1 2 2\n2 7 7\n';
 const compiler=process.platform==='win32'?'cl':'c++';
 const available=!spawnSync(compiler,[compiler==='cl'?'/h':'--version'],{stdio:'ignore',windowsHide:true}).error;
 function native(source,check,flags=[]){
@@ -118,9 +117,13 @@ test('fast search threads stack state and falls back for cancellation and IO',{s
   native(text,run=>assert.equal(run(''),output.join('\n')+'\n'));
 });
 
-test('Band Count sample, random cases and maximum-size input run unchanged',{skip:!available},()=>{
+test('Band Count handles boundary cases, random cases and maximum-size input',{skip:!available},()=>{
   native(source,run=>{
-    assert.equal(run(sample),'3\n3\n0\n5\n2\n1\n');
+    const boundaries=[
+      '8 9 5 6','2 3','2 8','5 3','7 6','8 1',
+      '1 2 2','2 3 6','1 3 4','2 1 9','1 5 8','2 8 8',
+    ];
+    assert.equal(run(boundaries.join('\n')+'\n'),'2\n3\n0\n5\n3\n1\n');
     let seed=12345;
     const random=max=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%max+1;};
     const points=Array.from({length:200},()=>[random(1000000000),random(1000000000)]);

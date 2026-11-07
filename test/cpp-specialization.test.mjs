@@ -41,12 +41,12 @@ test('procon output for both capture forms compiles and matches Run output',t=>{
  const compiler=process.platform==='win32'?'cl':'c++';
  if(spawnSync(compiler,[compiler==='cl'?'/h':'--version'],{stdio:'ignore',windowsHide:true}).error){t.skip('C++ compiler unavailable');return;}
  const dir=mkdtempSync(join(tmpdir(),'nyanco-cpp-specialization-'));
- const input='5 6 4 4\n1 2\n2 4\n2 5\n5 1\n1 1 2\n2 2 5\n1 3 5\n2 1 6\n';
+ const input=['4 8 4 4','4 2','1 7','3 3','3 8','1 3 4','2 2 3','1 2 2','2 7 8'].join('\n')+'\n';
  try{
   for(const expression of expressions){
    const text=source(expression),output=[],rows=input.trimEnd().split('\n');
    new VM({...compile(text),input:()=>rows.shift(),output:line=>output.push(line)}).evaluate('main');
-   assert.deepEqual(output,['3\n3\n1\n4']);
+   assert.deepEqual(output,['3\n2\n0\n2']);
    const file=join(dir,'main.nyan'),cpp=join(dir,'main.cpp'),exe=join(dir,process.platform==='win32'?'main.exe':'main');
    writeFileSync(file,text);
    const cli=spawnSync(process.execPath,[fileURLToPath(new URL('../cli.mjs',import.meta.url)),file,'--procon'],{encoding:'utf8',windowsHide:true,timeout:15000});

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "A statically typed concatenative programming language with algebraic effects",
+  "license": "MIT",
   "bin": { "nyanco": "./cli.mjs", "nyanco-lsp": "./lsp.mjs" },
   "scripts": { "test": "node --test", "start": "node cli.mjs", "lsp": "node lsp.mjs", "tour": "node tour/build.mjs --serve", "tour:build": "node tour/build.mjs" },
   "engines": { "node": ">=20" }

@@ -4,7 +4,7 @@ import {compile,VM} from '../language.mjs';
 import {compileModule} from '../modules.mjs';
 import {transpileCpp} from '../cpp-backend.mjs';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
 import {dirname,join} from 'node:path';
@@ -119,10 +119,9 @@ test('C++ updates use ambient operands and preserve extra results through paths 
  for(const nativeLocals of [true,false])native(transpileCpp(p,{nativeLocals,referenceCounting:'local'}),run=>assert.equal(run().stdout,out));
 });
 
-test('jagged graph sample uses row updates without general coroutine path machinery',{skip:!available},()=>{
+test('jagged graph uses row updates without general coroutine path machinery',{skip:!available},()=>{
  const root=fileURLToPath(new URL('..',import.meta.url)),p=compileModule(join(root,'examples/atcoder/abc481/d-jagged/main.nyan'));
  const code=transpileCpp(p,{batchIO:true,noSourcePaths:true,referenceCounting:'local'});
  assert.match(code,/cellRowPush<Int>/);assert.doesNotMatch(code,/#include <coroutine>|updatePath\(m/);
- const samples=JSON.parse(readFileSync(join(root,'test/fixtures/atcoder-samples.json'),'utf8')).find(p=>p.id==='abc481_d').samples;
- native(code,run=>{for(const data of [...samples,...smallCases('abc481_d')])assert.equal(run(data.input).stdout,data.output);});
+ native(code,run=>{for(const data of smallCases('abc481_d'))assert.equal(run(data.input).stdout,data.output,data.name);});
 });

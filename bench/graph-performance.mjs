@@ -19,8 +19,7 @@ const variants=[
  {name:'jagged-native',program:compileModule(jagged)},
  ...(baseline?[{name:'saved-baseline',source:readFileSync(baseline,'utf8')}]:[])
 ];
-const fixture=JSON.parse(readFileSync(join(root,'test/fixtures/atcoder-samples.json'),'utf8')).find(p=>p.id==='abc481_d');
-const checks=[...fixture.samples,...smallCases('abc481_d')],large=stressCases('abc481_d');
+const checks=smallCases('abc481_d'),large=stressCases('abc481_d');
 const layers=50000,edges=[];
 for(let i=0;i<layers-1;i++){const a=i*2+1,b=a+1;edges.push(`${a} ${b}`,`${a} ${a+2}`,`${b} ${a}`,`${b} ${b+2}`);}
 edges.push(`${layers*2-1} ${layers*2}`,`${layers*2} ${layers*2-1}`);
@@ -28,7 +27,11 @@ large.push({name:'max-ladder',input:`${layers*2} ${edges.length} 1 ${layers*2}\n
 const results=[];
 for(const variant of variants){
  if(args.length&&!args.includes(variant.name))continue;
- if(variant.program)for(const sample of fixture.samples){let lines=sample.input.trimEnd().split('\n'),output=[];new VM({...variant.program,input:()=>lines.shift(),output:s=>output.push(s)}).evaluate('main');if(output.join('\n')+'\n'!==sample.output)throw Error(variant.name+' VM mismatch');}
+ if(variant.program)for(const {name,input,output} of checks){
+  const lines=input.trimEnd().split('\n'),actual=[];
+  new VM({...variant.program,input:()=>lines.shift(),output:line=>actual.push(line)}).evaluate('main');
+  if(actual.join('\n')+'\n'!==output)throw Error(`${variant.name}/${name}: VM output mismatch`);
+ }
  let code=variant.source??transpileCpp(variant.program,{nativeLocals:variant.nativeLocals??true,batchIO:true,noSourcePaths:true,referenceCounting:'local'});
  code='#include <chrono>\n'+code.replace(/^int main\(\)/m,'int measuredMain()')+'\nint main(){auto start=std::chrono::steady_clock::now();auto status=measuredMain();std::cout.flush();std::cerr<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<"\\n";return status;}\n';
  const cpp=join(out,variant.name+'.cpp'),exe=join(out,variant.name+'.exe');writeFileSync(cpp,code);

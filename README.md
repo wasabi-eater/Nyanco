@@ -1,12 +1,48 @@
-# Nyanco 0.84 — 一時的な読み取り後の直接更新
+# Nyanco
 
-`node cli.mjs --lsp`でLanguage Serverを起動できます。診断・補完・型のホバー・トップレベル関数への定義ジャンプに対応しています。接続設定は[Language Serverの説明](LANGUAGE_SERVER.md)を参照してください。
+Nyanco（ニャンコ）は、スタックを使って処理をつなぐ、静的型付きの連結型（concatenative）関数型言語です。型推論、パターンマッチ、型クラス、代数的エフェクトを備えています。実験段階の言語で、構文や標準ライブラリは変わることがあります。
 
-型推論、スタック評価、型クラス・関連型、代数的エフェクトを持つconcatenativeな関数型言語です。Node.js 20以降で動作し、Goコードとnative実行ファイルも生成できます。
+## はじめのプログラム
 
-0.40では複数操作を持つeffectグループを追加しました。組み込み`io`は`read`と`put`からなり、`print`は`put`を使用します。
+Node.js 20以降があれば、リポジトリのルートから実行できます。次のコードを `hello.nyan` に保存してください。
 
-**0.38は破壊的変更です。** 呼び出し、関数宣言、ADT、型適用、型クラス、instance、effectを前置形式へ統一しました。0.37以前のプログラムをそのまま実行すると意味が変わる場合があります。
+```nyanco
+main =
+    1 ..= 5; filter {% 2 == 1}; map {_ * _}; sum; print
+```
+
+```sh
+node cli.mjs --single-file hello.nyan
+```
+
+`35` と表示されます。`;` で区切られた処理は左から順に進み、スタックに残した値を次の処理が受け取ります。この例では、1から5までの範囲から奇数を選び、それぞれを二乗して合計します。`{_ * _}` の `_` は、`map` が渡した同じ要素を参照します。
+
+`node cli.mjs` だけで実行すると、対話環境（REPL）が開きます。`:type` で式の型を調べられます。
+
+## Nyanco Language Tour
+
+Language Tourでは、ブラウザ上でサンプルを編集・実行しながら、スタックの基本から型クラス、ストリーム、エフェクト、モジュールまで学べます。リポジトリのルートで次のコマンドを実行し、端末に表示されるURLを開いてください。
+
+```sh
+npm run tour
+```
+
+`npm run tour:build` で静的配信用ファイルを `tour/dist/` に生成できます。
+
+### GitHub Pagesで公開する
+
+GitHubリポジトリの **Settings → Pages → Build and deployment** で、**Source** に **GitHub Actions** を選びます。[`Deploy Language Tour`](.github/workflows/pages.yml) は `main` へのpushでツアーをビルドして公開します。初回は設定後に、**Actions → Deploy Language Tour → Run workflow** から `main` を選んで手動で実行できます。
+
+公開URLはWorkflowの実行結果に表示されます。通常のプロジェクトサイトでは `https://<ユーザー名>.github.io/<リポジトリ名>/` です。[GitHub Pagesの設定ガイド](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site)
+
+## 機能とドキュメント
+
+- **文法と型** — このREADMEの[実行順](#実行順)から言語の基本を読めます。型推論やスタック効果の詳しい説明は[型システム](TYPE_SYSTEM.md)にあります。
+- **エディター** — VS Codeでは構文の色分け、型の表示、診断、補完、`main` の実行を利用できます。[VS Codeの設定](editors/vscode/README.md)と[Language Serverの設定](LANGUAGE_SERVER.md)を参照してください。
+- **コード生成** — CLIの `--emit-cpp` と `--emit-go` でC++20またはGoのソースを生成できます。[C++20へのトランスパイル](#c20へのトランスパイル)にはビルド方法や競技プログラミング向けのオプションがあります。
+- **実例** — [サンプル集](examples/)に言語機能の使い方があり、[競技プログラミングの解答例](examples/atcoder/README.md)では生成したC++の検証と計測も行えます。
+
+Nyancoは[MITライセンス](LICENSE)で提供されています。
 
 ## 実行順
 
@@ -264,7 +300,7 @@ Go生成後はNode.js不要です。生成コードには言語の評価スタ�
 
 ## 旧ソースの移行とテスト
 
-0.37のバックアップZIPはワークスペースの`backups/`にあります。旧サンプル24個は新構文へ変換済みで、変更前との出力一致を検証しています。
+0.38では、関数適用や宣言を前置形式へ変更しました。0.37以前のソースには移行ツールを使用できます。
 
 ```text
 node migrate-v037.mjs old.nyan new.nyan
@@ -2080,16 +2116,6 @@ IRには`retention`による読み取りの要約、`captureArguments`による�
 
 実行例は`node cli.mjs examples/temporary-read`です。
 
-## Nyanco Language Tour
-
-```sh
-npm run tour
-```
-
-表示されたローカル URL をブラウザで開くと、スタックの基本から型クラス、借用、ストリーム、エフェクト、モジュールまでを8章で順に試せます。サンプルは色分けされたエディター上で編集でき、「実行」または Ctrl / ⌘ + Enter で動きます。モジュールのレッスンではファイルを切り替えて編集でき、入力が必要なレッスンには標準入力欄があります。
-
-`npm run tour:build` で静的配信用ファイルを `tour/dist/` に生成できます。
-
 ## HashSetと競技プログラミングの解答例
 
 VMとC++にハッシュ集合 `set 'a` を追加しました。要素に `hash 'a` と `eq 'a` を要求し、`streem` として走査できます。集合の順序は保証しません。`std.set` の操作はpreludeでは `sinsert`・`sremove`・`scontains`・`slength`・`sisEmpty`・`sunion`・`sintersection`・`sdifference` です。`set []` は空集合、`set xs` はstreamから集合への変換です。要素が対応していれば集合自体も `eq`・`hash` に対応します。
@@ -2103,7 +2129,7 @@ main =
 
 `vscan xs init f` は初期値を含む累積結果をvectorにします。`vreplicate n x` は同じ値を `n` 個持つvectorを返し、負の個数は `exn` になります。`std.vector.scan` / `replicate` からも利用できます。
 
-[ABC480・ABC481のA〜D解答例](examples/atcoder/README.md)に、追加した関数一覧、C++生成の改善点、公式サンプル・ランダム入力・最大規模入力の検査方法と計測結果をまとめています。
+[ABC480・ABC481のA〜D解答例](examples/atcoder/README.md)に、追加した関数一覧、C++生成の改善点、独自に生成した入力の検査方法と計測結果をまとめています。
 
 ## 変換先の名前で呼ぶ変換関数
 
@@ -2221,7 +2247,7 @@ node cli.mjs main.nyan --emit-cpp main.cpp --rc local
 
 参照コピーの比重が高い例では約2倍、ABC481 Dでは約1.09倍でした。一方、辞書ではこの測定で約4%遅くなり、handlerやzipの差も小さいものでした。測定間のばらつきもあり、常に速くなる最適化ではありません。GCC・Clangでの速度比較は未実施です。
 
-正しさの検証では、派生型へのcastと複数継承、COWのsnapshot、sliceのview、quotationのcapture、継続の再開・放棄・失効、例外を扱い、ローカル参照カウンタの制御ブロックが実行後に残らないことも確認しています。`node bench/atcoder.mjs --rc local` でABC480・ABC481のA〜Dのサンプル・小規模ランダム入力・大規模入力を再検証できます。
+正しさの検証では、派生型へのcastと複数継承、COWのsnapshot、sliceのview、quotationのcapture、継続の再開・放棄・失効、例外を扱い、ローカル参照カウンタの制御ブロックが実行後に残らないことも確認しています。`node bench/atcoder.mjs --rc local` でABC480・ABC481のA〜Dを小規模・最大規模の独自入力で再検証できます。
 
 ## C++のローカル変数・capture・ジャグ配列
 
@@ -2252,7 +2278,7 @@ node cli.mjs examples/atcoder/abc481/d-jagged/main.nyan --procon > main.cpp
 node bench/graph-performance.mjs
 ```
 
-ベンチマークはCSRの環境テーブル版・ローカル変数版、訪問状態をint vectorにしたCSR版、ジャグ配列版を比較します。各版で公式サンプル・小規模ランダム入力と、chain・star・ladderの大型入力の出力を確認します。予備実行後の3回の中央値を `native/graphs/results.json` に保存します。コンパイルとプロセス起動を除き、出力のflushとデータの破棄を含めて測ります。例えば `node bench/graph-performance.mjs jagged-native` で一つの版を選べます。以前の生成C++が手元にある場合は、`--baseline-cpp old.cpp` で同じ条件の比較に加えられます。
+ベンチマークはCSRの環境テーブル版・ローカル変数版、訪問状態をint vectorにしたCSR版、ジャグ配列版を比較します。各版で小規模ランダム入力と、chain・star・ladderの大型入力の出力を確認します。予備実行後の3回の中央値を `native/graphs/results.json` に保存します。コンパイルとプロセス起動を除き、出力のflushとデータの破棄を含めて測ります。例えば `node bench/graph-performance.mjs jagged-native` で一つの版を選べます。以前の生成C++が手元にある場合は、`--baseline-cpp old.cpp` で同じ条件の比較に加えられます。
 
 JavaScript APIの `transpileCpp(program, {nativeLocals:false})` は、比較用に環境テーブルを使う版を生成します。通常のCLI出力では最適化が有効です。読みやすいIRには `native-local`・`native-cell`・`lexical-capture`・`typed-row-update` といった格納方法も表示します。汎用のquotation・stream・effectの境界には引き続き `Value` を使うため、生成C++全体から `std::any` がなくなる変更ではありません。
 

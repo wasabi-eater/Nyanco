@@ -1,5 +1,10 @@
+export const problemIDs = [
+ 'abc480_a','abc480_b','abc480_c','abc480_d',
+ 'abc481_a','abc481_b','abc481_c','abc481_d',
+];
+
 export function stressCases(id){
- if(id==='abc480_a')return [{name:'diagonal',input:'AB\nCD\n',output:'No\n'}];
+ if(id==='abc480_a')return [{name:'diagonal',input:'DC\nBA\n',output:'No\n'}];
  if(id==='abc481_a')return [{name:'max',input:'9 9\n',output:'2\n'}];
  if(id==='abc481_b'){const a=Array.from({length:100},(_,i)=>i%2?51:49);return [{name:'max-crossings',input:'100 50\n'+a.join(' ')+'\n',output:'99\n'}];}
  if(id==='abc480_b'){
