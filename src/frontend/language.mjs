@@ -702,7 +702,7 @@ function dataDeclarations(groups, definitions, globals) {
       return t.value;
     });
     if(new Set(parameters).size!==parameters.length) throw new LanguageError('Duplicate type parameter',name);
-    const declaration={name:name.value,parameters,token:name,postfix,alias:group[0].value==='type',transparent:group[0].visibility!=='pub',moduleID:group[0].moduleID};
+    const declaration={name:name.value,parameters,token:name,postfix,alias:group[0].value==='type',transparent:group[0].visibility!=='pub',moduleID:group[0].moduleID,sourceRange:{start:group[0],end:group.at(-1)}};
     definitions.dataTypes.set(name.value,declaration);
     const fields=group.slice(eq+1);let level=0,derive=-1;
     for(let j=0;j<fields.length;j++){const t=fields[j];if(!level&&t.value==='deriving'){derive=j;break;}if(['(','[','{'].includes(t.kind))level++;if([')',']','}'].includes(t.kind))level--;}

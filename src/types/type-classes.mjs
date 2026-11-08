@@ -47,7 +47,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     if(classes.has(name))fail(`Class already declared: ${name}`,first);
     const constraints=superParts.map(part=>{const sc=classConstraint(part,n=>classes.has(n)||standardOperatorClasses.has(n));if(!sc)fail('Invalid superclass constraint',first);const parser=typeSyntax(sc.args,definitions.dataTypes,new Set(classParams),m=>fail('Superclass: '+m,first)),args=parser.types();if(!parser.done())fail('Invalid superclass arguments',first);return {name:sc.name,args};});
     const supers=[...new Set(constraints.map(sc=>sc.name))];
-    const c={name,param:arg,params:classParams,supers,superConstraints:constraints,associated:[],methods:new Map(),instances:new Map(),token:first};
+    const c={name,param:arg,params:classParams,supers,superConstraints:constraints,associated:[],methods:new Map(),instances:new Map(),token:first,sourceRange:{start:first,end:group.at(-1)}};
     const classMembers=members(body),associatedParts=classMembers.filter(p=>p[0]?.value==='type');
     const used=new Set([...body.map(t=>t.value),...classParams]);
     for(const part of associatedParts){

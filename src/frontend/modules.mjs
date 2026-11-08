@@ -18,7 +18,7 @@ export function moduleTypeSymbol(imp){
  const symbol=imp.module.exports.get(imp.module.standard?imp.module.dir.split('.').at(-1):basename(imp.module.dir));
  return symbol?.access.has('type')&&['data','type','effect-family'].some(kind=>symbol.kinds.has(kind))?symbol:null;
 }
-function typePosition(group,index){
+export function typePosition(group,index){
  const first=group[0]?.value,where=group.findIndex(t=>t.value==='where');
  if(group[1]?.value===':'||['data','type','class','effect'].includes(first))return true;
  if(first!=='instance')return false;

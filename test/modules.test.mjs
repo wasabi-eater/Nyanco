@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -229,6 +229,51 @@ test('same-named exported data and aliases allow module-only type references',()
  put('main.nyan','import "./secret" as s\nf : s -> int\nf = + 1');assert.throws(()=>compileModule(join(dir,'main.nyan')),/instance|unify/i);
  put('main.nyan','import "./box"\nmain = box');assert.throws(()=>compileModule(join(dir,'main.nyan')),/qualified member/);
  put('box/api.nyan',"data box 'a = Box 'a");put('main.nyan',"import \"./box\"\nf : box int -> box int\nf x = x");assert.throws(()=>compileModule(join(dir,'main.nyan')),/exported same-named type/);
+}));
+
+test('type and class hover follow imports and reexports and respect opaque declarations',()=>fixture({
+ 'model/api.nyan':`open data model 'a = Model 'a
+pub data secret 'a = Secret 'a
+pub type token = int
+open type pair 'a = #('a string)
+pub class show 'a => describe 'a where
+    describeValue : 'a -> string`,
+ 'bridge/api.nyan':'pub import "../model" {model as payload, describe as render}',
+ 'main.nyan':`import "./model" as api {pair as duo}
+import "./bridge" as bridge {render as readable}
+keep : readable 'a => 'a -> 'a
+keep x = x
+f : api int api.secret int api.token duo int bridge.payload int -> api int
+f x _ _ _ _ = x
+stdId : std.vector int -> std.vector.vector int
+stdId x = x`,
+},dir=>{
+ const service=new LanguageService(),entry=join(dir,'main.nyan'),uri=pathToFileURL(entry).href;
+ const source=readFileSync(entry,'utf8'),lines=source.split('\n');
+ assert.deepEqual(service.update(uri,source,1).diagnostics,[]);
+ const hover=(line,word,within=0)=>service.request('textDocument/hover',{textDocument:{uri},position:{line,character:lines[line].indexOf(word)+within}});
+ const value=(...args)=>hover(...args).contents.value;
+ for(const ref of [[1,'render'],[1,'readable'],[2,'readable']])
+  assert.match(value(...ref),/model\.describe[\s\S]*pub class show 'a => describe 'a where\n    describeValue : 'a -> string/);
+ for(const ref of [[4,'api int'],[4,'bridge.payload',10]])
+  assert.match(value(...ref),/model\.model[\s\S]*open data model 'a = Model 'a/);
+ for(const ref of [[0,'pair'],[0,'duo'],[4,'duo']])
+  assert.match(value(...ref),/model\.pair[\s\S]*open type pair 'a = #\('a string\)/);
+ const secret=hover(4,'api.secret',5),start=lines[4].indexOf('api.secret');
+ assert.deepEqual(secret.range,{start:{line:4,character:start},end:{line:4,character:start+'api.secret'.length}});
+ assert.match(secret.contents.value,/model\.secret[\s\S]*pub data secret 'a/);
+ assert.doesNotMatch(secret.contents.value,/Secret| = /);
+ assert.match(value(4,'api.token'),/model\.token[\s\S]*pub type token/);
+ assert.doesNotMatch(value(4,'api.token'),/ = int/);
+ for(const spelling of ['std.vector int','std.vector.vector'])
+  assert.match(value(6,spelling,6),/std\.vector\.vector/);
+
+ const model=join(dir,'model/api.nyan'),modelUri=pathToFileURL(model).href;
+ const updated=readFileSync(model,'utf8').replace("Model 'a","NewModel 'a");
+ assert.deepEqual(service.update(modelUri,updated,2).diagnostics,[]);
+ assert.match(value(4,'bridge.payload'),/NewModel 'a/);
+ const local=service.request('textDocument/hover',{textDocument:{uri:modelUri},position:{line:2,character:10}});
+ assert.match(local.contents.value,/pub type token = int/);
 }));
 
 test('short type names are available in LSP and native lowering',()=>fixture(shortTypes,(dir,put)=>{

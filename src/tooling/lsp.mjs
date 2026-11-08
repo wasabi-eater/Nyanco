@@ -3,11 +3,11 @@ import {existsSync,realpathSync} from 'node:fs';
 import {dirname,resolve} from 'node:path';
 import {compileModule,moduleTypeSymbol,standardTokens} from '../frontend/modules.mjs';
 import {standardModule,standardModuleNames} from '../frontend/std-modules.mjs';
-import {syntaxSource} from '../types/class-relations.mjs';
-import {compile, lex, builtinNames, parseExpression} from '../frontend/language.mjs';
+import {compile, lex, builtinNames, parseExpression, declarationGroups} from '../frontend/language.mjs';
 import {inferExpression,occurrenceTypes} from '../types/types.mjs';
 import {patternNames} from '../types/type-syntax.mjs';
 import {formatSource,syntaxFingerprint} from './formatter.mjs';
+import {typeHoverTokens,typeHoverDetails} from './type-hover.mjs';
 
 // VS Code and the module loader can spell the same file URI differently
 // (drive-letter case, percent encoding, or a symlink resolved by the loader).
@@ -154,13 +154,31 @@ export class LanguageService {
   }
   type(doc,name){
     if(doc.program?.types.has(name))return doc.program.types.get(name);
-    const data=doc.program?.definitions.dataTypes.get(name),modules=doc.program?.modules;
-    if(data){const display=modules?.display||String;if(data.alias)return display('type '+name+(data.transparent||data.moduleID===modules?.root.id?' = '+syntaxSource(data.aliasSyntax):''));return display('data '+name);}
-
     if(!this.builtinTypes.has(name)){
       try{this.builtinTypes.set(name,inferExpression(parseExpression(name,'<lsp>',this.standard.definitions.constructors),this.standard.definitions));}catch{this.builtinTypes.set(name,null);}
     }
     return this.builtinTypes.get(name);
+  }
+  typeHover(doc,p){
+    const program=doc.program||this.standard,modules=program.modules;
+    if(!doc.typeHoverTokens){
+      doc.typeHoverTokens=[];
+      try{
+        const unit=modules?.root.files.find(u=>sameSource(u.file,doc.uri));
+        const imports=new Map([...unit?.imports.values()||[]].map(imp=>[`${imp.token.line}:${imp.token.col}`,imp.module]));
+        const rewritten=modules?modules.references.filter(t=>sameSource(t.file,doc.uri)):
+          doc.program&&doc.tokens.some(t=>t.value==='std')?standardTokens(doc.text,doc.uri):[];
+        doc.typeHoverTokens=typeHoverTokens(declarationGroups(doc.tokens),rewritten,imports,program.definitions);
+      }catch{} // Grouping can fail while a declaration is being edited.
+    }
+    const token=doc.typeHoverTokens.find(t=>contains(range(t),p));if(!token)return null;
+    const value=typeHoverDetails(program,token,({start,end})=>{
+      const text=sameSource(start.file,doc.uri)?doc.text:modules?.sources.get(start.file);
+      if(!text)return null;
+      const prefix=start.visibility?start.visibility+' ':'';
+      return prefix+text.slice(offset(text,range(start).start),offset(text,range(end).end));
+    });
+    return value?{contents:{kind:'markdown',value},range:range(token)}:null;
   }
   format(doc,options){
     if(!doc?.program)return [];
@@ -198,6 +216,7 @@ export class LanguageService {
         const label=typeLabel(token,type,doc.program?.modules?.display||String);
         return {contents:{kind:'markdown',value:'```nyanco\n'+label+'\n```'},range:span};
       }
+      const type=this.typeHover(doc,params.position);if(type)return type;
     }
     const token=this.token(doc,params.position);if(!token)return null;
     if(method==='textDocument/definition'){

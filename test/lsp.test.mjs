@@ -6,6 +6,35 @@ import {LanguageService,applyChanges} from '../lsp.mjs';
 const uri='file:///example.nyan';
 const hints=(service,start=0,end=1000)=>service.request('textDocument/inlayHint',{textDocument:{uri},range:{start:{line:start,character:0},end:{line:end,character:1000}}});
 
+test('hover distinguishes standard types and classes from functions and shows their definitions',()=>{
+  const service=new LanguageService(),uri='untitled:types.nyan';
+  const source=`data model 'a = Empty | Filled 'a deriving eq
+type pair = #(int string)
+class show 'a => displayable 'a where
+    type item
+    get : 'a -> item
+f : ord 'a => [int] option 'a -> float
+f = drop; drop; 0.5
+main = int 2.5
+instance displayable (model int) where
+    item : int
+    get _ = 0
+`;
+  assert.deepEqual(service.update(uri,source,1).diagnostics,[]);
+  const hover=(line,word)=>service.request('textDocument/hover',{textDocument:{uri},position:{line,character:source.split('\n')[line].indexOf(word)}}).contents.value;
+  assert.match(hover(0,'model'),/data model 'a = Empty \| Filled 'a deriving eq/);
+  assert.match(hover(0,'eq'),/std\.classes\.eq[\s\S]*== : 'a 'a -> bool/);
+  assert.match(hover(1,'pair'),/type pair = #\(int string\)/);
+  assert.match(hover(1,'string'),/std\.text\.string[\s\S]*UTF-8/);
+  assert.match(hover(2,'displayable'),/class show 'a => displayable 'a where\n    type item\n    get : 'a -> item/);
+  for(const line of [3,4,9])assert.match(hover(line,'item'),/displayable\.item[\s\S]*type item/);
+  assert.match(hover(5,'ord'),/std\.classes\.ord[\s\S]*class eq 'a => ord 'a/);
+  assert.match(hover(5,'['),/std\.vector\.vector/);
+  assert.match(hover(5,'int'),/std\.numeric\.int/);
+  assert.match(hover(5,'option'),/std\.option\.option[\s\S]*data option 'a = None \| Some 'a/);
+  assert.match(hover(7,'int'),/この項の型[\s\S]*int : .*float -> .*int/);
+});
+
 test('formatting honors indentation, preserves layout and returns a UTF-16 edit',()=>{
   const service=new LanguageService();
   const source=['main  =','   xs <- [1,2]','   xs;each do -> x','        print(x*2) -- 😀  ','   print   "{3 * 4}"'].join('\r\n');
