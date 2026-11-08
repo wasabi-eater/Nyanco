@@ -5,7 +5,7 @@ main =
     vreplicate n 0 -> mut degree
     each sources {-> v; degree.[v] ! + 1}
     vscan degree 0 {+} -> offsets
-    offsets.[:n - 1] -> mut cursor
+    offsets.[:n] -> mut cursor
     vreplicate m 0 -> mut destinations
     vreplicate n n -> mut free
     each (0 .. m) do -> i

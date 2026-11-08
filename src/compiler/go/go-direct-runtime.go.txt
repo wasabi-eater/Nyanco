@@ -140,12 +140,12 @@ func concatPattern(rest int, sizes []int, ps ...Pattern) Pattern {
  }
 }
 func(m *Machine) sliceVector(value,startValue,endValue any,from bool,loc string) any {
- xs:=value.([]any);start:=startValue.(int64);end:=endValue.(int64)
- if from{end=int64(len(xs))-1}
- if start<0||start>int64(len(xs))||end< -1||end>=int64(len(xs))||!from&&end<0 {
+ xs:=value.([]any);start:=vectorOffset(startValue.(int64),len(xs));end:=vectorOffset(endValue.(int64),len(xs))
+ if from{end=int64(len(xs))}
+ if start<0||start>int64(len(xs))||end<0||end>int64(len(xs)) {
   m.perform("exn",[]any{"Slice bounds out of range"},loc,true);fail(loc,"Non-returning effect returned")
  }
- stop:=end+1;if stop<start{stop=start};return xs[start:stop:stop]
+ if end<start{end=start};return xs[start:end:end]
 }
 func pushPattern(prefix,last Pattern) Pattern { return func(v any,e *Env) bool { xs,ok:=v.([]any);return ok && len(xs)>0 && prefix(append([]any{},xs[:len(xs)-1]...),e) && last(xs[len(xs)-1],e) } }
 func constructorPattern(name string,ps ...Pattern) Pattern { return func(v any,e *Env) bool { a,ok:=v.(*ADT);if !ok || a.constructor!=name { return false };return listPattern(ps...)(a.fields,e) } }

@@ -176,7 +176,20 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
       else if(n.kind==='tuple')values.push(ctx.value(`&Tuple{[]any{${child(n.body,[],holes).join(',')}}}`));
       else if(n.kind==='path-update') {
         const original=values.pop(),args=n.fields.slice(0,-1).map(f=>child(f.body,[],holes)[0]);
-        const path=n.path.map(p=>p.kind==='field'?`UpdatePart{kind:"field",name:${str(p.name)}}`:p.kind==='tuple-index'?`UpdatePart{kind:"tuple",index:float64(${p.index})}`:(()=>{const methods=info.indexPaths[n.path.indexOf(p)],g=context(),set=context(),read=indexCall('at',['v','i'],methods.get,g,at),write=indexCall('setAt',['v','i','x'],methods.set,set,at,n.path.indexOf(p)===0&&(optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n))));return `UpdatePart{kind:"list",optional:${!!p.optional},index:${args[p.argument]},get:func(m *Machine,v,i any) any{${g.lines.join(';')};return ${read}},set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}}`;})());
+        const path=n.path.map((p,depth)=>{
+          if(p.kind==='field')return `UpdatePart{kind:"field",name:${str(p.name)}}`;
+          if(p.kind==='tuple-index')return `UpdatePart{kind:"tuple",index:float64(${p.index})}`;
+          const methods=info.indexPaths[depth],get=context();
+          const read=indexCall('at',['v','i'],methods.get,get,at);
+          const fields=[`kind:"list"`,`optional:${!!p.optional}`,`index:${args[p.argument]}`,
+            `get:func(m *Machine,v,i any) any{${get.lines.join(';')};return ${read}}`];
+          if(methods.set){
+            const set=context(),reuse=depth===0&&optimizeVectors&&(info.ownership?.mode==='move'||vectorReuse.has(n));
+            const write=indexCall('setAt',['v','i','x'],methods.set,set,at,reuse);
+            fields.push(`set:func(m *Machine,v,i,x any) any{${set.lines.join(';')};return ${write}}`);
+          }
+          return `UpdatePart{${fields.join(',')}}`;
+        });
         const pathValue=`path${next++}`;ctx.lines.push(`${pathValue}:=[]UpdatePart{${path}}`);
         if(n.defaulting||n.path.some(p=>p.optional)){
           const inner=context(),e=`e${next++}`;inner.lines.push(`${e}:=${env}.clone();_=${e}`);
@@ -279,6 +292,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         if(info.env.get(n.value).callable)invoke(ctx,value,values,info.effect,at);
         else values.push(value);
         if(n.ephemeral)ctx.lines.push(`delete(${env}.values,${str(n.value)});delete(${env}.locals,${str(n.value)})`);
+      }
+      else if(definitions.methods?.get(n.value)?.indexUpdate) {
+        const type=T.prune(info.effect.dispatchType);
+        const target=lookupInstance(definitions.classes.get('indexSet'),[type])?.implementations.get(n.value)||'__tc_'+n.value;
+        const spec=named(target,info.effect),args=values.splice(-spec.input.length);
+        values.push(...ctx.call(`m.${spec.fn}`,args,spec.output.length));
       }
       else if(definitions.methods?.has(n.value) && !definitions.methods.get(n.value).specialEach && !definitions.methods.get(n.value).specialHash && !definitions.methods.get(n.value).specialShow && !definitions.methods.get(n.value).specialIndex && !definitions.methods.get(n.value).specialSlice && !definitions.methods.get(n.value).specialCast && !definitions.methods.get(n.value).specialBits) {
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);

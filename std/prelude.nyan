@@ -12,7 +12,7 @@ pub import "std.bits" {testBit, setBit, clearBit, xor, bits}
 pub import "std.io" {read, put, print}
 pub import "std.control" {if, when, while, loop, iterate, handle, resume, call, compose, dip}
 pub import "std.stack" {nop, dup, drop, swap, over, rot}
-pub import "std.core" {%, &&, *, +, ++, -, .&., .., ..=, .<<., .>>., .|., /, /=, ::, <, <=, ==, >, >=, ^, at, concat, exn, hash, not, setAt, show, ||, catch}
+pub import "std.core" {%, &&, *, +, ++, -, .&., .., ..=, .<<., .>>., .|., /, /=, ::, <, <=, ==, >, >=, ^, at, tryAt, concat, exn, hash, not, setAt, updateAt, tryUpdateAt, show, ||, catch}
 pub import "std.classes" {unwrap, or, orElse, add, sub, mul, div, mod, pow, eq, ord, and, shl, shr, append, hash, show, unwrapOr, unwrapOrElse, hasValue}
 pub import "std.effects" {exn, yield, break, cancel, borrowMut}
 pub import "std.deque" {deque, toDeque, push as qpush, pushFront as qpushFront, pop as qpop, popFront as qpopFront, popBack as qpopBack, peek as qpeek, peekBack as qpeekBack, length as qlength, isEmpty as qisEmpty}

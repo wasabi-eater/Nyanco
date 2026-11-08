@@ -1108,12 +1108,17 @@ class Inference {
               const items=Array.from({length:part.index+1},()=>variable()),tail=variable('tuple-row');
               unify(type,tuple(items,tail),node);const result=replace(items[part.index],depth+1);return isBottom(result)?BOTTOM:tuple(items.map((item,i)=>i===part.index?result:item),tail);
             }
-            const get=instantiate(this.functions.get('at')),set=instantiate(this.functions.get('setAt'));
+            const get=instantiate(this.functions.get('at'));
             unify(get,quote(stack(EMPTY,type,args[part.argument]),push(EMPTY,item)),node);
-            const result=replace(item,depth+1);if(isBottom(result))return BOTTOM;
-            unify(set,quote(stack(EMPTY,type,args[part.argument],result),push(EMPTY,type)),node);
-            this.effectSink.dependencies.push({row:get.effects,...(part.optional||node.defaulting?{exclude:['exn']}:{})},{row:set.effects});
-            if(trace){trace.indexPaths??=[];trace.indexPaths[depth]={get,set};}return type;
+            const result=replace(item,depth+1),never=isBottom(result);
+            this.effectSink.dependencies.push({row:get.effects,...(part.optional||node.defaulting?{exclude:['exn']}:{})});
+            const set=never?null:instantiate(this.functions.get('setAt'));
+            if(set){
+              unify(set,quote(stack(EMPTY,type,args[part.argument],result),push(EMPTY,type)),node);
+              this.effectSink.dependencies.push({row:set.effects});
+            }
+            if(trace){trace.indexPaths??=[];trace.indexPaths[depth]={get,set};}
+            return never?BOTTOM:type;
           };
           const result=replace(original,0);
           if(optional&&node.updating&&!isBottom(result))unify(original,result,node);
@@ -1477,7 +1482,10 @@ function prepare(definitions,globalValues,initialized=false) {
   for(const [name,op] of inference.effects){const params=new Map((op.rowParameters||[]).map(p=>[p,row()]));if(op.protected)for(const p of op.parameters||[])params.set(p,variable());if(op.grouped)for(const member of activeFamilies.get(op.group).operations)syntaxType(member.syntax,params);const type=syntaxType(op.syntax,params);type.effects=effects([{name:op.group||name,...(op.grouped?{operation:name}:{}),args:(op.parameters||[]).map(n=>params.get(n))}]);inference.functions.set(name,generalize(type));}
   for(const [name,m] of operators.methods) {
     if(m.specialEach){inference.functions.set(name,eachEffect());continue;}
-    const associated=activeClasses.get(m.className).associated||[],scheme=annotation(`${m.className} ${[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)].join(' ')} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)]);
+    const associated=activeClasses.get(m.className).associated||[],parameters=[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)];
+    const arguments_=parameters.join(' '),getter=m.indexUpdate?`, indexGet ${arguments_}`:'';
+    const scheme=annotation(`${m.className} ${arguments_}${getter} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),parameters);
+    if(m.indexUpdate)unify(stackTail(prune(prune(scheme.type.input).item).input),EMPTY,m.token);
     if(!scheme.type.effectBound)scheme.type.effects=effects();
     const input=[];let t=prune(scheme.type.input);while(t.tag==='push'){input.unshift(prune(t.item));t=prune(t.rest);}
     const index=input.indexOf(scheme.parameters.get(m.param));

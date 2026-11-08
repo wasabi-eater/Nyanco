@@ -49,6 +49,24 @@ test('numeric inference separates scalar types and contextual integer literals',
 test('UTF-8 indexing, character vectors, classes and persistent updates agree with native',()=>{
  const {output}=run(defs+body);assert.deepEqual(output,['3','-3','3.5','255','1.5','3','1.5','42',"['日', '本', '😀']",'True',"['😀']",'(Some 129)','10','227','129','130','None','adc','2','(Box [1, 12])','(Box [9, 2])','0','invalid UTF-8']);assert.equal(native(defs+body),output.join('\n')+'\n');
 });
+test('index updates dispatch to instances and skip the callback on missing indices',()=>{
+ const concrete=defs.replace("data box 'a = Box ['a]",'data box = Box [int]')
+   .replaceAll("(box 'a)",'box').replaceAll("item : 'a",'item : int');
+ const source=concrete.replace('  setAt (Box xs) i x = Box (setAt xs i x)',`  setAt (Box xs) i x = Box (setAt xs i x)
+  updateAt (Box xs) i f = Box (updateAt xs i {call f; + 100})`)+`main =
+  print (updateAt (Box [1,2]) -1 {+ 3})
+  print (tryUpdateAt (Box [1,2]) -1 {+ 3})
+  print (tryUpdateAt [1,2] -3 {exn "unreachable"})
+  print (catch {tryUpdateAt [1,2] -1 {exn "callback"}})
+  print (tryAt [1,2] -1)
+  print (tryAt "ab" -1)
+  print ([-1: "key"].[-1])
+`;
+ const {output}=run(source);
+ assert.deepEqual(output,['(Box [1, 105])','(Box [1, 5])','[1, 2]','(Err "callback")','(Some 2)','None','key']);
+ assert.equal(native(source),output.join('\n')+'\n');
+ assert.throws(()=>compile('main = 0; updateAt [1] 0 {swap}'),/unify|underflow/i);
+});
 test('text streams retain their scalar types across REPL evaluations',()=>{
  const vm=new VM();
  vm.evaluate('chars "a😀" -> letters; bytes "あ" -> octets');

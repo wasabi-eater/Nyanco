@@ -11,6 +11,7 @@ test('list indexing supports expressions, chaining, projections and accessor fun
  assert.deepEqual(run('[10,20,30] -> x; x.[1]'),[20]);
  assert.deepEqual(run('[10,20,30] -> x; 1 -> i; x.[i + 1]'),[30]);
  assert.deepEqual(run('[[10,20],[30,40]].[1].[0]'),[30]);
+ assert.deepEqual(run('[[10,20],[30,40]].[-1].[-2]'),[30]);
  assert.deepEqual(run('{items: [10,20]}.items.[1]'),[20]);
  assert.deepEqual(run('[{n: 10}].[0].n'),[10]);
  assert.deepEqual(run('.[1] [10,20]'),[20]);
@@ -26,7 +27,7 @@ test('list index effects are inferred and handled, with typed indices and result
  assert.throws(()=>run('handle {[1].[9]} {exn: {-> msg k; resume k}}'),/non-returning|bottom|resume/i);
 });
 test('invalid indices raise exn, abort the body, and forward through nested handlers',()=>{
- for(const index of ['-1','1','9007199254740991']){
+ for(const index of ['-2','1','9007199254740991']){
   assert.throws(()=>run(`[1].[${index}]`),/Exception: Index out of bounds/);
   assert.deepEqual(run(`handle {handle {[1].[${index}]; drop; 99} {:}} {exn: {-> msg k; 42}}`),[42]);
  }
@@ -48,7 +49,7 @@ main =
   print (index [10,20] 1);
   print [[10],[20]].[1].[0];
   1; [10,20].[_]; print;
-  handle {index [10] -1; drop; print "unreachable"} {exn: {-> msg k; print msg}};
+  handle {index [10] -2; drop; print "unreachable"} {exn: {-> msg k; print msg}};
   handle {handle {[1].[2]} {:}} {exn: {-> msg k; 42}}; print;
   handle {exn "explicit"} {exn: {-> msg k; print msg}}`);
  const output=[],vm=new VM({...p,output:s=>output.push(s)});vm.evaluate('main');

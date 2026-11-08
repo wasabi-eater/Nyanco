@@ -85,7 +85,7 @@ export function lex(source, file = '<input>', startLine=1, startCol=1) {
       Object.assign(token,stringToken(token));
     } else {
       const rest = source.slice(i);
-      const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || ['..','..=','<-','<<-'].includes(tokens.at(-1)?.value));
+      const signed = c === '-' && (i === 0 || /[\s([{;,]/.test(source[i - 1]) || [':','..','..=','<-','<<-'].includes(tokens.at(-1)?.value));
       const number = rest.match(signed ? /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/ : /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
       const match = number || rest.match(/^(?:@[a-zA-Z_][a-zA-Z0-9_]*|\.<<\.|\.>>\.|\.&\.|\.\|\.|\?\?<-|\?\?=|\?\?|&&|\|\||\.\??(?=\[)|\.\.=|\.\.|\.\d+|\.[a-zA-Z_][a-zA-Z0-9_']*|=>|->>|->|<<-|<-|:=|::|==|\/=|<=|>=|\+\+|\$+\d*|[~?:|!+\-*\/%^<>=]|'[a-z][a-zA-Z0-9_']*|[a-zA-Z_][a-zA-Z0-9_']*)/);
       if (!match) throw new LanguageError(`Unexpected character: ${c}`, token);
@@ -1606,7 +1606,8 @@ export class VM {
           const m=this.definitions.methods.get(t.value),c=this.definitions.classes.get(m.className);
           this.need(stack,m.inputCount,t);const v=stack[stack.length-m.inputCount+m.dispatchIndex];
           const key=runtimeTypeKey(v);
-          const target=dispatch&&info?.effect?dispatch.target(t,info.effect):c.instances.get(key)?.implementations.get(t.value);
+          let target=dispatch&&info?.effect?dispatch.target(t,info.effect):c.instances.get(key)?.implementations.get(t.value);
+          if(m.indexUpdate&&(!target||target===t.value))target='__tc_'+t.value;
           if(!target)throw new LanguageError(`No instance: ${c.name} ${key||format(v)}`,t);
           const call={...t,value:target};yield* this.run([call],stack,env,new Map(),info?new Map([[call,info]]):undefined);
         }
@@ -1897,26 +1898,28 @@ for(const name of ['sinsert','sremove','scontains','slength','sisEmpty'])define(
  if(name==='scontains'){s.push(!!found);return;}
  s.push(name==='sinsert'?found?set:{kind:'set',data:dictSet(set.data,key,true,hash,equal)}:!found?set:{kind:'set',data:dictDelete(set.data,found.key,hash,equal)});
 });
+const vectorOffset=(index,length)=>index<0?length+index:index;
 for(const name of ['at','setAt'])define(name,name==='at'?2:3,function*(vm,s,t){
  const count=name==='at'?2:3,values=s.splice(-count),container=values[0],index=values[1];
  const target=vm.definitions.classes?.get(name==='at'?'indexGet':'indexSet')?.instances.get(runtimeTypeKey(container))?.implementations.get(name);
  if(target){const call={...t,kind:'word',value:target},effect=t.indexEffect;yield* vm.run([call],values,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(values[0]);return;}
  if(container?.kind==='dict'){const hash=yield* vm.hashValue(index,t),found=dictGet(container,index,hash,equal);if(name==='at'){if(!found){yield {operation:ioEffects().get('exn'),args:['Dictionary key not found: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}s.push(found.value);}else s.push(dictSet(container,index,values[2],hash,equal));return;}
  const xs=typeof container==='string'?new TextEncoder().encode(container):vm.expect(container,'list',t);
- if(scalarType(index)!=='int'||!Number.isSafeInteger(index)||index<0||index>=xs.length){yield {operation:ioEffects().get('exn'),args:['Index out of bounds: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}
- if(name==='at'){s.push(typeof container==='string'?scalar('byte',xs[index]):xs[index]);return;}
+ const offset=typeof container==='string'?index:vectorOffset(index,xs.length);
+ if(scalarType(index)!=='int'||!Number.isSafeInteger(index)||offset<0||offset>=xs.length){yield {operation:ioEffects().get('exn'),args:['Index out of bounds: '+format(index)],token:t};throw new LanguageError('Non-returning effect returned',t);}
+ if(name==='at'){s.push(typeof container==='string'?scalar('byte',xs[offset]):xs[offset]);return;}
  if(typeof container==='string'){
   const bytes=new Uint8Array(xs);bytes[index]=scalarValue(values[2]);try{s.push(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{yield {operation:ioEffects().get('exn'),args:['String update produces invalid UTF-8'],token:t};throw new LanguageError('Non-returning effect returned',t);}
- }else{const reuse=t.reuseVector&&canMutateVector(xs),result=reuse?xs:[...xs];vm.vectorUpdates[reuse?'inPlace':'copied']++;result[index]=values[2];s.push(result);}
+ }else{const reuse=t.reuseVector&&canMutateVector(xs),result=reuse?xs:[...xs];vm.vectorUpdates[reuse?'inPlace':'copied']++;result[offset]=values[2];s.push(result);}
 });
 
 for(const name of ['sliceBetween','sliceFrom','sliceTo'])define(name,name==='sliceBetween'?3:2,function*(vm,s,t){
  const args=s.splice(-(name==='sliceBetween'?3:2)),source=args[0];
  const target=vm.definitions.classes?.get('slice')?.instances.get(runtimeTypeKey(source))?.implementations.get(name);
  if(target){const call={...t,kind:'word',value:target},effect=t.sliceEffect;yield* vm.run([call],args,new Map(vm.globals),new Map(),effect?new Map([[call,{input:effect.input,effect}]]):undefined);s.push(args[0]);return;}
- const xs=vm.expect(source,'list',t),start=name==='sliceTo'?0:args[1],end=name==='sliceFrom'?xs.length-1:args.at(-1);
- if(!Number.isSafeInteger(start)||start<0||start>xs.length||!Number.isSafeInteger(end)||end< -1||end>=xs.length||name!=='sliceFrom'&&end<0){
+ const xs=vm.expect(source,'list',t),start=name==='sliceTo'?0:vectorOffset(args[1],xs.length),end=name==='sliceFrom'?xs.length:vectorOffset(args.at(-1),xs.length);
+ if(!Number.isSafeInteger(start)||start<0||start>xs.length||!Number.isSafeInteger(end)||end<0||end>xs.length){
   yield {operation:ioEffects().get('exn'),args:['Slice bounds out of range'],token:t};throw new LanguageError('Non-returning effect returned',t);
  }
- s.push(vectorView(xs,start,Math.max(0,end-start+1)));
+ s.push(vectorView(xs,start,Math.max(0,end-start)));
 });

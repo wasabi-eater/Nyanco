@@ -72,7 +72,8 @@ main =
     xs ! setAt 1 8
     print xs; print view
     print xs.?[99]; print xs.?[0]
-    print (catch {xs.[-1]})
+    print xs.[-1]
+    print (catch {xs.[-5]})
     print (identity [1.5,3.5]); print [1.5,3.5].[1]
     [toByte 255,toByte 0]; sort; vpush (toByte 2); print
     print [True,False]; print ['a','b']

@@ -1030,6 +1030,15 @@ inline void writeBorrow(const Value& value, Value replacement, const std::string
     if (!ref->active || ref->suspended) fail(at, "Invalid mutable reference");
     ref->owner->write(std::move(replacement));
 }
+// @runtime vectorOffset
+inline Int vectorOffset(Int index, std::size_t size) {
+    return index < 0 ? index + static_cast<Int>(size) : index;
+}
+// @runtime vectorPosition
+inline Int vectorPosition(Int index, std::size_t size) {
+    const auto pos = vectorOffset(index,size);
+    return pos < 0 || static_cast<UInt>(pos) >= size ? -1 : pos;
+}
 // @runtime findIndex
 inline std::optional<Value> findIndex(const Value& value, const Value& index) {
     if (is<Ptr<DictBase>>(value)) {
@@ -1038,12 +1047,12 @@ inline std::optional<Value> findIndex(const Value& value, const Value& index) {
         return {};
     }
     Int pos = as<Int>(index);
-    if (pos < 0) return {};
     if (is<std::string>(value)) {
         const auto& text = as<std::string>(value);
         if (static_cast<UInt>(pos) < text.size()) return static_cast<Byte>(text[static_cast<std::size_t>(pos)]);
     } else {
         const auto& xs = as<Ptr<VectorBase>>(value)->items();
+        pos = vectorOffset(pos,xs.size());
         if (static_cast<UInt>(pos) < xs.size()) return xs[static_cast<std::size_t>(pos)];
     }
     return {};
@@ -1053,14 +1062,19 @@ inline Value atIndex(Machine& m, const Value& value, const Value& index, const s
     if (auto item = findIndex(value, index)) return *item;
     m.exception((is<Ptr<DictBase>>(value) ? "Dictionary key not found: " : "Index out of bounds: ") + show(index), at);
 }
+// @runtime vectorSliceBounds
+inline std::optional<std::pair<std::size_t,std::size_t>> vectorSliceBounds(std::size_t length, Int first, Int last, bool from) {
+    const auto size = static_cast<Int>(length);
+    const auto start = vectorOffset(first,length), end = from ? size : vectorOffset(last,length);
+    if (start < 0 || start > size || end < 0 || end > size) return {};
+    return std::pair{static_cast<std::size_t>(start),end<start ? 0 : static_cast<std::size_t>(end-start)};
+}
 // @runtime sliceVector
 inline Value sliceVector(Machine& m, const Value& value, const Value& first, const Value& last,
                          bool from, const std::string& at) {
-    const auto size=as<Ptr<VectorBase>>(value)->items().size();
-    const auto start=as<Int>(first), end=from ? static_cast<Int>(size)-1 : as<Int>(last);
-    if (start<0 || static_cast<UInt>(start)>size || end< -1 || end>=static_cast<Int>(size) || (!from && end<0))
-        m.exception("Slice bounds out of range",at);
-    return vectorView(value,static_cast<std::size_t>(start),end<start ? 0 : static_cast<std::size_t>(end-start+1));
+    const auto bounds = vectorSliceBounds(as<Ptr<VectorBase>>(value)->size(),as<Int>(first),as<Int>(last),from);
+    if (!bounds) m.exception("Slice bounds out of range",at);
+    return vectorView(value,bounds->first,bounds->second);
 }
 // @runtime setIndex
 inline Value setIndex(Machine& m, Value value, const Value& index, const Value& replacement,
@@ -1081,6 +1095,7 @@ inline Value setIndex(Machine& m, Value value, const Value& index, const Value& 
         return text;
     }
     auto xs = vectorWritable<Value>(std::move(value),reuse);
+    pos = static_cast<std::size_t>(vectorOffset(as<Int>(index),xs->size()));
     xs->values[pos] = replacement;
     return Ptr<VectorBase>(std::move(xs));
 }
@@ -1155,7 +1170,7 @@ Value updatePath(Machine& m, Value value, const std::vector<UpdatePart>& path, s
     if (!part.get && !part.set && is<Ptr<VectorBase>>(value)) {
         atIndex(m,value,part.index,at);
         auto result = vectorWritable<Value>(std::move(value),reuse);
-        auto& slot = result->values.at(static_cast<std::size_t>(as<Int>(part.index)));
+        auto& slot = result->values.at(static_cast<std::size_t>(vectorOffset(as<Int>(part.index),result->size())));
         old.reset();
         if (!leaf || updating || part.optional) old = std::move(slot);
         slot = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
@@ -1163,6 +1178,59 @@ Value updatePath(Machine& m, Value value, const std::vector<UpdatePart>& path, s
     }
     auto changed = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
     return part.set ? part.set(m,value,part.index,changed) : setIndex(m,std::move(value),part.index,changed,at,reuse);
+}
+
+// @runtime VectorIndex updateVectorAt
+struct VectorIndex { Int index; bool optional; std::string_view at{}; };
+template <typename T>
+Value writeVectorUpdate(Value source, std::span<const VectorIndex> indices, const Value& replacement, bool reuse) {
+    const auto pos = static_cast<std::size_t>(vectorOffset(indices.front().index,as<Ptr<VectorBase>>(source)->size()));
+    if (indices.size() == 1) {
+        auto result = vectorWritable<T>(std::move(source), reuse);
+        if constexpr (std::is_same_v<T,Value>) result->values[pos] = replacement;
+        else result->values[pos] = as<T>(replacement);
+        return Ptr<VectorBase>(std::move(result));
+    }
+    auto result = vectorWritable<Value>(std::move(source), reuse);
+    auto& slot = result->values[pos];
+    slot = writeVectorUpdate<T>(std::move(slot), indices.subspan(1), replacement, reuse);
+    return Ptr<VectorBase>(std::move(result));
+}
+template <typename T, typename Replace>
+Value updateVectorAt(Machine& m, Value source, std::initializer_list<VectorIndex> indices,
+                     const Replace& replace, bool reuse, const Ptr<Cell>& cell, const std::string& at) {
+    const auto* container = as<Ptr<VectorBase>>(source).get();
+    Value old;
+    for (const auto& part : indices) {
+        const auto index = vectorOffset(part.index,container->size());
+        if (index < 0 || static_cast<UInt>(index) >= container->size()) {
+            if (part.optional) return source;
+            m.exception("Index out of bounds: " + show(Value{part.index}), part.at.empty()?at:std::string(part.at));
+        }
+        const auto pos = static_cast<std::size_t>(index);
+        if (&part != indices.end() - 1) {
+            container = as<Ptr<VectorBase>>(container->items()[pos]).get();
+        } else if (const auto* typed = dynamic_cast<const VectorStorage<T>*>(container)) {
+            old = typed->scalars()[pos];
+        } else {
+            old = container->items()[pos];
+        }
+    }
+    auto replacement = replace(std::move(old));
+    if (reuse && cell) {
+        bool same;
+        {
+            const auto current = cell->read();
+            same = as<Ptr<VectorBase>>(current).get() == as<Ptr<VectorBase>>(source).get();
+        }
+        // The callback may have replaced the cell. Only consume the cell
+        // when it still contains the snapshot used to compute the result.
+        if (same) {
+            source.reset();
+            source = cell->take();
+        }
+    }
+    return writeVectorUpdate<T>(std::move(source), {indices.begin(), indices.size()}, replacement, reuse);
 }
 
 // @runtime bits
@@ -1309,8 +1377,9 @@ inline Value textVector(const Value& value, const std::string& at) {
 }
 // @runtime vectorElement
 template <typename T> inline T vectorElement(Machine& m,const Ptr<VectorBase>& source,Int index,const std::string& at) {
-    if(index<0||static_cast<UInt>(index)>=source->size())m.exception("Index out of bounds: "+show(Value{index}),at);
-    const auto& item=source->items()[static_cast<std::size_t>(index)];
+    const auto pos=vectorPosition(index,source->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    const auto& item=source->items()[static_cast<std::size_t>(pos)];
     if constexpr(std::is_same_v<T,Value>)return item;
     else return as<T>(item);
 }
@@ -1321,35 +1390,38 @@ template <typename Source> inline Int vectorLength(const Source& value) {
 // @runtime scalarAt scalarFind
 template <typename T,typename Source> inline std::optional<Value> scalarFind(const Source& source,Int index) {
     auto data = scalarData<T>(source);
+    index = vectorOffset(index,data->size());
     if (index < 0 || static_cast<UInt>(index) >= data->size()) return {};
     return Value{data->scalars()[static_cast<std::size_t>(index)]};
 }
 template <typename T,typename Source> inline T scalarAt(Machine& m,const Source& source,Int index,const std::string& at) {
     auto data = scalarData<T>(source);
-    if (index < 0 || static_cast<UInt>(index) >= data->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
-    return data->scalars()[static_cast<std::size_t>(index)];
+    const auto pos=vectorPosition(index,data->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    return data->scalars()[static_cast<std::size_t>(pos)];
 }
 // @runtime scalarSetNative
 template <typename T> inline Ptr<VectorBase> scalarSetNative(Machine& m,Ptr<VectorBase> source,Int index,T value,bool reuse,const std::string& at) {
-    if (index < 0 || static_cast<UInt>(index) >= source->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
+    const auto pos=vectorPosition(index,source->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
     auto data = vectorWritable<T>(std::move(source),reuse);
-    data->values[static_cast<std::size_t>(index)] = value;
+    data->values[pos] = value;
     return data;
 }
 // @runtime scalarSetAt
 template <typename T> inline Value scalarSetAt(Machine& m,Value source,Int index,T value,bool reuse,const std::string& at) {
-    if (index < 0 || static_cast<UInt>(index) >= as<Ptr<VectorBase>>(source)->size()) m.exception("Index out of bounds: " + show(Value{index}),at);
+    const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
     auto data = scalarWritable<T>(std::move(source),reuse);
-    data->values[static_cast<std::size_t>(index)] = value;
+    data->values[pos] = value;
     return Ptr<VectorBase>(std::move(data));
 }
 // @runtime scalarSlice scalarOrder
 template <typename T,typename Source> inline Value scalarSlice(Machine& m,const Source& source,Int start,Int end,bool from,const std::string& at) {
     auto data = scalarData<T>(source);
-    const auto size = static_cast<Int>(data->size());
-    if (from) end = size - 1;
-    if (start < 0 || start > size || end < -1 || end >= size || (!from && end < 0)) m.exception("Slice bounds out of range",at);
-    auto result = vectorStorageView<T>(std::move(data),static_cast<std::size_t>(start),end < start ? 0 : static_cast<std::size_t>(end-start+1));
+    const auto bounds=vectorSliceBounds(data->size(),start,end,from);
+    if(!bounds)m.exception("Slice bounds out of range",at);
+    auto result = vectorStorageView<T>(std::move(data),bounds->first,bounds->second);
     return Ptr<VectorBase>(std::move(result));
 }
 template <typename T> inline Value scalarOrder(Value source,bool reverse,bool reuse) {
@@ -1367,16 +1439,18 @@ void cellScalarSet(Machine& m,const Ptr<Cell>& cell,Int index,const Replace& rep
     Value old,source=cell->read();
     if(updating)old=scalarAt<T>(m,source,index,at);
     auto value=replace(std::move(old));
-    if(index<0||static_cast<UInt>(index)>=as<Ptr<VectorBase>>(source)->size())m.exception("Index out of bounds: "+show(Value{index}),at);
-    source.reset();cell->write(scalarSetAt<T>(m,cell->take(),index,as<T>(value),true,at));
+    const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    source.reset();cell->write(scalarSetAt<T>(m,cell->take(),pos,as<T>(value),true,at));
 }
 template <typename T,typename Replace>
 void cellScalarSet(Machine& m,const Ptr<NativeCell<Ptr<VectorBase>>>& cell,Int index,const Replace& replace,bool updating,const std::string& at){
     Value old;
     if(updating)old=scalarAt<T>(m,cell->value,index,at);
     auto value=replace(std::move(old));
-    if(index<0||static_cast<UInt>(index)>=cell->value->size())m.exception("Index out of bounds: "+show(Value{index}),at);
-    cell->value=scalarSetNative<T>(m,std::move(cell->value),index,as<T>(value),true,at);
+    const auto pos=vectorPosition(index,cell->value->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    cell->value=scalarSetNative<T>(m,std::move(cell->value),pos,as<T>(value),true,at);
 }
 template <typename Replace>
 void cellDictSet(Machine& m,const Ptr<Cell>& cell,const Value& key,const Replace& replace,bool updating,bool defaulting,const std::string& at){
@@ -1397,13 +1471,15 @@ template<typename T> Ptr<VectorBase> rowPush(Ptr<VectorBase> source,Int index,T 
     inner->values.push_back(item);slot=Ptr<VectorBase>(std::move(inner));return outer;
 }
 template<typename T> void cellRowPush(Machine& m,const Ptr<NativeCell<Ptr<VectorBase>>>& cell,Int index,T item,const std::string& at){
-    if(index<0||static_cast<UInt>(index)>=cell->value->size())m.exception("Index out of bounds: "+show(Value{index}),at);
-    cell->value=rowPush<T>(std::move(cell->value),index,item);
+    const auto pos=vectorPosition(index,cell->value->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    cell->value=rowPush<T>(std::move(cell->value),pos,item);
 }
 template<typename T> void cellRowPush(Machine& m,const Ptr<Cell>& cell,Int index,T item,const std::string& at){
     auto source=cell->read();
-    if(index<0||static_cast<UInt>(index)>=as<Ptr<VectorBase>>(source)->size())m.exception("Index out of bounds: "+show(Value{index}),at);
-    source.reset();source=cell->take();cell->write(rowPush<T>(takeAs<Ptr<VectorBase>>(source),index,item));
+    const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    source.reset();source=cell->take();cell->write(rowPush<T>(takeAs<Ptr<VectorBase>>(source),pos,item));
 }
 // @runtime vectorHead
 inline Value vectorHead(const Value& value, const std::string& at) {

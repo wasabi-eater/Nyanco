@@ -81,7 +81,7 @@ test('jagged row pushes preserve snapshots and errors with bounded copied elemen
     rows.[1:] -> view
     rows.[1] ! vpush 1000
     print (vmap before {length}); print (vmap rows {length}); print (vmap view {length})
-    catch {rows.[-1] ! vpush 3; 0}; print
+    catch {rows.[-5] ! vpush 3; 0}; print
     catch {rows.[0] ! vpush (exn "item"); 0}; print
     print (vmap rows {length})
 `);

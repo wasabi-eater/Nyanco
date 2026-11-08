@@ -23,6 +23,9 @@ export function withStandardFunctions(definitions){
  add('product',[],'fold (fromInt 1) {*}');
  add('zipWith',['left','right','f'],'map (zip left right) {-> #(a, b); call a b f}');
  add('unzip',['xs'],'pairs <- vector xs; vmap pairs {-> #(a, _); a}, vmap pairs {-> #(_, b); b}');
+ add('__tc_updateAt',['xs','i','f'],'xs with {[i] ! call f}');
+ add('__tc_tryUpdateAt',['xs','i','f'],'xs with {?[i] ! call f}');
+ if(isStandardOption(result))add('tryAt',['xs','i'],'xs.?[i]');
  // Helpers that pattern-match standard ADTs must wait until constructors are
  // registered, and must not assume a user-defined option/result has that shape.
  if(isStandardOption(result))add('partitionPoint',['xs','predicate'],`mut lo <- 0

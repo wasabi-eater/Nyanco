@@ -152,6 +152,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     }
     for(const [method,m] of c.methods) {
       if(!instance.implementations.has(method)){
+        if(m.indexUpdate)continue; // The standard implementation uses at and setAt.
         const owner=classes.get(m.className),parent=owner!==c&&owner&&lookupInstance(owner,ancestorArguments(classes,c,heads,owner.name));
         if(parent&&parent.implementations.get(method)){instance.implementations.set(method,parent.implementations.get(method));continue;}
         if(builtinInstance(owner,head)||owner?.intoClass&&builtinConversion(ancestorArguments(classes,c,heads,owner.name))||owner?.conversion&&lookupInstance(classes.get('into'),owner.conversion.map(t=>substitute(t,new Map([[owner.param,ancestorArguments(classes,c,heads,owner.name)[0]]])))))continue;

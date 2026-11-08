@@ -141,3 +141,34 @@ main =
   assert.equal(copies(paths,true),0);
   assert.equal(copies('main = [1, 2]; vpush _ 3; print',true),0);
 });
+
+test('indexed updates defer COW until success and keep scalar rows unboxed',{skip:!available},()=>{
+ const source=`change x = if (x == 2) {exn "stop"} {x + 10}
+main =
+    mut rows <- [[1,2],[3,4]]
+    inner <- -1
+    rows ! updateAt -1 {updateAt inner {+ 3}}
+    rows.[0].[0] ! change
+    print (catch {rows.[0].[1] ! change; 0})
+    print (catch {rows.[0].[1] ! exn "always"; 0})
+    rows.[-1].?[-3] ! exn "missing"
+    snapshot <- rows
+    rows.[-1].?[-2] ! + 1
+    print snapshot; print rows
+`;
+ const program=compile(source);
+ let code=transpileCpp(program);
+ assert.match(code,/updateVectorAt<Int>[^\n]*\{\{[^}]*false\}, \{[^}]*false, std::string_view/);
+ code=code.replace('struct VectorBase {','inline unsigned clones=0, conversions=0;\nstruct VectorBase {')
+  .replace('else if (typed) result = std::make_shared<VectorStorage<T>>(*typed);',
+   'else if (typed) {++clones; result = std::make_shared<VectorStorage<T>>(*typed);}')
+  .replace('std::vector<T> data; data.reserve(base->size());','++conversions; std::vector<T> data; data.reserve(base->size());')
+  .replace('return nyanco::runTask(coroutineMain());',
+   'int status=nyanco::runTask(coroutineMain()); std::cerr << nyanco::clones << "," << nyanco::conversions << "\\n"; return status;');
+ assert.match(code,/\+\+clones/);
+ assert.match(code,/\+\+conversions/);
+ native(code,run=>{
+  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),'(Err "stop")\n(Err "always")\n[[11, 2], [3, 7]]\n[[11, 2], [4, 7]]');
+  assert.equal(run.stderr.trim(),'2,0');
+ });
+});

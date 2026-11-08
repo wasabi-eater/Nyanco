@@ -59,7 +59,12 @@ export function installOperatorClasses(classes,methods) {
   for(const [name,method] of [['indexGet','at'],['indexSet','setAt']])if(!classes.has(name)){
     const associated=[{name:'key',owner:name,param:"'indexKey"},{name:'item',owner:name,param:"'indexItem"}],param="'c";
     const m={name:method,className:name,param,signature:method==='at'?"'c 'indexKey -> 'indexItem / {exn}":"'c 'indexKey 'indexItem -> 'c / {exn}",inputCount:method==='at'?2:3,dispatchIndex:0,specialIndex:true};
-    classes.set(name,{name,param,associated,methods:new Map([[method,m]]),instances:new Map(),standard:true,indexClass:true});methods.set(method,m);
+    const members=new Map([[method,m]]);
+    if(name==='indexSet')for(const name of ['updateAt','tryUpdateAt']){
+      members.set(name,{...m,name,indexUpdate:true,signature:"'c 'indexKey { 'indexItem -> 'indexItem / { | 'e } } -> 'c / { exn | 'e }"});
+    }
+    classes.set(name,{name,param,associated,methods:members,instances:new Map(),standard:true,indexClass:true});
+    for(const [name,method] of members)methods.set(name,method);
   }
   if(!classes.has('hash')){
     const m={name:'hash',className:'hash',param:"'a",signature:"'a -> int",inputCount:1,dispatchIndex:0,specialHash:true};

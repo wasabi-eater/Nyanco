@@ -73,21 +73,25 @@ func(m *Machine) handleWith(body func(*Machine) []any,handlers map[string]Effect
  return drive()
 }
 
+func vectorOffset(index int64, size int) int64 {if index<0{return index+int64(size)};return index}
+func(m *Machine) indexPosition(index any,size int,vector bool,loc string) int {
+ n:=index.(int64)
+ if vector{n=vectorOffset(n,size)}
+ if n<0||n>=int64(size){m.perform("exn",[]any{"Index out of bounds: "+text(index)},loc,true);fail(loc,"Non-returning effect returned")}
+ return int(n)
+}
 func(m *Machine) listIndex(value,index any,loc string) any {
  if d,ok:=value.(*Dict);ok{v,found:=d.get(index);if !found{m.perform("exn",[]any{"Dictionary key not found: "+text(index)},loc,true);fail(loc,"Non-returning effect returned")};return v}
- n:=number(index,loc);size:=0;var xs []any;var text string;isString:=false
- if s,ok:=value.(string);ok{text=s;size=len(s);isString=true}else{xs=list(value,loc);size=len(xs)}
- if math.IsNaN(n)||math.Trunc(n)!=n||n<0||n>=float64(size){m.perform("exn",[]any{"Index out of bounds: "+textValue(index)},loc,true);fail(loc,"Non-returning effect returned")}
- if isString{return uint8(text[int(n)])};return xs[int(n)]
+ if s,ok:=value.(string);ok{return uint8(s[m.indexPosition(index,len(s),false,loc)])}
+ xs:=list(value,loc);return xs[m.indexPosition(index,len(xs),true,loc)]
 }
-func textValue(v any) string{return text(v)}
 func(m *Machine) listOptionIndex(value,index any,loc string) any {
  return m.handle(func(m *Machine) []any{return []any{&ADT{"option","Some",[]any{m.listIndex(value,index,loc)}}}},map[string]EffectHandler{"exn":func(_ []any,_ *Continuation) []any{return []any{&ADT{"option","None",nil}}}},loc)[0]
 }
 func(m *Machine) indexSetOwned(value,index,replacement any,loc string,reuse bool) any {
  if d,ok:=value.(*Dict);ok{return d.set(index,replacement)}
- m.listIndex(value,index,loc);i:=int(number(index,loc));if s,ok:=value.(string);ok{bytes:=[]byte(s);bytes[i]=replacement.(uint8);if !utf8.Valid(bytes){m.perform("exn",[]any{"String update produces invalid UTF-8"},loc,true);fail(loc,"Non-returning effect returned")};return string(bytes)}
- result:=list(value,loc);if !reuse{result=append([]any{},result...)};result[i]=replacement;return result
+ if s,ok:=value.(string);ok{i:=m.indexPosition(index,len(s),false,loc);bytes:=[]byte(s);bytes[i]=replacement.(uint8);if !utf8.Valid(bytes){m.perform("exn",[]any{"String update produces invalid UTF-8"},loc,true);fail(loc,"Non-returning effect returned")};return string(bytes)}
+ result:=list(value,loc);i:=m.indexPosition(index,len(result),true,loc);if !reuse{result=append([]any{},result...)};result[i]=replacement;return result
 }
 
 // Private cancellation is not an effect: user break handlers cannot swallow a take limit.

@@ -16,16 +16,18 @@ const evaluate=(source,optimizeVectors=true)=>{
  return {stack:vm.evaluate('main'),output,vm,program};
 };
 
-test('inclusive slices implement three class methods and preserve index syntax',()=>{
+test('exclusive slices implement three class methods and accept negative bounds',()=>{
  const {stack,program}=evaluate('main = [0,1,2,3].[1:2], [0,1,2,3].[1:], [0,1,2,3].[:2], [0,1].[0], [0,1].?[9]');
- assert.equal(format(stack),'[[1, 2], [1, 2, 3], [0, 1, 2], 0, None]');
+ assert.equal(format(stack),'[[1], [1, 2, 3], [0, 1], 0, None]');
  assert.equal(program.definitions.classes.get('slice').methods.size,3);
- assert.equal(format(evaluate('main = [0,1,2,3]; sliceBetween 1 2; sliceFrom 1; sliceTo 0').stack),'[[2]]');
+ assert.equal(format(evaluate('main = [0,1,2,3]; sliceBetween 1 3; sliceFrom 1; sliceTo 1').stack),'[[2]]');
  assert.equal(format(evaluate('main = [0,1].[1:0], [0,1].[2:], [].[0:]').stack),'[[], [], []]');
  for(const code of ['[1].[:]', '[1].[0:0:0]', '[1].?[0:0]', '[1].[True:0]'])assert.throws(()=>compile('main = '+code));
- assert.match(format(evaluate('main = catch {[0,1].[0:2]}').stack),/Err/);
- assert.match(format(evaluate('main = catch {[0,1].[-1:]}').stack),/Err/);
- assert.equal(format(evaluate('main = 1; [0,1,2].[_:2]').stack),'[[1, 2]]');
+ assert.match(format(evaluate('main = catch {[0,1].[0:3]}').stack),/Err/);
+ assert.match(format(evaluate('main = catch {[0,1].[-3:]}').stack),/Err/);
+ assert.equal(format(evaluate('main = 1; [0,1,2].[_:2]').stack),'[[1]]');
+ assert.equal(format(evaluate('main = [0,1,2,3].[1:-1], [0,1,2,3].[-2:], [0,1,2,3].[:-2], [0,1].[0:2]').stack),
+  '[[1, 2], [2, 3], [0, 1], [0, 1]]');
 });
 
 const custom=`data box = Box [int]
@@ -33,9 +35,18 @@ instance slice box where
     sliceBetween (Box xs) lo hi = Box xs.[lo:hi]
     sliceFrom (Box xs) lo = Box xs.[lo:]
     sliceTo (Box xs) hi = Box xs.[:hi]
+instance indexGet box where
+    key : int
+    item : int
+    at (Box xs) i = at xs i
+instance indexSet box where
+    key : int
+    item : int
+    setAt (Box xs) i item = Box (setAt xs i item)
+    updateAt (Box xs) i f = Box (updateAt xs i {call f; + 100})
 `;
 test('slice instances specialize user types in syntax and ordinary calls',()=>{
- assert.equal(format(evaluate(custom+'main = (Box [0,1,2]).[1:2], sliceFrom (Box [0,1,2]) 1, (Box [0,1,2]).[:1]').stack),'[(Box [1, 2]), (Box [1, 2]), (Box [0, 1])]');
+ assert.equal(format(evaluate(custom+'main = (Box [0,1,2]).[1:2], sliceFrom (Box [0,1,2]) 1, (Box [0,1,2]).[:1]').stack),'[(Box [1]), (Box [1, 2]), (Box [0])]');
  assert.match(compile('cut xs = xs.[1:]').types.get('cut'),/slice/);
  assert.throws(()=>compile('main = 1.[0:1]'),/No instance: slice int/);
 });
@@ -60,7 +71,7 @@ main =
 
 const persistence=`main =
     mut xs <- [0,1,2,3]
-    view <- xs.[1:2]
+    view <- xs.[1:3]
     xs.[1] ! + 10
     print xs
     print view
@@ -99,6 +110,21 @@ test('Go and C++ execute slices, custom instances, patterns and copy-on-write',t
   '    [0,1,2,3].[1:]; print',
   '    [0,1,2,3].[:2]; print',
   '    [0,1,2,3].[1:].[:0]; print',
+  '    [0,1,2,3].[-3:-1]; print',
+  '    ["a","b","c"].[:-1]; print',
+  '    print (tryAt [1,2] -1)',
+  '    print (setAt ["a","b"] -1 "c")',
+  '    print (updateAt [1,2] -1 {+ 1})',
+  '    print (updateAt (Box [1,2]) -1 {+ 1})',
+  '    print (tryUpdateAt (Box [1,2]) -1 {+ 1})',
+  '    print (tryUpdateAt [1,2] -3 {exn "unreachable"})',
+  '    print (catch {tryUpdateAt [1,2] -1 {exn "callback"}})',
+  '    mut rows <- [[1,2],[3,4]]',
+  '    saved <- rows',
+  '    rows.[-1].?[-2] ! + 7',
+  '    rows.[-1].?[-3] ! exn "unreachable"',
+  '    print (catch {rows.[-1].[-2] ! exn "abort"; 0})',
+  '    print rows; print saved',
   '    catch {[1].[:3]}; print',
   '    strip [1,2,4,3]; print',
   '    strip [1,9,3]; print',

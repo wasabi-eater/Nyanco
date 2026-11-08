@@ -135,7 +135,8 @@ function unsupported(token, feature = token.value || token.kind) {
 export function transpileCpp(program, {
   expression = 'main', entryNodes = null, showStack = false, optimizeVectors = true, onIR = null, noSourcePaths = false, batchIO = false, nativeVectors = true, effectCoroutines = true, nativeHashTries = true, referenceCounting = 'shared', nativeLocals = true
 } = {}) {
-  const loc = token => string(token ? `${noSourcePaths ? '' : token.file + ':'}${token.line}:${token.col}` : '<entry>');
+  const locText = token => token ? `${noSourcePaths ? '' : token.file + ':'}${token.line}:${token.col}` : '<entry>';
+  const loc = token => string(locText(token));
   const definitions = withStandardFunctions(withOption(Object.assign(new Map(program.definitions), {
     ...program.definitions, effects: ioEffects(program.definitions.effects)
   })));
@@ -770,6 +771,53 @@ return {option(${args[0]})};
       return false;
     });
   }
+  function vectorUpdateStorage(node,info) {
+    if(!node.updating||node.defaulting||!node.path.length)return null;
+    let container;
+    for(const [i,part] of node.path.entries()){
+      const methods=info.indexPaths?.[i];
+      if(part.kind!=='list-index'||!methods)return null;
+      container=T.prune(items(methods.get.input).at(-2));
+      if(container.tag!=='list')return null;
+    }
+    return vectorScalar(container)||'Value';
+  }
+  function emitVectorUpdate(ctx,node,source,indices,replace,storage,kept=[]) {
+    const cell=ctx.vectorUpdateCell?.node===node?ctx.vectorUpdateCell.cell:'Ptr<Cell>{}';
+    return ctx.value(`updateVectorAt<${storage}>(m, ${ctx.move(source,kept)}, {${indices.join(', ')}}, ${replace}, ${optimizeVectors}, ${cell}, ${loc(node)})`);
+  }
+  function vectorUpdateChain(q,container,callback,indices) {
+    const known=knownQuotes.get(q);
+    if(!known)return {container,callback};
+    const captured=`as<Ptr<Quote>>(${q})->env`;
+    let node=known.node,analysis;
+    // Hoist only literal indices and reads of immutable bindings. An
+    // optional outer index can skip every evaluation inside its quotation.
+    while(optimizeVectors&&inlineDepth<12&&!node.blockLabel&&node.body.length===1&&node.body[0].kind==='application'){
+      const [operation,index,next,...rest]=node.body[0].body;
+      if(operation.kind!=='word'||!['updateAt','tryUpdateAt'].includes(operation.value)||
+         next?.kind!=='quote'||next.blockLabel||rest.length||T.prune(container.item).tag!=='list')break;
+      if(!analysis){
+        const parts=effectParts(callback),signature=freshTypes(parts.input,parts.output,latent(callback));
+        analysis=ir.analyze(node.body,signature.input,copyEnv(known.types));
+        T.unify(analysis.output,signature.output,node);
+        if(typedDispatch)T.specializeEffects(analysis.effects,signature.effects,node);
+      }
+      const info=analysis.trace.get(operation),binding=info?.env.get(index.value);
+      if(!info?.effect||info.env.has(operation.value))break;
+      let position;
+      if(index.kind==='literal'&&index.numericKind==='integer')position=literal(index,'int');
+      else if(index.kind==='word'&&binding&&!binding.mutable&&!binding.callable)
+        position=readAs(readBinding(captured,index.value),'Int');
+      else break;
+      indices.push(`{${position}, ${operation.value==='tryUpdateAt'}, std::string_view(${stringLiteral(locText(operation))})}`);
+      container=T.prune(container.item);
+      callback=items(info.effect.input).at(-1);
+      node=next;
+    }
+    return {container,callback,known:node===known.node?{...known,env:captured}:
+      {...known,node,env:captured,types:analysis.trace.get(node).env,lifetimes:null}};
+  }
 
   function emit(nodes, stack, env, holes, trace, ctx) {
     holes.references ??= new Map();
@@ -792,7 +840,7 @@ return {option(${args[0]})};
         ? `std::move(${value})` : value; };
       if (instruction.ir && optimizeVectors) {
         if (lifetimes.takes.has(n)) instruction.ir.memory = {binding:'take-if-unshared',reason:'last-use-before-write-or-scope-end'};
-        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','hpush','hpop','qpush','qpushFront','qpop','qpopFront','qpopBack'].includes(n.value)) {
+        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','updateAt','tryUpdateAt','hpush','hpop','qpush','qpushFront','qpop','qpopFront','qpopBack'].includes(n.value)) {
           instruction.ir.ownership = {mode:'cow',reason:'runtime-reference-count',staticMode:instruction.ownership?.mode};
         }
       }
@@ -904,7 +952,10 @@ return {option(${args[0]})};
           case 'path-update': {
             const source = stack.pop();
             const args = n.fields.slice(0,-1).map(f => child(f.body)[0]);
-            const path = n.path.map((p, i) => {
+            const storage=vectorUpdateStorage(n,info);
+            if(instruction.ir&&storage&&ctx.vectorUpdateCell?.node===n)
+              instruction.ir.memory={binding:'atomic-index-update',reason:'replacement-evaluation-before-cell-transfer'};
+            const path = storage ? n.path.map(p=>`{${readAs(args[p.argument],'Int')}, ${!!p.optional}}`) : n.path.map((p, i) => {
               const methods = info.indexPaths?.[i];
               const makeAccessor = (name, effect, inputs) => {
                 const target = customMethod({...n,value:name},effect);
@@ -940,7 +991,8 @@ return {option(${args[0]})};
               inner.add(`return ${replacement};`);
             }
             const replace = `[&](Value old) -> Value {\n${inner.lines.join('\n')}\n}`;
-            const updated = ctx.value(`updatePath(m, ${ctx.move(source,args)}, {${path.join(', ')}}, 0, ${replace}, ${!!n.defaulting}, ${!!n.updating}, ${reuse}, ${at})`);
+            const updated = storage?emitVectorUpdate(ctx,n,source,path,replace,storage,args):
+              ctx.value(`updatePath(m, ${ctx.move(source,args)}, {${path.join(', ')}}, 0, ${replace}, ${!!n.defaulting}, ${!!n.updating}, ${reuse}, ${at})`);
             if (n.updating) stack = ambient;
             stack.push(updated);
             break;
@@ -1021,7 +1073,15 @@ return {option(${args[0]})};
                 }
               }
             }
-            const output = child(n.body, n.updating ? stack : n.fromStack ? take(stack, names.length) : []);
+            const previousCell=ctx.vectorUpdateCell;
+            if(optimizeVectors&&n.updating&&names.length===1&&owner?.kind==='word'&&owner.value===names[0]){
+              const target=simple.length===2&&path?.kind==='path-update'&&vectorUpdateStorage(path,trace.get(path))?path:
+                ordered.length===4&&['updateAt','tryUpdateAt'].includes(operation?.value)?operation:null;
+              if(target)ctx.vectorUpdateCell={node:target,cell:cellBinding(env,names[0])};
+            }
+            let output;
+            try {output=child(n.body, n.updating ? stack : n.fromStack ? take(stack, names.length) : []);}
+            finally {ctx.vectorUpdateCell=previousCell;}
             const replacements = take(output, names.length);
             if(n.updating) stack = output;
             names.forEach((name, i) => writeBinding(ctx,env,name,ctx.move(replacements[i],replacements.filter((_,j) => i !== j))));
@@ -1256,6 +1316,22 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     const custom = method && !method.specialCast && !method.specialEach && customMethod(n, info.effect);
     if (custom) {
       callNamed(ctx, custom, info.effect, stack);
+      return stack;
+    }
+    if (method?.indexUpdate) {
+      const types=items(info.effect.input),container=T.prune(types.at(-3));
+      if(container.tag==='list'){
+        const [source,index,q]=take(stack,3),inner=context();
+        const indices=[`{${readAs(index,'Int')}, ${name==='tryUpdateAt'}}`];
+        const chain=vectorUpdateChain(q,container,types.at(-1),indices);
+        const result=(chain.known&&inlineQuote(inner,q,chain.callback,['old'],{...chain.known,ctx:inner}))
+          || callQuote(inner,q,chain.callback,['old'],at);
+        inner.add(result.never?`fail(${at}, "Non-returning update returned");`:`return ${result[0]};`);
+        const replace=`[&](Value old) -> Value {\n${inner.lines.join('\n')}\n}`;
+        stack.push(emitVectorUpdate(ctx,n,source,indices,replace,vectorScalar(chain.container)||'Value',[index,q]));
+        return stack;
+      }
+      callNamed(ctx, '__tc_'+name, info.effect, stack);
       return stack;
     }
     if (name === 'partitionPoint' && definitions.get(name)?.[0].token.file === '<standard>' && directPartitionPoint(n,info,stack,ctx)) return stack;
