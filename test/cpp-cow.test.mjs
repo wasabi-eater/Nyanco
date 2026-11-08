@@ -142,6 +142,114 @@ main =
   assert.equal(copies('main = [1, 2]; vpush _ 3; print',true),0);
 });
 
+function withVectorCopyCounter(code){
+ const constructor='VectorStorage(const VectorStorage& other) : values(other.scalars().begin(),other.scalars().end()) {}';
+ const entry='return nyanco::runTask(coroutineMain());';
+ assert.ok(code.includes(constructor));
+ assert.ok(code.includes(entry));
+ return code.replace('struct VectorBase {','inline unsigned copies=0;\nstruct VectorBase {')
+  .replace(constructor,constructor.replace('{}','{ ++copies; }'))
+  .replace(entry,'int status=nyanco::runTask(coroutineMain()); std::cerr << nyanco::copies << "\\n"; return status;');
+}
+
+test('exceptional updates move dead locals and preserve bindings observable across handlers',{skip:!available},()=>{
+ const source=`change xs stop =
+    vpush xs 3
+    when stop {exn "stop"}
+outer stop = catch {
+    mut x <- [1, 2]
+    x ! change stop
+    x
+}
+inner stop =
+    mut x <- [1, 2]
+    print (catch {x ! change stop; x})
+    x
+escaped =
+    mut inspect <- {[0]}
+    print (catch {
+        mut x <- [1, 2]
+        inspect <<- {x}
+        x ! change True
+        x
+    })
+    call inspect
+captured = catch {
+    mut x <- [1, 2]
+    modify = vpush 3; print x; exn "capture";;
+    x ! modify
+    x
+}
+main =
+    print (outer False); print (outer True)
+    print (inner True)
+    print escaped
+    print captured
+`;
+ const program=compile(source),output=[];
+ new VM({...program,output:line=>output.push(line)}).evaluate('main');
+ assert.deepEqual(output,['(Ok [1, 2, 3])','(Err "stop")','(Err "stop")','[1, 2]','(Err "stop")','[1, 2]','[1, 2]','(Err "capture")']);
+ native(withVectorCopyCounter(transpileCpp(program,{referenceCounting:'local'})),run=>{
+  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),output.join('\n'));
+  assert.equal(run.stderr.trim(),'3');
+ });
+});
+
+test('cancel, break and user-defined aborts move locals and preserve outer bindings',{skip:!available},()=>{
+ const source=`effect flow where
+    leave : -> !
+    pause : ->
+effect abortAll where
+    exitLeft : -> !
+    exitRight : -> !
+stopWithCancel xs = vpush xs 3; cancel
+stopWithBreak xs = drop; vpush xs 3; break
+stopWithLeave xs = vpush xs 3; leave
+mixed : [int] -> ! / {flow}
+mixed xs = vpush xs 3; leave
+declaredAbort : [int] -> ! / {abortAll}
+declaredAbort xs = vpush xs 3; exitLeft
+main =
+    each [0] {drop; mut x <- [1,2]; x ! stopWithCancel}
+    each [0] @out {drop; mut x <- [1,2]; x ! vpush 3, cancel@out}
+    [0]; each [0] {drop; mut x <- [1,2]; x ! stopWithBreak}; print
+    handle {mut x <- [1,2]; x ! stopWithLeave; x} {leave: {-> k; [4]}}; print
+    handle {mut x <- [1,2]; x ! mixed; x} {leave: {-> k; [5]}, pause: {-> k; resume k}}; print
+    handle {mut x <- [1,2]; x ! declaredAbort; x} {exitLeft: {-> k; [6]}, exitRight: {-> k; [7]}}; print
+    mut keep <- [1,2]
+    each [0] {drop; keep ! stopWithCancel}
+    print keep
+`;
+ const program=compile(source),output=[];
+ new VM({...program,output:line=>output.push(line)}).evaluate('main');
+ assert.deepEqual(output,['[1, 2, 3]','[4]','[5]','[6]','[1, 2]']);
+ native(withVectorCopyCounter(transpileCpp(program,{referenceCounting:'local'})),run=>{
+  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),output.join('\n'));
+  assert.equal(run.stderr.trim(),'1');
+ });
+});
+
+test('resumable effects can move scoped update targets unless the old value is observable',{skip:!available},()=>{
+ const source=`effect pause : ->
+effect inspect : { -> [int]} ->
+grow xs = vpush xs 3; pause
+main =
+    handle {mut x <- [1,2]; x ! grow; x} {pause: {-> k; resume k}}; print
+    handle {mut x <- [1,2]; x ! grow; x} {pause: {-> k; [9]}}; print
+    handle {mut x <- [1,2]; {x} -> readX; x ! vpush 3, inspect readX; x} {inspect: {-> get k; print (call get); resume k}}; print
+    mut keep <- [1,2]
+    handle {keep ! grow; keep} {pause: {-> k; [8]}}; print
+    print keep
+`;
+ const program=compile(source),output=[];
+ new VM({...program,output:line=>output.push(line)}).evaluate('main');
+ assert.deepEqual(output,['[1, 2, 3]','[9]','[1, 2]','[1, 2, 3]','[8]','[1, 2]']);
+ native(withVectorCopyCounter(transpileCpp(program)),run=>{
+  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),output.join('\n'));
+  assert.equal(run.stderr.trim(),'2');
+ });
+});
+
 test('indexed updates defer COW until success and keep scalar rows unboxed',{skip:!available},()=>{
  const source=`change x = if (x == 2) {exn "stop"} {x + 10}
 main =
@@ -167,8 +275,12 @@ main =
    'int status=nyanco::runTask(coroutineMain()); std::cerr << nyanco::clones << "," << nyanco::conversions << "\\n"; return status;');
  assert.match(code,/\+\+clones/);
  assert.match(code,/\+\+conversions/);
+ const output='(Err "stop")\n(Err "always")\n[[11, 2], [3, 7]]\n[[11, 2], [4, 7]]';
  native(code,run=>{
-  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),'(Err "stop")\n(Err "always")\n[[11, 2], [3, 7]]\n[[11, 2], [4, 7]]');
+  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),output);
   assert.equal(run.stderr.trim(),'2,0');
+ });
+ native(transpileCpp(program,{nativeLocals:false}),run=>{
+  assert.equal(run.stdout.replaceAll('\r\n','\n').trimEnd(),output);
  });
 });

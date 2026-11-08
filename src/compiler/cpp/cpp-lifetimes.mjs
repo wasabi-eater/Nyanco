@@ -42,14 +42,23 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
         }
         if (n.kind === 'update') {
           walk(n.body,new Map(scope));
-          const writes = (n.names || [n.name]).map(name => lookup(name,scope,info)).filter(Boolean);
-          writes.forEach(binding => used.add(binding));
           const effects = typeIR.effectDescription(info.updateEffects);
-          // An effect can abandon this update before it commits. Keep the
-          // previous cell contents available until the replacement is ready.
-          if (typeIR.isBottom(info.output) || effects.entries.length || effects.tails.length)
-            events.push({reads:writes});
-          else events.push({writes});
+          const mayAbandon = typeIR.isBottom(info.output) || effects.entries.length || effects.tails.length;
+          const closedEffects = !effects.tails.length && effects.entries.length>0;
+          const reads = [], writes = [];
+          for (const name of n.names || [n.name]) {
+            const binding = lookup(name,scope,info);
+            if (!binding) continue;
+            used.add(binding);
+            // Handlers and loops protect separate quotation units. Resuming
+            // continues the update; abandoning it also abandons its locals.
+            // Captured bindings may still be read after an enclosing handler.
+            const endsOnEscape = closedEffects && binding.owned &&
+              (created.has(binding) || !keepInherited && inherited.get(name)===binding) &&
+              !effects.accesses.has(info.env.get(name)?.cellKey);
+            (mayAbandon && !endsOnEscape ? reads : writes).push(binding);
+          }
+          events.push({reads,writes});
           continue;
         }
         if (n.kind === 'quote' || n.kind === 'local-function') {

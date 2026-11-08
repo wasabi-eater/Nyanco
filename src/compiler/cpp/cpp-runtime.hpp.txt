@@ -1221,7 +1221,8 @@ Value updateVectorAt(Machine& m, Value source, std::initializer_list<VectorIndex
         bool same;
         {
             const auto current = cell->read();
-            same = as<Ptr<VectorBase>>(current).get() == as<Ptr<VectorBase>>(source).get();
+            same = is<Ptr<VectorBase>>(current) &&
+                as<Ptr<VectorBase>>(current).get() == as<Ptr<VectorBase>>(source).get();
         }
         // The callback may have replaced the cell. Only consume the cell
         // when it still contains the snapshot used to compute the result.
