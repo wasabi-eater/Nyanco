@@ -1,0 +1,32 @@
+-- Pack each lowercase letter into five bits, so a mask projects exact keys.
+encode = bytes; fold 0 {-> code ch; code * 32 + (int ch - 97)}
+
+chooseTwo n = n * (n - 1) / 2
+
+sortedPairs xs =
+    mut previous <- -1
+    mut run <- 0
+    0
+    each xs do -> x
+        if (x == previous) {run ! + 1} {previous <<- x; run <<- 0}
+        + run
+
+projectedPairs xs bitsToKeep = vmap xs {.&. bitsToKeep}; sort; sortedPairs
+
+main =
+    read; split " "; vmap {parseInt} -> [n m]
+    if (m == 2) {print (chooseTwo n)} do
+        xs <- vmap (0 .. n) {drop; read; encode}
+        masks <- vmap (0 .. m) {31 .<<. (_ * 5)}
+        full <- (1 .<<. (5 * m)) - 1
+        mut one <- 0
+        mut two <- 0
+        each (0 .. m) do -> i
+            keep <- xor full masks.[i]
+            one ! + projectedPairs xs keep
+            each (i + 1 .. m) do -> j
+                two ! + projectedPairs xs (xor keep masks.[j])
+        -- A pair at distance d is counted once for each deletion set that
+        -- contains its d differing positions. Correct the distance-0/1 counts.
+        same <- projectedPairs xs full
+        print (two - (m - 2) * one + chooseTwo (m - 1) * same)

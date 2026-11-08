@@ -40,9 +40,12 @@ const source=custom+`main =
   print (fold (1 ..= 3) zero {+});
   print (sortBy [3,2,1] {cancel});
   print ([1,2].?[0]);
-  print ([1,2].?[3])`;
+  print ([1,2].?[3]);
+  print (orderedCounts (Bag [3,1,3,3,2,1]));
+  print (orderedCounts [Key 1, Key 3, Key 3, Key 2, Key 3, Key 1]);
+  print (orderedCounts [])`;
 test('collectors accept streem instances, preserve stable order and stop on cancel',()=>{
- assert.deepEqual(run(source).output,['30','6','3','2','13','[8, 6, 4, 2]','[1, 1, 2, 3]','[{id: "b", score: 1}, {id: "a", score: 2}, {id: "c", score: 2}]','3','1','2','[3, 2, 1]','[1, 3]','[2, 1]','[]','[(Key 3), (Key 2), (Key 1)]','[3, 2, 1]','6','[]','(Some 1)','None']);
+ assert.deepEqual(run(source).output,['30','6','3','2','13','[8, 6, 4, 2]','[1, 1, 2, 3]','[{id: "b", score: 1}, {id: "a", score: 2}, {id: "c", score: 2}]','3','1','2','[3, 2, 1]','[1, 3]','[2, 1]','[]','[(Key 3), (Key 2), (Key 1)]','[3, 2, 1]','6','[]','(Some 1)','None','[#(1 2), #(2 1), #(3 3)]','[#((Key 3) 3), #((Key 2) 1), #((Key 1) 2)]','[]']);
  assert.deepEqual(run('main = 100; fold (1 ..= 3) 0 {+}').stack,[100,6]);
  assert.deepEqual(run('main = [3,1,2] -> xs; sort xs; xs').stack,[[1,2,3],[3,1,2]]);
 });

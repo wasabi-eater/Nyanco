@@ -48,6 +48,17 @@ xs.?[position]; case
  }
  add('countIf',[],'filter, count');
  add('countsBy',[],'map, counts');
+ add('orderedCounts',[],`sort -> items
+if (length items == 0) {[]} do
+    mut key <- head items
+    mut occurrences <- 0
+    mut groups <- []
+    each items do -> item
+        if (item == key) {occurrences ! + 1} do
+            groups ! vpush #(key, occurrences)
+            key <<- item
+            occurrences <<- 1
+    vpush groups #(key, occurrences)`);
  add('deque',['xs'],'fold xs __emptyDeque {qpush}');
  add('heap',['xs'],'fold xs __emptyHeap {hpush}');
  if(isStandardOption(result)){

@@ -43,13 +43,24 @@ template <typename T> struct VectorBoxing {
 };
 template <> struct VectorBoxing<Value> {};
 template <typename T> struct VectorStorage final : VectorBase {
-    std::vector<T> values;
+    // The string's inline buffer avoids a separate allocation for short byte vectors.
+    using Storage = std::conditional_t<std::is_same_v<T,Byte>,std::string,std::vector<T>>;
+    Storage values;
     Ptr<VectorBase> owner;
     std::span<const T> view;
     [[no_unique_address]] VectorBoxing<T> boxing;
-    explicit VectorStorage(std::vector<T> data) : values(std::move(data)) {}
+    static Storage storage(std::vector<T>&& data) {
+        if constexpr (std::is_same_v<T,Byte>)
+            return data.empty() ? std::string{} : std::string(reinterpret_cast<const char*>(data.data()),data.size());
+        else return std::move(data);
+    }
+    explicit VectorStorage(std::vector<T> data) : values(storage(std::move(data))) {}
     VectorStorage(const VectorStorage& other) : values(other.scalars().begin(),other.scalars().end()) {}
-    std::span<const T> scalars() const { return owner ? view : std::span<const T>(values); }
+    std::span<const T> scalars() const {
+        if (owner) return view;
+        if constexpr (std::is_same_v<T,Byte>) return {reinterpret_cast<const Byte*>(values.data()),values.size()};
+        else return std::span<const T>(values);
+    }
     std::size_t size() const override { return scalars().size(); }
     bool native() const override { return !std::is_same_v<T,Value>; }
     std::span<const Value> items() const override {
@@ -1167,7 +1178,7 @@ Value updatePath(Machine& m, Value value, const std::vector<UpdatePart>& path, s
         slot = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
         return result;
     }
-    if (!part.get && !part.set && is<Ptr<VectorBase>>(value)) {
+    if ((!leaf || updating) && !part.get && !part.set && is<Ptr<VectorBase>>(value)) {
         atIndex(m,value,part.index,at);
         auto result = vectorWritable<Value>(std::move(value),reuse);
         auto& slot = result->values.at(static_cast<std::size_t>(vectorOffset(as<Int>(part.index),result->size())));
@@ -1410,9 +1421,9 @@ template <typename T> inline Ptr<VectorBase> scalarSetNative(Machine& m,Ptr<Vect
     return data;
 }
 // @runtime scalarSetAt
-template <typename T> inline Value scalarSetAt(Machine& m,Value source,Int index,T value,bool reuse,const std::string& at) {
+template <typename T> inline Value scalarSetAt(Machine& m,Value source,Int index,T value,bool reuse,std::string_view at) {
     const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),std::string(at));
     auto data = scalarWritable<T>(std::move(source),reuse);
     data->values[pos] = value;
     return Ptr<VectorBase>(std::move(data));
@@ -1428,7 +1439,7 @@ template <typename T,typename Source> inline Value scalarSlice(Machine& m,const 
 template <typename T> inline Value scalarOrder(Value source,bool reverse,bool reuse) {
     auto data = scalarWritable<T>(std::move(source),reuse);
     if (reverse) std::reverse(data->values.begin(),data->values.end());
-    else std::stable_sort(data->values.begin(),data->values.end());
+    else std::stable_sort(data->values.begin(),data->values.end(),[](auto a,auto b){return static_cast<T>(a)<static_cast<T>(b);});
     return Ptr<VectorBase>(std::move(data));
 }
 // @runtime cellScalarSet cellDictSet
@@ -1662,13 +1673,13 @@ inline Value transform(Walk source, Int count, MapItem fn, Ptr<Label> label,
                     } else if constexpr (Mode == Transform::skip) {
                         if (remaining) --remaining; else visit(item);
                     } else if constexpr (Mode == Transform::flatten) nested(m,item,visit);
+                    else if constexpr (Mode == Transform::map) visit(fn(m,std::move(item)));
                     else if constexpr (Mode == Transform::skipWhile) {
                         if (skipping && truth(fn(m,item))) return;
                         skipping = false; visit(item);
                     } else {
                         auto mapped = fn(m,item);
-                        if constexpr (Mode == Transform::map) visit(mapped);
-                        else if constexpr (Mode == Transform::filter) { if (truth(mapped)) visit(item); }
+                        if constexpr (Mode == Transform::filter) { if (truth(mapped)) visit(item); }
                         else if constexpr (Mode == Transform::takeWhile) { if (!truth(mapped)) stop(); visit(item); }
                         else if constexpr (Mode == Transform::flatMap) nested(m,mapped,visit);
                     }
@@ -1720,26 +1731,41 @@ inline void splitParts(const SplitInput& input, const VisitPart& visit) {
 }
 // @runtime Compare
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
+// @runtime equalScalarVectors
+template <typename T>
+bool equalScalarVectors(Machine&, const Value& a, const Value& b) {
+    const auto& x = as<Ptr<VectorBase>>(a);
+    const auto& y = as<Ptr<VectorBase>>(b);
+    if (x == y) return true;
+    const auto* left = dynamic_cast<const ScalarVector<T>*>(x.get());
+    const auto* right = dynamic_cast<const ScalarVector<T>*>(y.get());
+    if (!left || !right) return equal(a,b);
+    const auto xs = left->scalars(), ys = right->scalars();
+    return std::equal(xs.begin(),xs.end(),ys.begin(),ys.end());
+}
 // @runtime Partition partition
 enum class Partition { windows, chunks, chunkBy };
-template <Partition Mode>
+template <Partition Mode, bool CountGroups = false>
 inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Label> label) {
     return stream([=](Machine& parent,const Visit& visit) {
         loop(parent,[&](Machine& m){
             Values pending;
             Value last;
+            Int groupSize = 0;
             const auto emit = [&] {
-                if constexpr (Mode == Partition::chunkBy) visit(stream([saved=pending](Machine&,const Visit& next){
-                    for (const auto& value : saved) next(value);
+                if constexpr (CountGroups) visit(groupSize);
+                else if constexpr (Mode == Partition::chunkBy) visit(stream([saved=pending](Machine&,const Visit& visit){
+                    for (const auto& value : saved) visit(value);
                 }));
                 else visit(vector(pending));
             };
             source(m,[&](Value item){
                 if constexpr (Mode == Partition::chunkBy) {
-                    auto k = key(m,item);
-                    if (!pending.empty() && !(eq ? eq(m,last,k) : equal(last,k))) { emit(); pending.clear(); }
+                    auto k = key ? key(m,item) : CountGroups ? std::move(item) : item;
+                    if (groupSize && !(eq ? eq(m,last,k) : equal(last,k))) { emit(); groupSize=0; pending.clear(); }
                     last = std::move(k);
-                    pending.push_back(std::move(item));
+                    ++groupSize;
+                    if constexpr (!CountGroups) pending.push_back(std::move(item));
                 } else {
                     pending.push_back(std::move(item));
                     if (pending.size() == static_cast<UInt>(count)) {
@@ -1749,7 +1775,7 @@ inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Labe
                     }
                 }
             });
-            if constexpr (Mode != Partition::windows) if (!pending.empty()) emit();
+            if constexpr (Mode != Partition::windows) if (groupSize || !pending.empty()) emit();
         },label);
     });
 }
@@ -1985,4 +2011,35 @@ inline Consumption consume(Machine& parent, Walk source, const Value& arg,
         result = vector(std::move(collected));
     } else result = option(best);
     return {std::move(result),std::move(broken)};
+}
+// @runtime sortScalarVectors
+template <typename T>
+Consumption sortScalarVectors(Machine& parent, Walk source, Ptr<Label> label) {
+    struct Row { Ptr<ScalarVector<T>> value; UInt prefix; };
+    std::vector<Row> rows;
+    auto broken = loop(parent,[&](Machine& m){
+        source(m,[&](Value item){
+            auto data = scalarData<T>(item);
+            UInt prefix = 0;
+            if constexpr (std::is_same_v<T,Byte>) {
+                const auto bytes = data->scalars();
+                for (std::size_t i=0; i<std::min(bytes.size(),sizeof(UInt)); ++i)
+                    prefix |= static_cast<UInt>(bytes[i]) << ((sizeof(UInt)-1-i)*8);
+            }
+            rows.push_back({std::move(data),prefix});
+        });
+    },label);
+    if (!broken) std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){
+        if constexpr (std::is_same_v<T,Byte>) if (a.prefix != b.prefix) return a.prefix < b.prefix;
+        auto x=a.value->scalars(),y=b.value->scalars();
+        if constexpr (std::is_same_v<T,Byte>) {
+            // Equal zero-padded prefixes still distinguish a shorter key.
+            if (std::min(x.size(),y.size()) <= sizeof(UInt)) return x.size() < y.size();
+            x=x.subspan(sizeof(UInt)); y=y.subspan(sizeof(UInt));
+        }
+        return std::lexicographical_compare(x.begin(),x.end(),y.begin(),y.end());
+    });
+    Values result;result.reserve(rows.size());
+    for (auto& row : rows) result.emplace_back(Ptr<VectorBase>(std::move(row.value)));
+    return {vector(std::move(result)),std::move(broken)};
 }

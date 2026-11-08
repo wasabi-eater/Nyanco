@@ -28,7 +28,7 @@ put('worklist','worklist','worklist','effect-family');
 for(const [name,internal] of Object.entries(worklistOperations))put('worklist',name,internal,'effect');
 for(const [module,prefix,names] of [['deque','q','push pushFront pop popFront popBack peek peekBack length isEmpty'],['heap','h','push pop peek length isEmpty']])aliases(module,prefix,names);
 aliases('vector','v','map filter flatMap flatten take takeWhile skip skipWhile zip');
-assign('stream','each map filter flatMap flatten fold sum product count countIf zip zipWith unzip take takeWhile skip skipWhile max maxi maxiBy min mini miniBy all any nth sort sortBy windows chunks chunkBy groupBy permutations combinations combinationsWithReplacement cartesianProduct powerset fromYield repeat repeatWith toVector');
+assign('stream','each map filter flatMap flatten fold sum product count countIf orderedCounts zip zipWith unzip take takeWhile skip skipWhile max maxi maxiBy min mini miniBy all any nth sort sortBy windows chunks chunkBy groupBy permutations combinations combinationsWithReplacement cartesianProduct powerset fromYield repeat repeatWith toVector');
 assign('set','set toSet sinsert sremove scontains slength sisEmpty sunion sintersection sdifference');
 for(const name of ['insert','remove','contains','length','isEmpty','union','intersection','difference'])put('set',name,'s'+name);
 assign('dict','dict toDict counts countsBy values groupBy');

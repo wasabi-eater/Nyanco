@@ -32,6 +32,27 @@ test('synchronous captures and numeric traversals use lexical slots and native l
  const fallback=transpileCpp(p,{nativeLocals:false});assert.match(fallback,/\.(?:read|take|update)\(std::string\("total"/);
 });
 
+test('single-use UTF-8 byte streams iterate natively and shared streams remain reusable',{skip:!available},()=>{
+ const p=compile(`sumBytes text = bytes text; fold 0 {int; +}
+main =
+    print (sumBytes "Aé😀")
+    print (sumBytes "")
+    bytes "é"; dup; fold 0 {int; +}; print; fold 0 {int; +}; print
+    0; bytes "abcd"; each {int; +; when ($ >= 195) {break}}; print
+    0; bytes "abcd"; each {int; +; when ($ >= 195) {cancel}}; print
+    bytes "é"; vmap {int}; print
+    print (catch {byte 256; int})
+`);
+ const out=expected(p);
+ const code=transpileCpp(p);
+ assert.match(code,/for \(Byte scalarItem\d+ : v\d+\)/);
+ assert.match(code,/Int v\d+ = static_cast<Int>\((?:v|scalarItem)\d+\)/);
+ assert.match(code,/textStream<walkBytes>/);
+ assert.match(code,/cast<Byte>\(m,/);
+ native(code,run=>assert.equal(run().stdout,out));
+ native(transpileCpp(p,{nativeLocals:false}),run=>assert.equal(run().stdout,out));
+});
+
 test('escaped captures, shadowing, borrowed cells, effects and loop cancellation match the VM',{skip:!available},()=>{
  const p=compile(`effect ask : -> int
 make start = start -> mut n; {n ! + (fromInt 1); n}

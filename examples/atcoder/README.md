@@ -1,6 +1,8 @@
-# ABC480 / ABC481 の解答と計測
+# AtCoderの解答と計測
 
-各ディレクトリの `main.nyan` が独立した実行可能な解答です。対象は、終了済みの [ABC480](https://atcoder.jp/contests/abc480/tasks) と [ABC481](https://atcoder.jp/contests/abc481/tasks) の A〜D です。
+各ディレクトリの `main.nyan` が独立した実行可能な解答です。[ABC480](https://atcoder.jp/contests/abc480/tasks) と [ABC481](https://atcoder.jp/contests/abc481/tasks) の A〜D、および [ABC483 E](https://atcoder.jp/contests/abc483/tasks/abc483_e) を収録しています。
+
+## ABC480 / ABC481
 
 | 問題 | 解答 | 方針 | 最大規模ケースの時間 |
 | --- | --- | --- | ---: |
@@ -34,7 +36,7 @@ c++ -std=c++20 -O2 -pthread main.cpp -o main
 # MSVCのDeveloper Command Promptでは
 cl /nologo /std:c++20 /EHsc /utf-8 /O2 main.cpp /Fe:main.exe
 
-# 8問を独自の小規模入力と正解生成器で検査
+# 独自の小規模入力と正解生成器で検査
 node --test test/atcoder.test.mjs
 
 # C++に変換して全ケースを検査・計測する
@@ -46,9 +48,29 @@ node bench/atcoder.mjs abc481_d
 
 `--procon` はデフォルトで非対話問題用のバッファ付き入出力を使います。入力前にflushする場合は `--interactive-io` を指定します。`bench/atcoder.mjs` はWindowsではPATH上の `cl`、それ以外では `c++` を使います。MSVCの場合はDeveloper Command PromptまたはDeveloper PowerShellで実行してください。
 
-ベンチマークは小規模225件と最大規模など10件の計235件で出力を照合します。小規模テストではAの入力を全列挙し、ほかの問題はseed固定のランダム入力を生成します。例えばABC481 Dの小規模の正解生成器は、解答とは別のDijkstra法を使用します。ABC480 Dの最大入力の期待値はJavaScriptの `BigInt` で計算し、64bitの和を検査します。
+ABC480 / ABC481のベンチマークは小規模225件と最大規模など10件の計235件で出力を照合します。小規模テストではAの入力を全列挙し、ほかの問題はseed固定のランダム入力を生成します。例えばABC481 Dの小規模の正解生成器は、解答とは別のDijkstra法を使用します。ABC480 Dの最大入力の期待値はJavaScriptの `BigInt` で計算し、64bitの和を検査します。
 
-生成C++・実行ファイル・計測JSONは `native/atcoder/` に保存されます。`results.json` は実行するたびに、今回選択した問題の結果で置き換わります。不一致・異常終了・タイムアウトはエラーとなり、2秒を超えた場合は各結果の `withinLimit` が `false` になります。
+生成C++・実行ファイル・計測JSONは `native/atcoder/` に保存されます。`results.json` は実行するたびに、今回選択した問題の結果で置き換わります。不一致・異常終了・タイムアウトはエラーとなり、問題ごとの制限時間に達した場合は各結果の `withinLimit` が `false` になります。
+
+## ABC483 E
+
+[main.nyan](abc483/e/main.nyan) は各文字を5ビットに詰め、0〜2文字をマスクした整数をソートします。同じ整数の連続区間から組数を求め、包除原理で重複を補正します。時間計算量は `O(M² N log N)`、追加領域は `O(N + M)` です。[公式解説](https://atcoder.jp/contests/abc483/editorial/28634)
+
+WindowsのMSVC `/O2` で、最大規模のランダム入力は約0.30秒、全件同一は約0.10秒でした。同じランダム入力でNyancoの `counts` を使う辞書版は約7.4秒でした。計測はプロセス起動と入出力を含みます。解答の小規模26件を総当たりと照合し、最大規模3件を別の正解生成器で検査します。
+
+```sh
+node cli.mjs examples/atcoder/abc483/e/main.nyan --procon --emit-cpp main.cpp
+node bench/atcoder.mjs abc483_e --rc local
+```
+
+[バイトvector版](abc483/e-unpacked/main.nyan) は `with` で指定位置を `?` に置き換え、`sort; chunkBy {}; map {count}` で連続区間の長さを求めます。ソース側では整数への詰め込みを行いません。C++バックエンドは短いバイトvectorのデータをオブジェクト内に置き、ソートの比較に先頭バイトのキャッシュを使います。グループが長さの計算にしか使われない場合は、そのstreamの生成を省きます。
+
+同じMSVC `/O2` で、バイトvector版の最大規模ランダム入力は3回とも3.07〜3.11秒でした。AtCoderの制限時間は4秒です。
+
+```sh
+node cli.mjs examples/atcoder/abc483/e-unpacked/main.nyan --procon --emit-cpp main.cpp
+node bench/atcoder.mjs abc483_e-unpacked --rc local
+```
 
 ## 追加した標準関数
 

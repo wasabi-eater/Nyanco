@@ -1,7 +1,7 @@
 -- Implicitly imported by every Nyanco module.
 -- Native primitives live in std.* modules; these are their public reexports.
 pub import "std.vector" {Push, push as vpush, cons, head, tail, length, reverse, toVector, map as vmap, filter as vfilter, flatMap as vflatMap, flatten as vflatten, take as vtake, takeWhile as vtakeWhile, skip as vskip, skipWhile as vskipWhile, zip as vzip, vector, indexGet, indexSet, slice, sliceBetween, sliceFrom, sliceTo, binarySearch, binarySearchBy, partitionPoint, vscan, vreplicate}
-pub import "std.stream" {each, map, filter, flatMap, flatten, fold, sum, product, count, countIf, zip, zipWith, unzip, take, takeWhile, skip, skipWhile, max, maxi, maxiBy, min, mini, miniBy, all, any, nth, sort, sortBy, windows, chunks, chunkBy, groupBy, permutations, combinations, combinationsWithReplacement, cartesianProduct, powerset, fromYield, repeat, repeatWith, stream, streem}
+pub import "std.stream" {each, map, filter, flatMap, flatten, fold, sum, product, count, countIf, orderedCounts, zip, zipWith, unzip, take, takeWhile, skip, skipWhile, max, maxi, maxiBy, min, mini, miniBy, all, any, nth, sort, sortBy, windows, chunks, chunkBy, groupBy, permutations, combinations, combinationsWithReplacement, cartesianProduct, powerset, fromYield, repeat, repeatWith, stream, streem}
 pub import "std.dict" {toDict, counts, countsBy, values, dict}
 pub import "std.set" {set, toSet, sinsert, sremove, scontains, slength, sisEmpty, sunion, sintersection, sdifference}
 pub import "std.option" {map as omap, filter as ofilter, flatMap as oflatMap, flatten as oflatten, zip as ozip, option, None, Some}

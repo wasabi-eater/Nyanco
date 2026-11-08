@@ -15,6 +15,7 @@ if(rcIndex>=0){referenceCounting=selected[rcIndex+1];if(!['local','shared'].incl
 const results=[];
 for(const id of problemIDs){
  if(selected.length&&!selected.includes(id))continue;
+ const limitMs=id.startsWith('abc483_e')?4000:2000;
  const file=join(root,'examples','atcoder',id.replace('_','/'),'main.nyan'),program=compileModule(file);
  const small=smallCases(id);
  for(const {name,input,output} of small){
@@ -26,6 +27,6 @@ for(const id of problemIDs){
  const compiler=process.platform==='win32'?'cl':'c++',args=compiler==='cl'?['/nologo','/std:c++20','/EHsc','/utf-8','/O2',cpp,'/Fe:'+exe]:['-std=c++20','-O2','-pthread',cpp,'-o',exe];
  const built=spawnSync(compiler,args,{cwd:out,encoding:'utf8',timeout:120000,windowsHide:true});if(built.status!==0)throw Error(built.stdout+built.stderr);
  for(const data of [...stressCases(id),...small])run(data.name,data);
- function run(name,data){const start=performance.now();const p=spawnSync(exe,[],{input:data.input,encoding:'utf8',timeout:30000,windowsHide:true,maxBuffer:16*1024*1024});const ms=Math.round(performance.now()-start);if(p.status!==0||p.stdout.replaceAll('\r\n','\n')!==data.output)throw Error(JSON.stringify({problem:id,name,ms,exit:p.status,error:p.error?.message,stderr:p.stderr,output:p.stdout?.slice(0,300),expected:data.output.slice(0,300)}));const row={problem:id,case:name,ms,limitMs:2000,withinLimit:ms<2000};results.push(row);console.log(JSON.stringify(row));}
+ function run(name,data){const start=performance.now();const p=spawnSync(exe,[],{input:data.input,encoding:'utf8',timeout:30000,windowsHide:true,maxBuffer:16*1024*1024});const ms=Math.round(performance.now()-start);if(p.status!==0||p.stdout.replaceAll('\r\n','\n')!==data.output)throw Error(JSON.stringify({problem:id,name,ms,exit:p.status,error:p.error?.message,stderr:p.stderr,output:p.stdout?.slice(0,300),expected:data.output.slice(0,300)}));const row={problem:id,case:name,ms,limitMs,withinLimit:ms<limitMs};results.push(row);console.log(JSON.stringify(row));}
 }
 writeFileSync(join(out,'results.json'),JSON.stringify(results,null,2)+'\n');

@@ -1,9 +1,47 @@
 export const problemIDs = [
  'abc480_a','abc480_b','abc480_c','abc480_d',
  'abc481_a','abc481_b','abc481_c','abc481_d',
+ 'abc483_e','abc483_e-unpacked',
 ];
 
+function typoInput(words){return `${words.length} ${words[0].length}\n${words.join('\n')}\n`;}
+
+function typoPairsByBlock(words){
+ // For six letters a qualifying pair agrees on at least one two-letter
+ // block. Compare it only in its first such bucket.
+ const buckets=Array.from({length:3},()=>Array.from({length:1024},()=>[]));
+ const blockMask=1023, lowBits=0x02108421;
+ let answer=0;
+ for(const word of words){
+  let code=0;for(const ch of word)code=(code<<5)|(ch.charCodeAt(0)-97);
+  for(let block=0;block<3;block++){
+   const bucket=buckets[block][(code>>>(10*block))&blockMask];
+   for(const other of bucket){
+    const diff=code^other;
+    if(block>0&&(diff&blockMask)===0||block>1&&((diff>>>10)&blockMask)===0)continue;
+    const flags=(diff|diff>>>1|diff>>>2|diff>>>3|diff>>>4)&lowBits;
+    const rest=flags&(flags-1);
+    if((rest&(rest-1))===0)answer++;
+   }
+   bucket.push(code);
+  }
+ }
+ return answer;
+}
+
 export function stressCases(id){
+ if(id.startsWith('abc483_e')){
+  const n=200000;let seed=0x483;
+  const letter=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return 97+(seed>>>0)%26;};
+  const random=Array.from({length:n},()=>String.fromCharCode(...Array.from({length:6},letter)));
+  const same=Array(n).fill('zzzzzz');
+  const clustered=Array.from({length:n},(_,i)=>['aaaaaa','aaaaab','aaaabb','aaabbb'][i%4]);
+  // In the clustered case only the first/last groups have distance > 2.
+  const allPairs=n*(n-1)/2;
+  return [{name:'max-random',input:typoInput(random),output:typoPairsByBlock(random)+'\n'},
+   {name:'max-identical',input:typoInput(same),output:allPairs+'\n'},
+   {name:'max-clustered',input:typoInput(clustered),output:allPairs-(n/4)**2+'\n'}];
+ }
  if(id==='abc480_a')return [{name:'diagonal',input:'DC\nBA\n',output:'No\n'}];
  if(id==='abc481_a')return [{name:'max',input:'9 9\n',output:'2\n'}];
  if(id==='abc481_b'){const a=Array.from({length:100},(_,i)=>i%2?51:49);return [{name:'max-crossings',input:'100 50\n'+a.join(' ')+'\n',output:'99\n'}];}
@@ -43,6 +81,21 @@ export function stressCases(id){
 export function smallCases(id){
  let seed=123456789;const rnd=n=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n;};
  const out=[],emit=(input,answer)=>out.push({name:'small-'+out.length,input,output:Array.isArray(answer)?answer.join('\n')+'\n':answer+'\n'});
+ if(id.startsWith('abc483_e')){
+  const check=words=>{
+   let count=0;
+   for(let i=0;i<words.length;i++)for(let j=0;j<i;j++){
+    let distance=0;for(let k=0;k<words[i].length;k++)if(words[i][k]!==words[j][k])distance++;
+    if(distance<=2)count++;
+   }
+   emit(typoInput(words),count);
+  };
+  check(['aaaaaa','aaaaaa','baaaaa','bbaaaa','bbbaaa','bbbbaa','bbbbba','bbbbbb']);
+  for(let length=2;length<=6;length++)for(const alphabet of [1,2,3,7,26]){
+   check(Array.from({length:2+rnd(20)},()=>Array.from({length},()=>String.fromCharCode(97+(rnd(65521)%alphabet))).join('')));
+  }
+  return out;
+ }
  if(id==='abc480_a'){
   const permute=(prefix,left)=>{if(!left.length){const a=prefix.indexOf('A'),d=prefix.indexOf('D');emit(prefix.slice(0,2)+'\n'+prefix.slice(2)+'\n',Math.abs(Math.floor(a/2)-Math.floor(d/2))+Math.abs(a%2-d%2)===1?'Yes':'No');}else for(const c of left)permute(prefix+c,left.replace(c,''));};permute('','ABCD');return out;
  }

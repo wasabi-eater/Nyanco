@@ -58,6 +58,40 @@ test('index, sort, search and slice hot paths never box vector elements',{skip:!
   assert.equal(run.stdout,'3\n2\n2\n2\n2\n');assert.equal(run.stderr.trim(),'0');
 });
 
+test('byte-vector sorting and grouped counts keep ordering, snapshots and effects',{skip:!available},()=>{
+  const program=compile(`effect classify : int -> int
+streamWithOffset a = map [1,2] {+ a}
+replacement = if True {exn "replacement"} {1}
+main =
+    xs <- [byte 0, byte 255, byte 128, byte 1]
+    print (sort xs)
+    print (xs.[1:] with [0] = byte 254)
+    print xs
+    print ([byte 0] ++ [byte 255, byte 128])
+    print (catch {[1] with [99] = replacement})
+    rows <- [vbytes "abcdefghz", [byte 0, byte 0], vbytes "abcdefgh", [], [byte 0], vbytes "abcdefgha", [byte 255]]
+    print (sort (map rows {}))
+    print (vector (map (chunkBy [1,1,2,1,1,1] {}) {count}))
+    print (vector (map (chunkBy [1,2,-1,3] {>= 0}) {count}))
+    print (orderedCounts [3,1,3,3,2,1])
+    groups <- chunkBy [1,1,2] {}
+    print (vector (map groups {count}))
+    print (vector (map groups {vector}))
+    offsets <- streamWithOffset 10
+    print (vector offsets); print (vector offsets)
+    print (handle {chunkBy [1,1,2] {classify}; map {vector}; vector} {classify: {-> value k; resume value k}})
+`);
+  const expected=[];
+  new VM({...program,output:line=>expected.push(line)}).evaluate('main');
+  const code=transpileCpp(program);
+  assert.match(code,/sortScalarVectors<Byte>/);
+  assert.match(code,/partition<Partition::chunkBy,true>/);
+  assert.match(code,/scalarSetAt<Byte>/);
+  assert.match(code,/class CoroutineWorker/);
+  assert.equal(execute(code).stdout,expected.join('\n')+'\n');
+  assert.equal(execute(transpileCpp(program,{optimizeVectors:false,nativeLocals:false})).stdout,expected.join('\n')+'\n');
+});
+
 test('native and boxed vectors preserve sharing, views, numeric types and opaque boundaries',{skip:!available},()=>{
   const source=`data box = Box [int] deriving eq, hash, show
 identity x = x

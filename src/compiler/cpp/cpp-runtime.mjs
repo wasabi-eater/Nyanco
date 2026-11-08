@@ -16,7 +16,7 @@ function references(source) {
 }
 
 const headers = new Map(Object.entries({
-  algorithm: 'equal find min pop_heap push_heap reverse sort stable_sort',
+  algorithm: 'equal find lexicographical_compare min pop_heap push_heap reverse sort stable_sort',
   any: 'any any_cast',
   array: 'array',
   bit: 'bit_cast',
@@ -42,7 +42,7 @@ const headers = new Map(Object.entries({
   system_error: 'errc',
   thread: 'thread',
   tuple: 'get tuple',
-  type_traits: 'is_same_v',
+  type_traits: 'conditional_t is_same_v',
   unordered_map: 'unordered_map',
   utility: 'move pair',
   variant: 'variant visit',

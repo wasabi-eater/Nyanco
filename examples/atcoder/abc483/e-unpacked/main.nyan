@@ -1,0 +1,17 @@
+chooseTwo = _ * (_ - 1) / 2
+
+sort_counts = sort; chunkBy {}; map {count}
+projectedPairs = sort_counts; map {chooseTwo}; sum
+
+main =
+    read; split " "; vmap {parseInt} -> [n m]
+    if (m == 2) {print (chooseTwo n)} below
+    xs <- vmap (0 .. n) {drop; read; bytes; vector}
+    mut one <- 0
+    mut two <- 0
+    each (0 .. m) do -> i
+        one ! + projectedPairs (xs; map {with .[i] = byte '?'})
+        each (i + 1 .. m) do -> j
+            two ! + projectedPairs (xs; map {with {.[i] = byte '?', .[j] = byte '?'}})
+    same <- projectedPairs xs
+    print (two - (m - 2) * one + chooseTwo (m - 1) * same)
