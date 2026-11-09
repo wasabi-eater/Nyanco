@@ -120,11 +120,56 @@ test('ADT constructors use variant alternatives and constructor patterns use the
 sum (Leaf n) = n
 sum (Branch left right) = (sum left) + (sum right)
 main = sum (Branch (Leaf 2) (Leaf 3))`));
-  assert.match(source, /std::variant<Constructors\.\.\.> value/);
-  assert.match(source, /using AdtFamily\d+ = AdtValue<\d+, AdtCtor\d+, AdtCtor\d+>;/);
-  assert.match(source, /makeAdt<AdtFamily\d+>\(AdtCtor\d+\{\{v\d+, v\d+\}\}\)/);
+  assert.match(source, /std::variant<AdtAlternative<Constructors>\.\.\.> value/);
+  assert.match(source, /using AdtFamily\d+ = AdtValue<\d+, AdtCtor\d+_\d+, AdtCtor\d+_\d+>;/);
+  assert.match(source, /using AdtCtor\d+_\d+ = AdtFields<AdtCtor\d+, Int>;/);
+  assert.match(source, /using AdtCtor\d+_\d+ = AdtFields<AdtCtor\d+, Adt, Adt>;/);
+  assert.match(source, /makeAdt<AdtFamily\d+>\(AdtCtor\d+_\d+\{\{/);
   assert.match(source, /->tag\(\) == AdtCtor\d+::tag/);
-  assert.doesNotMatch(source, /struct Adt \{ std::string|x\.name == std::string\("(Leaf|Branch)"/);
+  assert.match(source, /Int v\d+ = adtField<AdtFamily\d+,AdtCtor\d+_\d+,0>/);
+  assert.doesNotMatch(source, /std::array<Value, \d+> fields|Ptr<Adt>/);
+});
+
+test('ADT construction allocates only large alternatives and typed matches read fields directly', {skip:!compiler}, () => {
+  const program = compile(`data payload = Small int int | Large int int int int
+data wrapped = Wrapped payload
+total (Small a b) = a + b
+total (Large a b c d) = a + b + c + d
+nested (Wrapped (Small 1 n)) = n
+nested _ = 0
+readOption (Some n) = n
+readOption None = 0
+main =
+    print (total (Small 1 2))
+    print (total (Large 3 4 5 6))
+    print (nested (Wrapped (Small 1 7)))
+    print (nested (Wrapped (Small 2 7)))
+    [9].?[0]; readOption; print
+    [9].?[1]; readOption; print
+    [3,4]; pop; drop; readOption; print
+    print ([9].?[0] == Some 9)
+    print (Some 2 < Some 3)
+`);
+  let source = transpileCpp(program,{referenceCounting:'local'});
+  source = source.replace('inline constexpr std::size_t adtInlineBytes', 'inline unsigned allocations=0, boxedFields=0;\ninline constexpr std::size_t adtInlineBytes')
+    .replace('else return makeRc<C>(std::move(constructor));','else { ++allocations; return makeRc<C>(std::move(constructor)); }')
+    .replace('return ops->field(storage,index);','++boxedFields; return ops->field(storage,index);')
+    .replace('        return 0;\n    } catch','        std::cerr << allocations << " " << boxedFields << "\\n";\n        return 0;\n    } catch');
+  assert.match(source,/\+\+allocations/);
+  assert.match(source,/\+\+boxedFields/);
+  const dir = mkdtempSync(join(tmpdir(),'nyanco-cpp-adt-'));
+  try {
+    const file=join(dir,'main.cpp'), exe=join(dir,'main.exe');
+    writeFileSync(file,source);
+    const flags=isMsvc(compiler)?['/nologo','/std:c++20','/EHsc','/utf-8','/O2',file,'/Fe:'+exe]
+      :['-std=c++20','-O2','-pthread',file,'-o',exe];
+    const built=run(compiler,flags,dir);
+    assert.equal(built.status,0,built.stdout+built.stderr);
+    const result=run(exe,[],dir);
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.replaceAll('\r\n','\n'),'3\n18\n7\n0\n9\n0\n4\nTrue\nTrue\n');
+    assert.equal(result.stderr.trim(),'3 0');
+  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
 
 test('CLI C++20 emission builds a standalone program with modules, IO and resumable effects', {

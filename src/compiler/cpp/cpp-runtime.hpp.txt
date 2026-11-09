@@ -194,35 +194,154 @@ struct AdtTag {
 };
 // @runtime AdtInfo
 struct AdtInfo { std::string_view display; std::uint32_t hashSeed; };
-// @runtime Adt
-struct Adt {
-    virtual ~Adt() = default;
-    virtual AdtTag tag() const = 0;
-    virtual std::span<const Value> fields() const = 0;
-    virtual const AdtInfo& info() const = 0;
+// @runtime adtInlineBytes
+inline constexpr std::size_t adtInlineBytes = 4 * sizeof(void*);
+// @runtime AdtFields
+template <typename Constructor, typename... Fields>
+struct AdtFields {
+    std::tuple<Fields...> fields;
+    static constexpr auto tag = Constructor::tag;
+    static constexpr auto info = Constructor::info;
+    static constexpr std::size_t count = sizeof...(Fields);
 };
 // @runtime AdtValue
+// Leave room for the variant's discriminator in the inline storage.
+template <typename C> using AdtAlternative = std::conditional_t<
+    sizeof(C) <= adtInlineBytes - alignof(void*) && alignof(C) <= alignof(void*) &&
+        std::is_nothrow_move_constructible_v<C>, C, Ptr<C>>;
+
 template <std::size_t Family, typename... Constructors>
-class AdtValue final : public Adt {
-    std::variant<Constructors...> value;
+class AdtValue {
+    std::variant<AdtAlternative<Constructors>...> value;
+    template <typename C> static AdtAlternative<C> place(C&& constructor) {
+        if constexpr (std::is_same_v<C,AdtAlternative<C>>) return std::move(constructor);
+        else return std::make_shared<C>(std::move(constructor));
+    }
+    template <typename C> static const C& unpack(const C& constructor) { return constructor; }
+    template <typename C> static const C& unpack(const Ptr<C>& constructor) { return *constructor; }
 public:
-    template <typename Constructor>
-    explicit AdtValue(Constructor constructor) : value(std::move(constructor)) {}
-    AdtTag tag() const override { return {Family,value.index()}; }
-    std::span<const Value> fields() const override {
-        return std::visit([](const auto& constructor) -> std::span<const Value> {
-            return constructor.fields;
+    template <typename C>
+    explicit AdtValue(C constructor) : value(std::in_place_type<AdtAlternative<C>>,place(std::move(constructor))) {}
+    template <typename C> const C* get() const {
+        const auto* constructor = std::get_if<AdtAlternative<C>>(&value);
+        return constructor ? &unpack(*constructor) : nullptr;
+    }
+    AdtTag tag() const { return {Family,value.index()}; }
+    std::size_t count() const {
+        static constexpr std::size_t sizes[] = {Constructors::count...};
+        return sizes[value.index()];
+    }
+    Value field(std::size_t index) const {
+        return std::visit([&](const auto& constructor) -> Value {
+            Value result;
+            std::size_t position = 0;
+            std::apply([&](const auto&... fields) {
+                ((position++ == index ? static_cast<void>(result = fields) : void()), ...);
+            },unpack(constructor).fields);
+            return result;
         },value);
     }
-    const AdtInfo& info() const override {
+    const AdtInfo& info() const {
         static constexpr AdtInfo alternatives[] = {Constructors::info...};
         return alternatives[value.index()];
     }
 };
+// @runtime Adt
+// A fixed-size carrier lets recursive fields and erased call sites share the
+// same representation while each concrete variant retains typed fields.
+class Adt {
+    struct Operations {
+        void (*destroy)(void*) noexcept;
+        void (*copy)(void*, const void*);
+        void (*move)(void*, void*) noexcept;
+        AdtTag (*tag)(const void*);
+        std::size_t (*count)(const void*);
+        Value (*field)(const void*, std::size_t);
+        const AdtInfo& (*info)(const void*);
+    };
+    alignas(void*) std::byte storage[adtInlineBytes];
+    const Operations* ops = nullptr;
+
+    template <typename Family> static const Family& stored(const void* source) {
+        return *std::launder(static_cast<const Family*>(source));
+    }
+    template <typename Family> static const Operations& operations() {
+        static constexpr Operations table{
+            [](void* source) noexcept { std::destroy_at(std::launder(static_cast<Family*>(source))); },
+            [](void* target,const void* source) { std::construct_at(static_cast<Family*>(target),stored<Family>(source)); },
+            [](void* target,void* source) noexcept {
+                auto* value = std::launder(static_cast<Family*>(source));
+                std::construct_at(static_cast<Family*>(target),std::move(*value));
+                std::destroy_at(value);
+            },
+            [](const void* source) { return stored<Family>(source).tag(); },
+            [](const void* source) { return stored<Family>(source).count(); },
+            [](const void* source,std::size_t index) { return stored<Family>(source).field(index); },
+            [](const void* source) -> const AdtInfo& { return stored<Family>(source).info(); },
+        };
+        return table;
+    }
+#ifdef _MSC_VER
+    // Keep ADT moves out of optimized coroutine bodies so MSVC can emit their required tail transfers.
+    __declspec(noinline)
+#endif
+    void moveFrom(Adt& other) noexcept {
+        ops = std::exchange(other.ops,nullptr);
+        if (ops) ops->move(storage,other.storage);
+    }
+public:
+    Adt() noexcept = default;
+    Adt(const Adt& other) {
+        if (other.ops) {
+            other.ops->copy(storage,other.storage);
+            ops = other.ops;
+        }
+    }
+    Adt(Adt&& other) noexcept { moveFrom(other); }
+    ~Adt() { reset(); }
+    Adt& operator=(Adt other) noexcept {
+        reset();
+        moveFrom(other);
+        return *this;
+    }
+    void reset() noexcept {
+        if (ops) ops->destroy(storage);
+        ops = nullptr;
+    }
+    template <typename Family, typename Constructor>
+    static Adt make(Constructor constructor) {
+        static_assert(sizeof(Family) <= adtInlineBytes && alignof(Family) <= alignof(void*));
+        static_assert(std::is_nothrow_move_constructible_v<Family>);
+        Adt result;
+        std::construct_at(reinterpret_cast<Family*>(result.storage),std::move(constructor));
+        result.ops = &operations<Family>();
+        return result;
+    }
+    template <typename Family, typename C> const C* get() const {
+        return ops == &operations<Family>() ? stored<Family>(storage).template get<C>() : nullptr;
+    }
+    AdtTag tag() const { return ops->tag(storage); }
+    std::size_t count() const { return ops->count(storage); }
+    Value field(std::size_t index) const { return ops->field(storage,index); }
+    const AdtInfo& info() const { return ops->info(storage); }
+};
 // @runtime makeAdt
 template <typename Family, typename Constructor>
-Value makeAdt(Constructor constructor) {
-    return Ptr<Adt>(std::make_shared<Family>(std::move(constructor)));
+Adt makeAdt(Constructor constructor) {
+    return Adt::make<Family>(std::move(constructor));
+}
+// @runtime adtPointer
+inline const Adt* adtPointer(const Value& value) { return std::any_cast<Adt>(&value); }
+inline const Adt* adtPointer(const Adt& value) { return &value; }
+// @runtime adtField
+template <typename Family, typename Constructor, std::size_t Index>
+auto adtField(const Adt& value) {
+    if (const auto* constructor = value.template get<Family,Constructor>())
+        return std::get<Index>(constructor->fields);
+    auto boxed = value.field(Index);
+    using Field = std::tuple_element_t<Index,decltype(Constructor::fields)>;
+    if constexpr (std::is_same_v<Field,Value>) return boxed;
+    else return takeAs<Field>(boxed);
 }
 // @runtime Range
 struct Range { Int first, last; bool inclusive; };
@@ -418,25 +537,27 @@ Results<2> unzipNativeVector(const Value& source) {
 inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
 // @runtime option
 inline Value option(std::optional<Value> value = {});
+// @runtime typedOption
+template <typename T> Adt typedOption(std::optional<T> value);
 // @runtime vectorPeek
 template <typename T>
-Value vectorPeek(const Value& source) {
+Adt vectorPeek(const Value& source) {
     if constexpr (std::is_same_v<T,Value>) {
         const auto items=as<Ptr<VectorBase>>(source)->items();
-        return items.empty() ? option() : option(items.back());
+        return typedOption(items.empty() ? std::optional<T>{} : std::optional<T>{items.back()});
     } else {
         const NativeVectorReader<T> items(source);
-        return items.size()==0 ? option() : option(Value{items[items.size()-1]});
+        return typedOption(items.size()==0 ? std::optional<T>{} : std::optional<T>{items[items.size()-1]});
     }
 }
 // @runtime vectorPop
 template <typename T>
-Results<2> vectorPop(Value source, bool reuse) {
-    if (!as<Ptr<VectorBase>>(source)->size()) return {option(),std::move(source)};
+std::tuple<Adt,Value> vectorPop(Value source, bool reuse) {
+    if (!as<Ptr<VectorBase>>(source)->size()) return {typedOption(std::optional<T>{}),std::move(source)};
     auto data=vectorWritable<T>(std::move(source),reuse);
-    Value item=std::move(data->values.back());
+    T item=std::move(data->values.back());
     data->values.pop_back();
-    return {option(std::move(item)),Ptr<VectorBase>(std::move(data))};
+    return {typedOption(std::optional<T>{std::move(item)}),Ptr<VectorBase>(std::move(data))};
 }
 // @runtime Queue QueueNode queueOp queueItems
 struct QueueNode {
@@ -594,12 +715,14 @@ inline std::string show(const Value& v) {
         return parts.empty() ? "[:]" : "[" + join(parts, ", ") + "]";
     }
 // @end-runtime
-// @if-runtime AdtValue
-    if (is<Ptr<Adt>>(v)) {
-        const auto& a = *as<Ptr<Adt>>(v);
-        auto fields = a.fields();
+// @if-runtime Adt
+    if (is<Adt>(v)) {
+        const auto& a = as<Adt>(v);
         std::string name(a.info().display);
-        return fields.empty() ? name : "(" + name + " " + shown(fields, " ") + ")";
+        if (!a.count()) return name;
+        std::string text = "(" + name;
+        for (std::size_t i=0; i<a.count(); ++i) text += " " + show(a.field(i));
+        return text + ")";
     }
 // @end-runtime
 // @if-runtime Range
@@ -661,13 +784,15 @@ inline int compare(const Value& a, const Value& b) {
 // @if-runtime Tuple
     if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
 // @end-runtime
-// @if-runtime AdtValue
-    if (is<Ptr<Adt>>(a)) {
-        const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
+// @if-runtime Adt
+    if (is<Adt>(a)) {
+        const auto& x = as<Adt>(a); const auto& y = as<Adt>(b);
         const auto left = x.tag(), right = y.tag();
         if (left.family != right.family) return order(left.family,right.family);
         if (left.alternative != right.alternative) return order(left.alternative,right.alternative);
-        return compareValues(x.fields(),y.fields());
+        for (std::size_t i=0; i<x.count(); ++i)
+            if (int result=compare(x.field(i),y.field(i))) return result;
+        return 0;
     }
 // @end-runtime
 // @if-runtime Record
@@ -723,10 +848,13 @@ inline bool equal(const Value& a, const Value& b) {
 // @if-runtime Tuple
     if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
 // @end-runtime
-// @if-runtime AdtValue
-    if (is<Ptr<Adt>>(a)) {
-        const auto& x = *as<Ptr<Adt>>(a); const auto& y = *as<Ptr<Adt>>(b);
-        return x.tag() == y.tag() && equalValues(x.fields(),y.fields());
+// @if-runtime Adt
+    if (is<Adt>(a)) {
+        const auto& x = as<Adt>(a); const auto& y = as<Adt>(b);
+        if (x.tag() != y.tag()) return false;
+        for (std::size_t i=0; i<x.count(); ++i)
+            if (!equal(x.field(i),y.field(i))) return false;
+        return true;
     }
 // @end-runtime
 // @if-runtime Record
@@ -812,10 +940,12 @@ inline std::uint32_t hashValue(const Value& v) {
         return hashValues(hashText("range"), Values{r.first,r.last,r.inclusive});
     }
 // @end-runtime
-// @if-runtime AdtValue
-    if (is<Ptr<Adt>>(v)) {
-        const auto& a = *as<Ptr<Adt>>(v);
-        return hashValues(a.info().hashSeed,a.fields());
+// @if-runtime Adt
+    if (is<Adt>(v)) {
+        const auto& a = as<Adt>(v);
+        auto hash = a.info().hashSeed;
+        for (std::size_t i=0; i<a.count(); ++i) hash = hashMix(hash,hashValue(a.field(i)));
+        return hash;
     }
 // @end-runtime
 // @if-runtime HashSetBase
@@ -872,10 +1002,14 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         if (is<Int>(p.literals[0]) && is<Byte>(value)) return as<Int>(p.literals[0]) == as<Byte>(value);
         if (is<Int>(p.literals[0]) && is<double>(value)) return static_cast<double>(as<Int>(p.literals[0])) == as<double>(value);
         return equal(p.literals[0], value);
-// @if-runtime AdtValue
-    case PatternKind::constructor:
-        return is<Ptr<Adt>>(value) && as<Ptr<Adt>>(value)->tag() == p.constructor
-            && matches(p.fields, as<Ptr<Adt>>(value)->fields(), env);
+// @if-runtime Adt
+    case PatternKind::constructor: {
+        const auto* adt = adtPointer(value);
+        if (!adt || adt->tag() != p.constructor || adt->count() != p.fields.size()) return false;
+        for (std::size_t i=0; i<p.fields.size(); ++i)
+            if (!match(p.fields[i],adt->field(i),env)) return false;
+        return true;
+    }
 // @end-runtime
 // @if-runtime VectorBase
     case PatternKind::vector:
@@ -1528,11 +1662,11 @@ template <typename Source> inline Int vectorLength(const Source& value) {
     return static_cast<Int>(as<Ptr<VectorBase>>(value)->size());
 }
 // @runtime scalarAt scalarFind
-template <typename T,typename Source> inline std::optional<Value> scalarFind(const Source& source,Int index) {
+template <typename T,typename Source> inline std::optional<T> scalarFind(const Source& source,Int index) {
     auto data = scalarData<T>(source);
     index = vectorOffset(index,data->size());
     if (index < 0 || static_cast<UInt>(index) >= data->size()) return {};
-    return Value{data->scalars()[static_cast<std::size_t>(index)]};
+    return data->scalars()[static_cast<std::size_t>(index)];
 }
 template <typename T,typename Source> inline T scalarAt(Machine& m,const Source& source,Int index,const std::string& at) {
     auto data = scalarData<T>(source);
@@ -1681,7 +1815,7 @@ inline Value cast(Machine& m, const Value& value, const std::string& at) {
 }
 // @runtime parseNumber parseNumberText ParsedNumber
 template <typename Number, bool Strict>
-using ParsedNumber = std::conditional_t<Strict,Number,Value>;
+using ParsedNumber = std::conditional_t<Strict,Number,Adt>;
 template <typename Number, bool Strict>
 inline ParsedNumber<Number,Strict> parseNumberText(Machine& m, std::string_view text, const std::string& at) {
     auto first = text.find_first_not_of(" \t\r\n\f\v");
@@ -1701,7 +1835,7 @@ inline ParsedNumber<Number,Strict> parseNumberText(Machine& m, std::string_view 
     if constexpr (Strict) {
         if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(Value{std::string(text)}),at);
         return *result;
-    } else return result ? option(Value{*result}) : option();
+    } else return typedOption(result);
 }
 template <typename Number, bool Strict>
 inline ParsedNumber<Number,Strict> parseNumber(Machine& m, const Value& value, const std::string& at) {

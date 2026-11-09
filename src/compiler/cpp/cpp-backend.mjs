@@ -28,7 +28,10 @@ const arguments_ = count => Array.from({length: count}, (_, i) => `a${i}`);
 const resultType = count => `Results<${count}>`;
 const params = count => arguments_(count).map(name => `Value ${name}`);
 const scalarTypes = new Map([['int','Int'], ['byte','Byte'], ['float','double'], ['bool','bool']]);
-const cppType = type => {
+const adtCollectionFields = new Map([
+  ['dict','Ptr<DictBase>'], ['set','Ptr<HashSetBase>'], ['deque','Ptr<Queue>'], ['heap','Ptr<Collection>']
+]);
+const scalarCppType = type => {
   const resolved = type && T.prune(type);
   return resolved?.tag === 'atom' ? scalarTypes.get(resolved.name) || 'Value' : 'Value';
 };
@@ -50,6 +53,8 @@ const patternKinds = {
   'word': 'word', 'literal': 'literal', 'constructor': 'constructor', 'list-pattern': 'vector', 'or-pattern': 'alternative',
   'push-pattern': 'push', 'concat-pattern': 'concatenate', 'record-pattern': 'record', 'tuple-pattern': 'tuple'
 };
+const nativeAdtPattern = p => p.kind==='constructor' &&
+  p.fields.every(field => ['word','literal'].includes(field.kind) || nativeAdtPattern(field));
 const bitwise = new Map([['.&.','&'], ['.|.','|'], ['xor','^']]);
 const bitPositions = new Set(['.<<.','.>>.','testBit','setBit','clearBit']);
 const arithmetic = new Map([['+','add'], ['-','subtract'], ['*','multiply'],
@@ -90,16 +95,16 @@ function pattern(node, constructors) {
 }
 function adtLayout(definitions) {
   const families = new Map(), constructors = new Map();
-  let next = 0;
-  function add(type, name, display, arity) {
-    if (!families.has(type)) families.set(type,{id:families.size,members:[]});
+  let next = 0, nextLayout = 0;
+  function add(type, name, display, arity, source = null) {
+    if (!families.has(type)) families.set(type,{id:families.size,members:[],layouts:new Map()});
     const family = families.get(type);
-    const member = {family, name, display, arity, cpp:`AdtCtor${next++}`};
+    const member = {family, name, display, arity, source, cpp:`AdtCtor${next++}`};
     family.members.push(member);
     return member;
   }
   for (const [name,ctor] of definitions.constructors) {
-    constructors.set(name,add(ctor.typeName,name,ctor.token.sourceName || name,ctor.fields.length));
+    constructors.set(name,add(ctor.typeName,name,ctor.token.sourceName || name,ctor.fields.length,ctor));
   }
   const runtimeOption = (name, arity) => {
     const member = constructors.get(name);
@@ -107,27 +112,55 @@ function adtLayout(definitions) {
       ? member : add('option',name,name,arity);
   };
   const none = runtimeOption('None',0), some = runtimeOption('Some',1);
-  const make = (member, args) => `makeAdt<AdtFamily${member.family.id}>(${member.cpp}{{${args.join(', ')}}})`;
   const fragments = [];
   for (const [type,family] of families) {
     // Keep the existing structural order for standard options and results.
     const first = type === 'option' ? 'None' : type === 'result' ? 'Ok' : null;
     family.members.sort((a,b) => a.name === b.name ? 0 : a.name === first ? -1 :
       b.name === first ? 1 : a.name < b.name ? -1 : 1);
-    const alias = `AdtFamily${family.id}`;
-    const members = family.members.map(c=>c.cpp);
     const declarations = family.members.map((c,index) => `struct ${c.cpp} {
-    std::array<Value, ${c.arity}> fields;
     static constexpr AdtTag tag{${family.id}, ${index}};
     static constexpr AdtInfo info{std::string_view(${stringLiteral(c.display)}), UINT32_C(${hashText(type+':'+c.name)})};
 };`);
-    declarations.push(`using ${alias} = AdtValue<${family.id}, ${members.join(', ')}>;`);
-    fragments.push({symbols:[alias,...members],text:declarations.join('\n')});
+    fragments.push({symbols:family.members.map(c=>c.cpp),text:declarations.join('\n')});
   }
-  fragments.push({symbols:['option'],text:`inline Value option(std::optional<Value> value) {
-    return value ? ${make(some,['std::move(*value)'])} : ${make(none,[])};
+  function layout(member, type, representation = () => 'Value') {
+    const family = member.family;
+    const instance = type && T.prune(T.aliasRepresentation(type));
+    const fieldTypes = family.members.map(ctor => {
+      if (!ctor.source || instance?.tag !== 'adt' || instance.name !== ctor.source.typeName)
+        return Array(ctor.arity).fill(null);
+      const bindings = new Map(ctor.source.parameters.map((name,i) => [name,instance.args[i]]));
+      return ctor.source.fields.map(field => T.syntaxType(field,bindings));
+    });
+    const fields = fieldTypes.map(types=>types.map(type=>type ? representation(type) : 'Value'));
+    const key = fields.map(types=>types.join(',')).join('|');
+    let current = family.layouts.get(key);
+    if (!current) {
+      const index = nextLayout++, cpp = `AdtFamily${index}`;
+      const alternatives = family.members.map((ctor,i) => [ctor,{cpp:`${ctor.cpp}_${index}`,types:fields[i]}]);
+      const declarations = alternatives.map(([ctor,alt]) =>
+        `using ${alt.cpp} = AdtFields<${[ctor.cpp,...alt.types].join(', ')}>;`);
+      declarations.push(`using ${cpp} = AdtValue<${family.id}, ${alternatives.map(([,alt])=>alt.cpp).join(', ')}>;`);
+      fragments.push({symbols:[cpp,...alternatives.map(([,alt])=>alt.cpp)],text:declarations.join('\n')});
+      current = {cpp,alternatives:new Map(alternatives)};
+      family.layouts.set(key,current);
+    }
+    const alternative = current.alternatives.get(member);
+    return {family:current.cpp, ...alternative, fields:fieldTypes[family.members.indexOf(member)]};
+  }
+  const make = (layout, args) => `makeAdt<${layout.family}>(${layout.cpp}{{${args.join(', ')}}})`;
+  const optionAlternative = ctor => `AdtFields<${[ctor.cpp,...(ctor===some?['T']:Array(ctor.arity).fill('Value'))].join(', ')}>`;
+  fragments.push({symbols:['typedOption'],text:`template <typename T>
+Adt typedOption(std::optional<T> value) {
+    using Family = AdtValue<${none.family.id}, ${none.family.members.map(optionAlternative).join(', ')}>;
+    return value ? makeAdt<Family>(${optionAlternative(some)}{{std::move(*value)}})
+                 : makeAdt<Family>(${optionAlternative(none)}{{}});
 }`});
-  return {constructors, make, fragments};
+  fragments.push({symbols:['option'],text:`inline Value option(std::optional<Value> value) {
+    return typedOption(std::move(value));
+}`});
+  return {constructors, families, layout, make, fragments};
 }
 function unsupported(token, feature = token.value || token.kind) {
   throw new StaticTypeError(`Unsupported by the C++ backend: ${feature}`, token);
@@ -147,6 +180,10 @@ export function transpileCpp(program, {
   );
   checkExpression(entry, definitions);
   const adts = adtLayout(definitions);
+  const cppType = type => {
+    const resolved = type && T.prune(T.aliasRepresentation(type));
+    return resolved?.tag==='adt' && adts.families.has(resolved.name) ? 'Adt' : scalarCppType(resolved);
+  };
   const patterns = nodes => `{${nodes.map(node=>pattern(node,adts.constructors)).join(', ')}}`;
   const ir = createTypedIR(definitions, {ownership: optimizeVectors});
   const vectorScalar = type => {
@@ -157,6 +194,21 @@ export function transpileCpp(program, {
     return ['Int','Byte','double'].includes(native) ? native : item.numericLiterals ? 'Int' : null;
   };
   const localType = type => nativeLocals && nativeVectors && type && T.prune(type).tag==='list' ? 'Ptr<VectorBase>' : cppType(type);
+  function adtFieldType(type) {
+    const resolved = T.prune(T.aliasRepresentation(type));
+    if (resolved.numericLiterals) return 'Int';
+    if (resolved.tag === 'atom') {
+      if (resolved.name === 'char') return 'Char';
+      if (resolved.name === 'string') return 'std::string';
+      if (resolved.name === 'range') return 'Range';
+    }
+    if (resolved.tag === 'list') return 'Ptr<VectorBase>';
+    if (resolved.tag === 'tuple') return 'Ptr<Tuple>';
+    if (resolved.tag === 'record') return 'Ptr<Record>';
+    if (resolved.tag === 'stream') return 'Ptr<Stream>';
+    if (resolved.tag === 'adt' && adtCollectionFields.has(resolved.name)) return adtCollectionFields.get(resolved.name);
+    return cppType(resolved);
+  }
   function streamRepresentation(type) {
     const resolved = T.prune(type);
     if (resolved.tag === 'atom' && resolved.name === 'string') return 'std::string';
@@ -176,7 +228,7 @@ export function transpileCpp(program, {
     const fields = type.items.map(localType);
     return fields.includes('Value') ? null : fields;
   }
-  const managed = type => type==='Value' || type.startsWith('Ptr<');
+  const managed = type => type==='Value' || type==='Adt' || type.startsWith('Ptr<');
   const vectorFactory = (type,data) => `${vectorScalar(type) ? 'scalarVector<'+vectorScalar(type)+'>' : 'vector'}(${data})`;
   const lifetimePlans = new WeakMap();
   const functions = new Map();
@@ -304,7 +356,7 @@ export function transpileCpp(program, {
     }
     const returned = output.map((value,i) => {
       const result = readAs(value,types[i]);
-      return optimizeVectors && types[i] === 'Value' && !output.some((other,j) => i !== j && other === value)
+      return optimizeVectors && managed(types[i]) && !output.some((other,j) => i !== j && other === value)
         ? `std::move(${result})` : result;
     });
     ctx.add(`return {${returned.join(', ')}};`);
@@ -318,22 +370,47 @@ export function transpileCpp(program, {
     });
     targets.forEach((target, i) => ctx.add(`${target} = std::move(${copies[i]});`));
   }
+  function bindAdtPattern(ctx,env,p,input,type,mutable,checks,bind,prepare = null) {
+    const ctor=adts.constructors.get(p.value),layout=adts.layout(ctor,type,adtFieldType);
+    let ptr;
+    if (prepare) {
+      ptr=ctx.value('nullptr','const Adt*');
+      checks.push(`(${ptr} = adtPointer((${prepare}, ${input}))) && ${ptr}->tag() == ${ctor.cpp}::tag`);
+    } else {
+      ptr=ctx.value(`adtPointer(${input})`,'const Adt*');
+      checks.push(`${ptr} && ${ptr}->tag() == ${ctor.cpp}::tag`);
+    }
+    p.fields.forEach((field,index)=>{
+      const native=layout.types[index];
+      const access=`adtField<${layout.family},${layout.cpp},${index}>(*${ptr})`;
+      if (field.kind==='constructor') {
+        const nested=ctx.value(`${native}{}`,native);
+        bindAdtPattern(ctx,env,field,nested,layout.fields[index],mutable,checks,bind,`${nested} = ${access}`);
+      } else if (field.kind==='literal') {
+        if (native==='Char') checks.push(`${access}.code == ${literal(field)}.code`);
+        else if (['Int','Byte','double','bool','std::string'].includes(native)) checks.push(`${access} == ${literal(field)}`);
+        else checks.push(`match(${pattern(field,adts.constructors)},${access},${env})`);
+      } else if (field.value!=='_') {
+        bind.push(()=>{
+          const value=ctx.value(access,native);
+          if (field.mutable||mutable?.get(field.value)) {
+            const ref=ctx.value(`std::make_shared<NativeCell<${native}>>(std::move(${value}))`,`Ptr<NativeCell<${native}>>`);
+            cells(env).set(field.value,{ref,type:native});
+          } else bindings(env).set(field.value,value);
+        });
+      }
+    });
+  }
   function bindPatterns(ctx, env, ps, inputs, types, mutable, at, actualTypes = [], postMatch = null) {
     const remaining = [], boxed = [], checks = [], matchedLocals = [];
-    const preserveInputs=nativeLocals&&ps.some(p=>p.kind==='constructor'&&p.fields.every(f=>f.kind==='word'));
+    const preserveInputs=nativeLocals&&ps.some(nativeAdtPattern);
     const consumeInput=i=>preserveInputs?inputs[i]:ctx.move(inputs[i],inputs.filter((_,j)=>i!==j));
     for (const [i,p] of ps.entries()) {
       for (const name of patternNames([p])) {bindings(env).delete(name);cells(env).delete(name);}
       const element = actualTypes[i] && T.prune(actualTypes[i]);
       const type = nativeLocals && p.kind==='word' && element ? localType(element) : types[i];
-      if(nativeLocals && p.kind==='constructor' && p.fields.every(field=>field.kind==='word') && (at||postMatch)){
-        const ptr=ctx.value(`is<Ptr<Adt>>(${inputs[i]}) ? as<Ptr<Adt>>(${inputs[i]}).get() : nullptr`,'const Adt*');
-        checks.push(`${ptr} && ${ptr}->tag() == ${adts.constructors.get(p.value).cpp}::tag`);
-        p.fields.forEach((field,j)=>{if(field.value!=='_')matchedLocals.push(()=>{
-          const value=ctx.value(`${ptr}->fields()[${j}]`);
-          if(field.mutable||mutable?.get(field.value))cells(env).set(field.value,{ref:ctx.value(`std::make_shared<NativeCell<Value>>(std::move(${value}))`,'Ptr<NativeCell<Value>>'),type:'Value'});
-          else bindings(env).set(field.value,value);
-        });});
+      if(nativeLocals && nativeAdtPattern(p) && (at||postMatch)){
+        bindAdtPattern(ctx,env,p,inputs[i],element,mutable,checks,matchedLocals);
         continue;
       }
       const pair = ctx.nativePairs?.get(inputs[i]);
@@ -392,14 +469,14 @@ export function transpileCpp(program, {
     }
     return null;
   }
-  function branch(ctx, clause, inputs, env, trace, guardTrace = trace, ownParameters = false) {
+  function branch(ctx, clause, inputs, env, trace, guardTrace = trace, ownParameters = false, types = []) {
     const count = clause.patterns.length;
     const patternValues = count ? inputs.slice(-count) : [];
     let state = count ? inputs.slice(0, -count) : [...inputs];
     ctx.add('{');
     const local = cloneEnv(ctx,env);
     const postMatch=[];
-    const condition = bindPatterns(ctx,local,clause.patterns,patternValues,patternValues.map(representation),null,null,[],postMatch);
+    const condition = bindPatterns(ctx,local,clause.patterns,patternValues,patternValues.map(representation),null,null,count?types.slice(-count):[],postMatch);
     ctx.add(condition ? `if (${condition}) {` : '{');
     postMatch.forEach(bind=>bind());
     if (clause.guard) {
@@ -415,7 +492,7 @@ export function transpileCpp(program, {
       ctx.add(`if (${readAs(state.pop(),'bool')}) {`);
     }
     if (optimizeVectors && ownParameters) for (const value of patternValues) {
-      if (representation(value) === 'Value') ctx.add(`${value}.reset();`);
+      if (['Value','Adt'].includes(representation(value))) ctx.add(`${value}.reset();`);
     }
     const output = emit(clause.body, state, local, new Map(), trace, ctx);
     return {output, close: () => ctx.add(...(clause.guard ? ['}'] : []), '}', '}')};
@@ -452,7 +529,7 @@ export function transpileCpp(program, {
       T.unify(analysis.output, tuple(outs), clause.token);
       if (typedDispatch) T.specializeEffects(analysis.effects, concrete.effects, clause.token);
       lifetimePlans.set(analysis.trace,cppLifetimes(clause.body,analysis.trace,{parameters:patternNames(clause.patterns)}));
-      const emitted = branch(ctx, clause, args, 'm.globals', analysis.trace, guard?.trace,true);
+      const emitted = branch(ctx, clause, args, 'm.globals', analysis.trace, guard?.trace,true,ins);
       if (emitted) { finish(ctx, emitted.output,outputTypes); emitted.close(); }
       ir.describe(analysis.trace, {kind:'function', name, signature, patterns:clause.patterns}, ins, outs);
       if (guard) ir.describe(guard.trace, {kind:'guard', name, signature});
@@ -610,7 +687,7 @@ export function transpileCpp(program, {
     }
     const inputs = effect && items(effect.input);
     const type = inputs?.at(-2);
-    const scalar = cppType(type), rightType = cppType(inputs?.at(-1)), op = token.value;
+    const scalar = scalarCppType(type), rightType = scalarCppType(inputs?.at(-1)), op = token.value;
     if (bitwise.has(op) || bitPositions.has(op)) return callBit(ctx,token,a,b,scalar,rightType);
     if (scalar !== 'Value' && scalar === rightType) {
       const left = readAs(a,scalar), right = readAs(b,scalar);
@@ -659,7 +736,7 @@ export function transpileCpp(program, {
     const target = customMethod(methodToken, effect);
     if (!target) {
       const native = vectorScalar(items(effect.input).at(-args.length));
-      if (native && args.length === 2 && optional) return ctx.value(`option(scalarFind<${native}>(${args[0]},${readAs(args[1],'Int')}))`);
+      if (native && args.length === 2 && optional) return ctx.value(`typedOption(scalarFind<${native}>(${args[0]},${readAs(args[1],'Int')}))`,'Adt');
       if (native && args.length === 2 && !optional) return ctx.value(`scalarAt<${native}>(m,${args[0]},${readAs(args[1],'Int')},${loc(token)})`,native);
       if (native && args.length === 3) return ctx.value(`scalarSetAt<${native}>(m,${ctx.move(args[0],args.slice(1))},${readAs(args[1],'Int')},${readAs(args[2],native)},${optimizeVectors},${locView(token)})`);
       const sourceType=T.prune(items(effect.input).at(-args.length));
@@ -789,17 +866,21 @@ return {option(${args[0]})};
     } else if (type.tag === 'adt' && (['option','result'].includes(type.name) || kind === 'show') && type.name !== 'dict') {
       const constructors = [...definitions.constructors.values()].filter(c => c.typeName === type.name);
       if (constructors.length) {
-        ctx.add('const auto& x = *as<Ptr<Adt>>(a);');
-        if (pair) ctx.add('const auto& y = *as<Ptr<Adt>>(b);',`if (x.tag() != y.tag()) return ${kind === 'ord' ? 'compare(a,b)' : 'false'};`);
+        ctx.add('const auto& x = as<Adt>(a);');
+        if (pair) ctx.add('const auto& y = as<Adt>(b);',`if (x.tag() != y.tag()) return ${kind === 'ord' ? 'compare(a,b)' : 'false'};`);
         for (const c of constructors) {
           const params = new Map(c.parameters.map((p,i)=>[p,type.args[i]]));
           const fields = c.fields.map(t=>T.syntaxType(t,params));
-          ctx.add(`if (x.tag() == ${adts.constructors.get(c.name).cpp}::tag) {`);
-          if (fields.length) {
-            ctx.add('const auto xs = x.fields();');
-            if (pair) ctx.add('const auto ys = y.fields();');
-          }
-          const parts = fields.map((t,i)=>sub(t,`xs[${i}]`,`ys[${i}]`));
+          const ctor = adts.constructors.get(c.name), layout=adts.layout(ctor,type,adtFieldType);
+          ctx.add(`if (x.tag() == ${ctor.cpp}::tag) {`);
+          const parts = fields.map((t,i)=>{
+            const field=`adtField<${layout.family},${layout.cpp},${i}>`;
+            const a=`${field}(x)`,b=`${field}(y)`;
+            if (pair && ['Int','Byte','double','bool'].includes(layout.types[i]) &&
+                !lookupInstance(definitions.classes.get(kind),[T.prune(t)]))
+              return kind==='eq' ? `(${a} == ${b})` : `order(${a},${b})`;
+            return sub(t,a,b);
+          });
           if (pair) {
             for (const call of parts) ctx.add(check(call));
             ctx.add(kind === 'eq' ? 'return true;' : 'return 0;');
@@ -1193,7 +1274,7 @@ return {option(${args[0]})};
             ctx.add(`bool ${matched} = false;`);
             for (const clause of n.branches) {
               ctx.add(`if (!${matched}) {`);
-              const result = branch(ctx, clause, stack, env, trace);
+              const result = branch(ctx, clause, stack, env, trace, trace,false,items(info.input));
               if (result) {
                 if (!result.output.never) assign(ctx, outputs, result.output);
                 ctx.add(`${matched} = true;`);
@@ -1596,7 +1677,9 @@ ${inner.lines.join('\n')}
     const constructor = definitions.constructors.get(name);
     if (constructor) {
       const args = take(stack, constructor.fields.length);
-      push(adts.make(adts.constructors.get(name),args));
+      const layout=adts.layout(adts.constructors.get(name),T.prune(info.output).item,adtFieldType);
+      const fields=args.map((value,i)=>readAs(ctx.move(value,args.filter((_,j)=>i!==j)),layout.types[i]));
+      stack.push(ctx.value(adts.make(layout,fields),'Adt'));
       return stack;
     }
     const operation = definitions.effects.get(name);
@@ -1659,7 +1742,7 @@ ${inner.lines.join('\n')}
     } else if (['parseInt','parseFloat','toNum'].includes(name)) {
       const type = name==='parseInt' ? 'Int' : 'double', strict = name!=='toNum';
       const text = pop(), parse = representation(text)==='std::string' ? 'parseNumberText' : 'parseNumber';
-      stack.push(ctx.value(`${parse}<${type}, ${strict}>(m, ${text}, ${at})`,nativeLocals && strict ? type : 'Value'));
+      stack.push(ctx.value(`${parse}<${type}, ${strict}>(m, ${text}, ${at})`,strict ? nativeLocals ? type : 'Value' : 'Adt'));
     } else if (name === 'nop') {
       return stack;
     } else if (name === 'dup') stack.push(stack.at(-1));
@@ -1850,8 +1933,12 @@ ${handler.lines.join('\n')}
     const push = expression => stack.push(ctx.value(expression));
     if(name==='vpop'||name==='vpeek'){
       const source=stack.pop(),item=vectorScalar(types.at(-1))||'Value';
-      if(name==='vpeek')push(`vectorPeek<${item}>(${source})`);
-      else stack.push(...ctx.call(`vectorPop<${item}>`,[source,String(reuse)],2));
+      if(name==='vpeek')stack.push(ctx.value(`vectorPeek<${item}>(${source})`,'Adt'));
+      else {
+        const result=id('popped');
+        ctx.add(`auto ${result} = vectorPop<${item}>(${ctx.move(source)},${reuse});`);
+        stack.push(ctx.value(`std::get<0>(std::move(${result}))`,'Adt'),ctx.value(`std::get<1>(std::move(${result}))`));
+      }
       return stack;
     }
     if(name==='vreplicate'){
