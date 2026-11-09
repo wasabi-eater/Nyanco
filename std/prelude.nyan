@@ -6,6 +6,7 @@ pub import "std.dict" {toDict, counts, countsBy, values, dict}
 pub import "std.set" {set, toSet, sinsert, sremove, scontains, slength, sisEmpty, sunion, sintersection, sdifference}
 pub import "std.option" {map as omap, filter as ofilter, flatMap as oflatMap, flatten as oflatten, zip as ozip, option, None, Some}
 pub import "std.result" {map as rmap, flatMap as rflatMap, flatten as rflatten, zip as rzip, result, Ok, Err}
+pub import "std.rev" {rev, Rev}
 pub import "std.text" {chars, bytes, vchars, vbytes, split, join, parseFloat, parseInt, toNum, string}
 pub import "std.numeric" {range, toInt, toFloat, toByte, toChar, fromInt, fromFloat, fromByte, fromChar, from, int, float, byte, char, bool, into, num}
 pub import "std.bits" {testBit, setBit, clearBit, xor, bits}

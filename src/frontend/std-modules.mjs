@@ -49,11 +49,11 @@ assign('core','tryAt updateAt tryUpdateAt');
 put('borrow','mutref','mutref','data');
 for(const name of builtinNames())if(!assigned.has(name))put('core',name);
 for(const name of definitions.keys())if(!name.startsWith('__')&&!assigned.has(name))put('core',name);
-for(const name of ['vector','deque','heap','stream','dict','set','range','option','result','int','float','byte','char','bool','string'])
-  put(({deque:'deque',heap:'heap',vector:'vector',stream:'stream',dict:'dict',set:'set',range:'numeric',option:'option',result:'result',string:'text'})[name]||'numeric',name,name,'data');
+for(const name of ['vector','deque','heap','stream','dict','set','range','option','result','rev','int','float','byte','char','bool','string'])
+  put(({deque:'deque',heap:'heap',vector:'vector',stream:'stream',dict:'dict',set:'set',range:'numeric',option:'option',result:'result',rev:'rev',string:'text'})[name]||'numeric',name,name,'data');
 for(const name of definitions.classes.keys())put(({slice:'vector',streem:'stream',indexGet:'vector',indexSet:'vector',bits:'bits',num:'numeric',into:'numeric'})[name]||'classes',name,name,'class');
 for(const [name,op] of definitions.effects)if(!op.qualifiedName)put(['read','put'].includes(name)?'io':'effects',name,name,'effect');
-for(const name of definitions.constructors.keys())put(['None','Some'].includes(name)?'option':'result',name,name,'constructor');
+for(const [name,constructor] of definitions.constructors)put(constructor.typeName,name,name,'constructor');
 for(const [name,method] of definitions.methods)if(method.collectionQuery||method.collectionOperation||!groups.get('classes')?.has(name)&&!assigned.has(name))put('classes',name,name,'method');
 
 // The prelude source is parsed here, so its pub imports are the source of truth

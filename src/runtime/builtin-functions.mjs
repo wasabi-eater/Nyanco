@@ -1,16 +1,29 @@
 import {installUnwrap,installOrElse,installContainerFunctions,isStandardResult} from './builtin-results.mjs';
 import {isStandardOption} from './builtin-option.mjs';
+import {installRevType,installRevInstances} from './builtin-rev.mjs';
 import {worklistOperations} from './builtin-effects.mjs';
 import {installOperatorClasses} from '../types/operator-classes.mjs';
 import {parseExpression} from '../frontend/language.mjs';
 // Ordinary functions retain stack/effect polymorphism and use the same lowering.
-export function withStandardFunctions(definitions){
+export function withStandardFunctions(definitions,{reverseInstances=true}={}){
  const result=Object.assign(new Map(definitions),definitions),token={file:'<standard>',line:1,col:1};
+ installRevType(result);
  const add=(name,parameters,body,signature)=>{if(result.has(name))return;
-  const clauses=[{patterns:parameters.map(value=>({...token,kind:'word',value})),body:parseExpression(body,'<standard>',definitions.constructors),token:{...token,value:name}}];if(signature)clauses.signature=signature;result.set(name,clauses);
+  const clauses=[{patterns:parameters.map(value=>({...token,kind:'word',value})),body:parseExpression(body,'<standard>',result.constructors),token:{...token,value:name}}];if(signature)clauses.signature=signature;result.set(name,clauses);
  };
  installUnwrap(result,add);
- if(!result.classes.has('or')){const classes=new Map(result.classes),methods=new Map(result.methods);installOperatorClasses(classes,methods);result.classes.set('or',classes.get('or'));result.methods.set('.|.',methods.get('.|.'));}
+ const required=reverseInstances?['or','eq','ord','hash','show']:['or'];
+ if(required.some(name=>!result.classes.has(name))){
+  const classes=new Map(result.classes),methods=new Map(result.methods);
+  installOperatorClasses(classes,methods);
+  for(const name of required){
+   const cls=classes.get(name);
+   if(!cls||result.classes.has(name))continue;
+   result.classes.set(name,cls);
+   for(const method of cls.methods.keys())if(!result.methods.has(method))result.methods.set(method,methods.get(method));
+  }
+ }
+ if(reverseInstances)installRevInstances(result,add);
  installOrElse(result,add);installContainerFunctions(result,add);
  // Conversion classes keep their toX names; their methods name the target type.
  // The old function names remain ordinary compatibility aliases.

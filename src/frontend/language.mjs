@@ -710,7 +710,7 @@ function dataDeclarations(groups, definitions, globals) {
     pending.push({declaration,tokens:derive<0?fields:fields.slice(0,derive)});
   }
   Object.assign(definitions,withOption(definitions,{skipOption:pending.some(p=>p.tokens.some(t=>['Some','None'].includes(t.value))),skipResult:pending.some(p=>p.tokens.some(t=>['Ok','Err'].includes(t.value)))}));
-  {const standard=withStandardFunctions(definitions);definitions.classes=standard.classes;definitions.methods=standard.methods;for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);}
+  addStandardFunctions(definitions,false);
   for(const {declaration,tokens} of pending)if(declaration.alias){
     const parser=typeSyntax(tokens.map(t=>t.value),definitions.dataTypes,new Set(declaration.parameters),m=>{throw new LanguageError(m,declaration.token);});
     const types=parser.types();if(types.length!==1||!parser.done())throw new LanguageError('Type alias requires one complete type',declaration.token);declaration.aliasSyntax=types[0];
@@ -920,6 +920,11 @@ export function declarationGroups(tokens){
   }
   return groups;
 }
+function addStandardFunctions(definitions,reverseInstances) {
+  const standard=withStandardFunctions(definitions,{reverseInstances});
+  Object.assign(definitions,standard);
+  for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);
+}
 export function compile(source, file = '<input>', previous = new Map(), { checkTypes = true, globals = new Map(), tokens: sourceTokens = null, moduleEffects = previous.moduleEffects } = {}) {
   const tokens = recordShorthands(sourceTokens || previous.moduleTokens?.(source,file) || lex(source, file)), groups = [];
   groups.push(...declarationGroups(tokens));
@@ -933,7 +938,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   definitions.constructors=previous.constructors;
   dataDeclarations(groups,definitions,globals);
   Object.assign(definitions,withOption(definitions));
-  {const standard=withStandardFunctions(definitions);definitions.classes=standard.classes;definitions.methods=standard.methods;for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);}
+  addStandardFunctions(definitions,false);
   definitions.effects=ioEffects(previous.effects);
   const families=effectFamilies(definitions.effects);
   for(let group of groups)if(group[0].value==='effect') {
@@ -971,6 +976,7 @@ export function compile(source, file = '<input>', previous = new Map(), { checkT
   }
   definitions.initializers = [];
   const expanded=expandClasses(groups.filter(g=>g[0].value!=='effect'),definitions,previous,BUILTINS,globals);
+  addStandardFunctions(definitions,true);
   const newDataNames=new Set(groups.filter(g=>g[0]?.value==='data').map(g=>typeName(g[1]?.value)));
   const derived=derivingSources(definitions,(message,t)=>{throw new LanguageError(message,t);}).filter(d=>newDataNames.has(d.declaration.name)).map(d=>lex(d.source,`<deriving ${d.declaration.name} ${d.cls}>`).map(t=>({...t,derivedFrom:d.declaration.token})));
   if(derived.length)expanded.push(...expandClasses(derived,definitions,definitions,BUILTINS,globals));

@@ -30,6 +30,8 @@
 
 `sortBy`、`maxiBy`、`miniBy` のquotationは比較キーを1つ返します。`reverse`、`sort`、`sortBy` はvector、`maxi` と `mini` の系列は `option` を返します。2値を比較する場合は `max` と `min` を使います。`all` と `any` は判定が確定したところで走査を打ち切ります。
 
+`Rev x` は値を `rev 'a` に包み、`ord` の比較順を反転します。`sortBy [1, 3, 2] {Rev}` は `[3, 2, 1]` を返します。heapの要素を `Rev` で包むと、元の順序で最小のものから取り出せます。中身は `Rev x` パターンで取り出せます。`rev` と `Rev` は `std.rev` からも参照できます。[Rustの `Reverse`](https://doc.rust-lang.org/std/cmp/struct.Reverse.html)
+
 `orderedCounts xs` は異なる値ごとに `#(値, 出現回数)` を作り、元の値の昇順に並べたvectorを返します。`[3, 1, 3, 3, 2, 1]; orderedCounts` の結果は `[#(1, 2), #(2, 1), #(3, 3)]` です。
 
 `fromYield { ... }` は `yield` で渡した値をstreamにします。`repeat x` は同じ値を繰り返し、`repeatWith { ... }` は要素ごとにquotationを実行します。`iterate start next` は最初の状態を `start` で作り、現在の先頭値を生成してから `next` で状態を更新します。
