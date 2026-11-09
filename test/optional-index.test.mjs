@@ -6,7 +6,8 @@ const some=x=>({kind:'adt',typeName:'option',constructor:'Some',fields:[x]});
 const none={kind:'adt',typeName:'option',constructor:'None',fields:[]};
 test('optional list access returns option, including invalid indices and empty lists',()=>{
  assert.deepEqual(run('[10,20] -> x; x.?[1]'),[some(20)]);
- for(const i of ['-1','2','9999999999999999'])assert.deepEqual(run(`[10,20].?[${i}]`),[none]);
+ assert.deepEqual(run('[10,20].?[-1]'),[some(20)]);
+ for(const i of ['-3','2','9999999999999999'])assert.deepEqual(run(`[10,20].?[${i}]`),[none]);
  assert.deepEqual(run('[].?[0]'),[none]);
  assert.deepEqual(run('.?[1] [10,20]'),[some(20)]);
  assert.deepEqual(run('1; [10,20].?[_]'),[some(20)]);

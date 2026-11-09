@@ -39,7 +39,10 @@ main =
 
 test('result catch and unwrap methods support both standard types and user instances',()=>{
  const {p,output}=run(source);assert.deepEqual(output,['(Ok 3)','(Err "failed")','(Err "Index out of bounds: 8")','(Ok (Err "nested"))','7','yes','9','(Err "unwrap: None")','(Err "problem 12")','5','3','6','2','4','8','fallback','10','fallback','11','(Err "fallback failed")','(Ok 13)','21','22','(Ok #(1 "pair"))','(Ok 2)','100','7','0']);
- assert.match(p.types.get('get'),/unwrap/);assert.doesNotMatch(p.types.get('catch'),/\{exn/);
+ assert.match(p.types.get('get'),/unwrap/);
+ const catchType=p.types.get('catch');
+ assert.match(catchType,/\/ \{exn\b/);
+ assert.doesNotMatch(catchType.slice(catchType.lastIndexOf('/')),/\bexn\b/);
 });
 test('fallbacks retain lazy effects and catch removes only exn',()=>{
  const p=compile('effect ask : -> int\nf = catch {ask}\ng = unwrapOrElse None {ask}\npure : -> int / {}\npure = unwrapOr None 1\nsafe : -> (result int string) / {}\nsafe = catch {unwrap None}');

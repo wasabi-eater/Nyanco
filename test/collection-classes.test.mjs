@@ -76,6 +76,16 @@ test('collection methods infer constraints and dispatch on standard and user typ
  assert.doesNotThrow(()=>compile('data option = Nothing\nmain = push [1] 2'));
 });
 
+test('collection methods run in an empty REPL session',()=>{
+ const vm=new VM();
+ assert.deepEqual(vm.evaluate('deque [1]; push 2; vector'),[[1,2]]);
+ const [peeked,popped,remaining]=vm.evaluate('[1,2]; dup; peek; swap; pop');
+ assert.equal(peeked.constructor,'Some');
+ assert.deepEqual(peeked.fields,[2]);
+ assert.deepEqual(popped,peeked);
+ assert.deepEqual([...remaining],[1]);
+});
+
 const compiler=process.platform==='win32'?'cl':'c++';
 const hasCpp=!spawnSync(compiler,[compiler==='cl'?'/h':'--version'],{stdio:'ignore',windowsHide:true}).error;
 const hasGo=!spawnSync('go',['version'],{stdio:'ignore',windowsHide:true}).error;

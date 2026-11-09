@@ -5,14 +5,14 @@ import {worklistOperations} from './builtin-effects.mjs';
 import {installOperatorClasses} from '../types/operator-classes.mjs';
 import {parseExpression} from '../frontend/language.mjs';
 // Ordinary functions retain stack/effect polymorphism and use the same lowering.
-export function withStandardFunctions(definitions,{reverseInstances=true}={}){
+export function withStandardFunctions(definitions,{installClasses=true}={}){
  const result=Object.assign(new Map(definitions),definitions),token={file:'<standard>',line:1,col:1};
  installRevType(result);
  const add=(name,parameters,body,signature)=>{if(result.has(name))return;
   const clauses=[{patterns:parameters.map(value=>({...token,kind:'word',value})),body:parseExpression(body,'<standard>',result.constructors),token:{...token,value:name}}];if(signature)clauses.signature=signature;result.set(name,clauses);
  };
  installUnwrap(result,add);
- const required=reverseInstances?['or','eq','ord','hash','show']:['or'];
+ const required=installClasses?['or','eq','ord','hash','show','length','isEmpty','in','push','pop','peek']:['or'];
  if(required.some(name=>!result.classes.has(name))){
   const classes=new Map(result.classes),methods=new Map(result.methods);
   installOperatorClasses(classes,methods);
@@ -23,7 +23,7 @@ export function withStandardFunctions(definitions,{reverseInstances=true}={}){
    for(const method of cls.methods.keys())if(!result.methods.has(method))result.methods.set(method,methods.get(method));
   }
  }
- if(reverseInstances)installRevInstances(result,add);
+ if(installClasses)installRevInstances(result,add);
  installOrElse(result,add);installContainerFunctions(result,add);
  // Conversion classes keep their toX names; their methods name the target type.
  // The old function names remain ordinary compatibility aliases.

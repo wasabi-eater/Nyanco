@@ -920,8 +920,8 @@ export function declarationGroups(tokens){
   }
   return groups;
 }
-function addStandardFunctions(definitions,reverseInstances) {
-  const standard=withStandardFunctions(definitions,{reverseInstances});
+function addStandardFunctions(definitions,installClasses) {
+  const standard=withStandardFunctions(definitions,{installClasses});
   Object.assign(definitions,standard);
   for(const [name,clauses] of standard)if(!definitions.has(name))definitions.set(name,clauses);
 }
