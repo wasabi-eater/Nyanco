@@ -1,0 +1,21 @@
+ints = read; split " "; vmap {parseInt}
+
+main =
+    ints -> [n q]
+    read; split " "; vmap {parseInt; - 1} -> successors
+    mut jumps <- [successors]
+    mut weights <- [vector (1 ..= n)]
+    each (1 .. 30) do -> _
+        jumps.[-1] -> previous
+        weights.[-1] -> totals
+        jumps ! vpush (previous; map {previous.[_]}; vector)
+        weights ! vpush (0 .. n; map {-> i; totals.[i] + totals.[previous.[i]]}; vector)
+    each (0 .. q) do -> _
+        ints -> [turns start]
+        mut bucket <- start - 1
+        mut water <- 0
+        each (0 .. 30) do -> bitIndex
+            when (testBit turns bitIndex) do
+                water ! + weights.[bitIndex].[bucket]
+                bucket <<- jumps.[bitIndex].[bucket]
+        print water

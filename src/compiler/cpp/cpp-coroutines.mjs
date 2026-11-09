@@ -51,8 +51,9 @@ export function lowerCppCoroutines(source) {
   const directReturn=n=>tokens.some((t,i)=>t.v==='return'&&tokens[i+1]?.v!==';'&&owner(i)===n);
   for(const n of nodes)if(n.lambda){
     const machine=/\bMachine\s*&/.test(n.params),event=/\bEvent\s+/.test(n.params),continuation=/\bContinuation\b/.test(n.params);
-    const visitor=/^\s*Value\s+\w+\s*$/.test(n.params),walker=/\bVisit\b/.test(n.params);
-    const compare=n.type?['bool','int','std::string','std::size_t'].includes(n.type):/const Value& a,\s*const Value& b\s*$/.test(n.params);
+    const visitor=/^\s*(?:Value\s+\w+|\w+(?:::\w+)*(?:<\w+>)?\s+typedItem\w*)\s*$/.test(n.params),walker=/\b(?:Visit|TypedVisit)\b/.test(n.params);
+    const typedCallback=/\b(?:typedItem|pairField)\d+\b/.test(n.params)||/^repeated\d+$/.test(n.name||'');
+    const compare=!typedCallback&&(n.type?['bool','int','std::string','std::size_t'].includes(n.type):/const Value& a,\s*const Value& b\s*$/.test(n.params));
     // hash/eq/ord callbacks have closed effect signatures. Their implementation
     // may handle effects internally, but cannot suspend their synchronous STL
     // caller. Drive such an internal task to completion at this ABI boundary.
@@ -60,7 +61,7 @@ export function lowerCppCoroutines(source) {
     n.async=event||continuation||visitor||walker||machine&&!compare;
     if(!n.type)n.type=event||continuation?'Values':visitor&&directReturn(n)?'Value':directReturn(n)?'Values':'void';
   }
-  const callbackNames=new Set(['body','route','visit','source','left','right','fn','nested','key','replace','drive','second','WalkText']);
+  const callbackNames=new Set(['body','route','visit','source','left','right','fn','nested','key','replace','drive','second','WalkText','scan']);
   function calleeStart(i){
     let j=i;
     if(tokens[j]?.v===')'||tokens[j]?.v===']'){const a=pairs.get(j);j=tokens[j].v===')'?calleeStart(a-1):a;}
@@ -104,6 +105,8 @@ export function lowerCppCoroutines(source) {
     [/std::function<Values\(Event\)>/g,'std::function<Task<Values>(Event)>'],
     [/std::function<Values\(const Values&, Ptr<Continuation>\)>/g,'std::function<Task<Values>(const Values&, Ptr<Continuation>)>'],
     [/std::function<void\(Machine&, const Visit&\)>/g,'std::function<Task<void>(Machine&, const Visit&)>'],
+    [/std::function<void\(T\)>/g,'std::function<Task<void>(T)>'],
+    [/std::function<void\(Machine&, const TypedVisit<T>&\)>/g,'std::function<Task<void>(Machine&, const TypedVisit<T>&)>'],
     [/std::function<void\(Machine&\)>/g,'std::function<Task<void>(Machine&)>'],
     [/std::function<Value\(Machine&, Value\)>/g,'std::function<Task<Value>(Machine&, Value)>'],
     [/std::function<void\(Machine&, Value, const Visit&\)>/g,'std::function<Task<void>(Machine&, Value, const Visit&)>'],

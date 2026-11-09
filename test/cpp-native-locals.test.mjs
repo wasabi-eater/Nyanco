@@ -47,16 +47,61 @@ main =
  const code=transpileCpp(p);
  assert.match(code,/for \(Byte scalarItem\d+ : v\d+\)/);
  assert.match(code,/Int v\d+ = static_cast<Int>\((?:v|scalarItem)\d+\)/);
- assert.match(code,/textStream<walkBytes>/);
+ assert.match(code,/byteStream\(v\d+\)/);
  assert.match(code,/cast<Byte>\(m,/);
  native(code,run=>assert.equal(run().stdout,out));
  native(transpileCpp(p,{nativeLocals:false}),run=>assert.equal(run().stdout,out));
+});
+
+test('lazy stream stages carry native items and capture lexical values across traversals',{skip:!available},()=>{
+ const p=compile(`effect adjust : int -> int
+select xs predicate = xs; filter predicate
+project offset =
+    mut delta <- 2
+    bytes "ABCD"; map {int; + offset; + delta} -> source
+    delta ! + 1
+    source
+main =
+    source <- project 5
+    source; filter {_ % 2 == 1}; skip 1; take 1; vector; print
+    select source {<= 74}; map {+ 10}; vector; print
+    source; fold 0 {+}; print
+    source; map {> 74}; filter {}; vector; print
+    source; all {> 71}; print
+    source; any {> 90}; print
+    source; reverse; print
+    source; map {0 -}; sort; print
+    source; flatMap {[_, _ + 1]}; take 3; vector; print
+    [[1,2],[3]]; flatten; skipWhile {< 2}; takeWhile {<= 2}; vector; print
+    "7,8,9"; split ","; map {parseInt}; filter {> 7}; sum; print
+    chars "Aé"; map {int}; vector; print
+    valToYield <- 10
+    fromYield {yield valToYield}; map {+ 1}; vector; print
+    mut repeatValue <- 0
+    repeatWith {repeatValue ! + 1; repeatValue}; take 3; vector; print
+    repeat True; take 2; vector; print
+    print (handle {source; map {adjust}; filter {adjust; > 0}; take 2; vector} {adjust: {-> value k; resume (value + 1) k}})
+    print (catch {source; map {when ($ > 74) {exn "stop"}}; vector})
+    0; source; each {+; when ($ > 100) {break}}; print
+`);
+ const out=expected(p);
+ const code=transpileCpp(p,{referenceCounting:'local'});
+ for(const spelling of ['transformTyped<Transform::map,Byte,Int>','transformTyped<Transform::filter,Int,Int>',
+  'transformTyped<Transform::map,Int,bool>','transformTyped<Transform::flatMap,Int,Int>',
+  'transformTyped<Transform::flatten,Ptr<VectorBase>,Int>','transformTyped<Transform::map,std::string,Int>',
+  'transformTyped<Transform::map,Char,Int>','typedStream<Int>','walkTyped<Int>','testStream<true,Int>',
+  'testStream<false,Int>','class CoroutineWorker'])assert.ok(code.includes(spelling),spelling);
+ assert.match(code,/\[v\d+, v\d+\]\(Machine& m, Byte typedItem\d+\) -> Task<Int>/);
+ assert.doesNotMatch(code,/\.bind(?:Cell)?\(std::string\("(?:offset|delta|valToYield|repeatValue)"/);
+ native(code,run=>assert.equal(run().stdout,out));
+ native(transpileCpp(p,{effectCoroutines:false}),run=>assert.equal(run().stdout,out));
 });
 
 test('escaped captures, shadowing, borrowed cells, effects and loop cancellation match the VM',{skip:!available},()=>{
  const p=compile(`effect ask : -> int
 make start = start -> mut n; {n ! + (fromInt 1); n}
 makeFloat start = start -> mut n; {n ! + 1.0; n}
+addOffset offset = {+ offset}
 data tree = Leaf int | Branch tree tree deriving eq
 main =
     [1,2]; dup; -> left, right
@@ -69,6 +114,8 @@ main =
     print (call next); print (call next)
     makeFloat 2.5 -> nextFloat
     print (call nextFloat)
+    addOffset 5 -> addFive
+    12; call addFive; print
     [1,2] -> mut xs
     {xs} -> current
     xs -> frozen
@@ -90,7 +137,14 @@ main =
     0; each (0 .. 5) {+; when ($ > 3) {break}}; print
 `);
  const out=expected(p);
- for(const nativeLocals of [true,false])native(transpileCpp(p,{nativeLocals,referenceCounting:'local'}),run=>assert.equal(run().stdout,out));
+ for(const nativeLocals of [true,false]){
+  const code=transpileCpp(p,{nativeLocals,referenceCounting:'local'});
+  if(nativeLocals){
+   assert.match(code,/\.bindCell\(std::string\("offset", 6\), makeRc<NativeCell<Int>>\(\w+, false\)\)/);
+   assert.match(code,/const Int& capturedSlot\d+ = static_cast<const NativeCell<Int>&>/);
+  }
+  native(code,run=>assert.equal(run().stdout,out));
+ }
 });
 
 test('jagged row pushes preserve snapshots and errors with bounded copied elements',{skip:!available},()=>{

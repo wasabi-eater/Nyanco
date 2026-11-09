@@ -1,0 +1,11 @@
+ints = read; split " "; vmap {parseInt}
+
+main =
+    ints -> [_ _ n q]
+    0 .. n; map {drop; ints; -> [r c]; #(r, c)}; unzip -> rowIndices columnIndices
+    sort rowIndices -> rows
+    sort columnIndices -> columns
+    each (0 .. q) do -> _
+        ints -> [kind first last]
+        if (kind == 1) {rows} {columns} -> coordinates
+        partitionPoint coordinates {<= last} - partitionPoint coordinates {< first}; print

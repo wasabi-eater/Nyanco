@@ -55,6 +55,7 @@ template <typename T> struct VectorStorage final : VectorBase {
         else return std::move(data);
     }
     explicit VectorStorage(std::vector<T> data) : values(storage(std::move(data))) {}
+    explicit VectorStorage(std::string data) requires (std::is_same_v<T,Byte>) : values(std::move(data)) {}
     VectorStorage(const VectorStorage& other) : values(other.scalars().begin(),other.scalars().end()) {}
     std::span<const T> scalars() const {
         if (owner) return view;
@@ -140,6 +141,31 @@ template <typename T> inline Value scalarConcat(Value source, const Value& other
     result->values.insert(result->values.end(),right->scalars().begin(),right->scalars().end());
     return Ptr<VectorBase>(std::move(result));
 }
+// @runtime NativeVectorReader
+template <typename T> class NativeVectorReader {
+    std::span<const T> scalars;
+    std::span<const Value> boxed;
+public:
+    template <typename Source>
+    explicit NativeVectorReader(const Source& source) {
+        const auto* base=as<Ptr<VectorBase>>(source).get();
+        if constexpr (std::is_same_v<T,Int> || std::is_same_v<T,Byte> || std::is_same_v<T,double>) {
+            if (const auto* typed=dynamic_cast<const ScalarVector<T>*>(base)) {
+                scalars=typed->scalars();
+                return;
+            }
+        }
+        boxed=base->items();
+    }
+    std::size_t size() const { return scalars.empty() ? boxed.size() : scalars.size(); }
+    const T& operator[](std::size_t index) const {
+        return scalars.empty() ? as<T>(boxed[index]) : scalars[index];
+    }
+};
+// @runtime byteVector
+inline Value byteVector(const Value& text) {
+    return Ptr<VectorBase>(std::make_shared<ScalarVector<Byte>>(as<std::string>(text)));
+}
 // @runtime vectorView
 inline Value vectorView(const Value& value, std::size_t start, std::size_t count) {
     auto source=as<Ptr<VectorBase>>(value);
@@ -215,7 +241,7 @@ struct Cell {
 };
 template<typename T> struct NativeCell final : Cell {
     T value;
-    explicit NativeCell(T data):Cell({},true),value(std::move(data)){}
+    explicit NativeCell(T data, bool mut = true):Cell({},mut),value(std::move(data)){}
     Value read() const override{return value;}
     Value take() override{Value result=std::move(value);value=T{};return result;}
     void write(Value data) override{
@@ -277,7 +303,13 @@ using Visit = std::function<void(Value)>;
 // @runtime NativeVisitor
 struct NativeVisitor { Visit visit; };
 // @runtime Stream
-struct Stream { std::function<void(Machine&, const Visit&)> walk; };
+struct Stream {
+    std::function<void(Machine&, const Visit&)> walk;
+    explicit Stream(decltype(walk) body) : walk(std::move(body)) {}
+    Stream(const Stream&) = delete;
+    Stream& operator=(const Stream&) = delete;
+    virtual ~Stream() = default;
+};
 // @runtime Continuation
 struct Continuation {
     bool active = true, used = false, never = false;
@@ -316,6 +348,53 @@ struct BorrowScope {
 inline Value vector(Values values) { return Ptr<VectorBase>(std::make_shared<Vector>(std::move(values))); }
 // @runtime tuple
 inline Value tuple(Values values) { return std::make_shared<Tuple>(Tuple{std::move(values)}); }
+// @runtime NativePairVector nativePairVector
+template <typename Left, typename Right> struct NativePairVector final : VectorBase {
+    using Row = std::tuple<Left,Right>;
+    std::vector<Row> rows;
+    mutable Values boxed;
+    explicit NativePairVector(std::vector<Row> data) : rows(std::move(data)) {}
+    std::size_t size() const override { return rows.size(); }
+    bool native() const override { return true; }
+    std::span<const Value> items() const override {
+        if (boxed.empty() && !rows.empty()) {
+            Values values;values.reserve(rows.size());
+            for (const auto& row : rows) values.push_back(tuple({std::get<0>(row),std::get<1>(row)}));
+            boxed=std::move(values);
+        }
+        return boxed;
+    }
+};
+template <typename Left, typename Right>
+Value nativePairVector(std::vector<std::tuple<Left,Right>> rows) {
+    return Ptr<VectorBase>(std::make_shared<NativePairVector<Left,Right>>(std::move(rows)));
+}
+// @runtime zipNativeVectors
+template <typename Left, typename Right>
+Value zipNativeVectors(const Value& left, const Value& right) {
+    const NativeVectorReader<Left> a(left);
+    const NativeVectorReader<Right> b(right);
+    const auto size=std::min(a.size(),b.size());
+    std::vector<std::tuple<Left,Right>> rows;rows.reserve(size);
+    for (std::size_t i=0; i<size; ++i) rows.emplace_back(a[i],b[i]);
+    return nativePairVector<Left,Right>(std::move(rows));
+}
+// @runtime unzipNativeVector
+template <typename Left, typename Right>
+Results<2> unzipNativeVector(const Value& source) {
+    const auto* base=as<Ptr<VectorBase>>(source).get();
+    std::vector<Left> left;left.reserve(base->size());
+    std::vector<Right> right;right.reserve(base->size());
+    if (const auto* pairs=dynamic_cast<const NativePairVector<Left,Right>*>(base)) {
+        for (const auto& [a,b] : pairs->rows) { left.push_back(a);right.push_back(b); }
+    } else {
+        for (const auto& item : base->items()) {
+            const auto& fields=as<Ptr<Tuple>>(item)->values;
+            left.push_back(as<Left>(fields[0]));right.push_back(as<Right>(fields[1]));
+        }
+    }
+    return {scalarVector<Left>(std::move(left)),scalarVector<Right>(std::move(right))};
+}
 // @runtime record
 inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
 // @runtime option
@@ -652,24 +731,29 @@ inline std::uint32_t hashValues(std::uint32_t hash, std::span<const Value> xs) {
     for (const auto& x : xs) hash = hashMix(hash,hashValue(x));
     return hash;
 }
+// @runtime hashNumericScalar
+template <typename T> std::uint32_t hashNumericScalar(T value) {
+    if constexpr (std::is_same_v<T,Int>) {
+        const auto bits=static_cast<UInt>(value);
+        return static_cast<std::uint32_t>(bits ^ (bits >> 32));
+    } else if constexpr (std::is_same_v<T,Byte>) return value;
+    else {
+        auto bits=std::bit_cast<UInt>(value == 0 ? 0.0 : value);
+        std::uint32_t hash=2166136261u;
+        for (int i=0; i<8; ++i, bits >>= 8) hash=hashMix(hash,static_cast<Byte>(bits));
+        return hash;
+    }
+}
 // @runtime hashValue
 inline std::uint32_t hashValue(const Value& v) {
-    if (is<Int>(v)) {
-        auto bits = static_cast<UInt>(as<Int>(v));
-        return static_cast<std::uint32_t>(bits ^ (bits >> 32));
-    }
-    if (is<Byte>(v)) return as<Byte>(v);
+    if (is<Int>(v)) return hashNumericScalar(as<Int>(v));
+    if (is<Byte>(v)) return hashNumericScalar(as<Byte>(v));
 // @if-runtime Char
     if (is<Char>(v)) return as<Char>(v).code;
 // @end-runtime
     if (is<bool>(v)) return truth(v) ? 1u : 0u;
     if (is<std::string>(v)) return hashText(as<std::string>(v));
-    if (is<double>(v)) {
-        auto bits = std::bit_cast<UInt>(as<double>(v) == 0 ? 0.0 : as<double>(v));
-        std::uint32_t hash = 2166136261u;
-        for (int i=0; i<8; ++i, bits >>= 8) hash = hashMix(hash,static_cast<Byte>(bits));
-        return hash;
-    }
+    if (is<double>(v)) return hashNumericScalar(as<double>(v));
 // @if-runtime VectorBase
     if (is<Ptr<VectorBase>>(v)) return hashValues(hashText("vector"),as<Ptr<VectorBase>>(v)->items());
 // @end-runtime
@@ -1368,13 +1452,18 @@ inline Value rangeVector(Int first, Int last) {
     walkRange({first,last,true},[&](Value v){ result.push_back(std::move(v)); });
     return vector(std::move(result));
 }
-// @runtime walkChars
-inline void walkChars(const std::string& text, const std::string& at, const Visit& visit) {
+// @runtime visitChars
+template <typename Visitor>
+void visitChars(const std::string& text, const std::string& at, const Visitor& visit) {
     for (std::size_t pos = 0; pos < text.size();) {
         auto code = decode(text,pos);
         if (!code) fail(at, "Invalid UTF-8");
         visit(Char{*code});
     }
+}
+// @runtime walkChars
+inline void walkChars(const std::string& text, const std::string& at, const Visit& visit) {
+    visitChars(text,at,visit);
 }
 // @runtime walkBytes
 inline void walkBytes(const std::string& text, const std::string&, const Visit& visit) {
@@ -1551,15 +1640,17 @@ inline Value cast(Machine& m, const Value& value, const std::string& at) {
         }
     }
 }
-// @runtime parseNumber parseNumberText
+// @runtime parseNumber parseNumberText ParsedNumber
 template <typename Number, bool Strict>
-inline Value parseNumberText(Machine& m, std::string_view text, const std::string& at) {
+using ParsedNumber = std::conditional_t<Strict,Number,Value>;
+template <typename Number, bool Strict>
+inline ParsedNumber<Number,Strict> parseNumberText(Machine& m, std::string_view text, const std::string& at) {
     auto first = text.find_first_not_of(" \t\r\n\f\v");
     auto last = text.find_last_not_of(" \t\r\n\f\v");
     auto start = text.data() + (first == std::string::npos ? text.size() : first);
     auto end = text.data() + (last == std::string::npos ? text.size() : last+1);
     if (start < end && *start == '+') ++start;
-    std::optional<Value> result;
+    std::optional<Number> result;
     constexpr bool integer = std::is_same_v<Number,Int>;
     if constexpr (integer) {
         Int n; auto parsed = std::from_chars(start,end,n);
@@ -1571,10 +1662,10 @@ inline Value parseNumberText(Machine& m, std::string_view text, const std::strin
     if constexpr (Strict) {
         if (!result) m.exception(std::string(integer ? "Invalid integer: " : "Invalid number: ") + show(Value{std::string(text)}),at);
         return *result;
-    } else return option(result);
+    } else return result ? option(Value{*result}) : option();
 }
 template <typename Number, bool Strict>
-inline Value parseNumber(Machine& m, const Value& value, const std::string& at) {
+inline ParsedNumber<Number,Strict> parseNumber(Machine& m, const Value& value, const std::string& at) {
     return parseNumberText<Number,Strict>(m,as<std::string>(value),at);
 }
 // @runtime walk
@@ -1613,7 +1704,73 @@ inline void walk(Machine& m, const Value& value, const Visit& visit) {
 }
 // @runtime stream
 inline Value stream(std::function<void(Machine&, const Visit&)> body) {
-    return std::make_shared<Stream>(Stream{std::move(body)});
+    return std::make_shared<Stream>(std::move(body));
+}
+// @runtime TypedVisit TypedWalk
+template <typename T> using TypedVisit = std::function<void(T)>;
+template <typename T> using TypedWalk = std::function<void(Machine&, const TypedVisit<T>&)>;
+// @runtime TypedStream typedStream
+// Untyped consumers use the boxed Stream ABI. Typed consumers visit scan
+// directly, so boxing is confined to a boundary between the two ABIs.
+template <typename T> struct TypedStream final : Stream {
+    TypedWalk<T> scan;
+    explicit TypedStream(TypedWalk<T> body) : Stream([this](Machine& m, const Visit& visit) {
+        scan(m,[&](T typedItem) { visit(std::move(typedItem)); });
+    }), scan(std::move(body)) {}
+};
+template <typename T> Value typedStream(TypedWalk<T> body) {
+    return Ptr<Stream>(std::make_shared<TypedStream<T>>(std::move(body)));
+}
+// @runtime walkTyped
+// @if-runtime VectorBase
+template <typename T> void walkTyped(Machine&, const Ptr<VectorBase>& value, const TypedVisit<T>& visit) {
+    if constexpr (std::is_same_v<T,Int> || std::is_same_v<T,Byte> || std::is_same_v<T,double>) {
+        const NativeVectorReader<T> values(value);
+        for (std::size_t i=0; i<values.size(); ++i) visit(values[i]);
+    } else {
+        for (const auto& item : value->items()) visit(as<T>(item));
+    }
+}
+// @end-runtime
+template <typename T> void walkTyped(Machine& m, const Value& value, const TypedVisit<T>& visit) {
+    if (is<Ptr<Stream>>(value)) {
+        if (const auto* typed = dynamic_cast<const TypedStream<T>*>(as<Ptr<Stream>>(value).get())) {
+            typed->scan(m,visit);
+            return;
+        }
+    }
+// @if-runtime VectorBase
+    if (is<Ptr<VectorBase>>(value)) {
+        walkTyped<T>(m,as<Ptr<VectorBase>>(value),visit);
+        return;
+    }
+// @end-runtime
+// @if-runtime Range
+    if constexpr (std::is_same_v<T,Int>) {
+        if (is<Range>(value)) {
+            const auto& range = as<Range>(value);
+            for (Int current = range.first;; current += range.first > range.last ? -1 : 1) {
+                if (current == range.last && !range.inclusive) break;
+                visit(current);
+                if (current == range.last) break;
+            }
+            return;
+        }
+    }
+// @end-runtime
+    walk(m,value,[&](Value item) { visit(takeAs<T>(item)); });
+}
+// @runtime byteStream
+inline Value byteStream(const Value& value) {
+    return typedStream<Byte>([text = as<std::string>(value)](Machine&, const TypedVisit<Byte>& visit) {
+        for (Byte item : text) visit(item);
+    });
+}
+// @runtime charStream
+inline Value charStream(const Value& value, const std::string& at) {
+    return typedStream<Char>([text = as<std::string>(value), at](Machine&, const TypedVisit<Char>& visit) {
+        visitChars(text,at,visit);
+    });
 }
 // @runtime textStream
 template <auto WalkText>
@@ -1655,59 +1812,73 @@ using MapItem = std::function<Value(Machine&, Value)>;
 using Walk = std::function<void(Machine&, const Visit&)>;
 // @runtime WalkItem
 using WalkItem = std::function<void(Machine&, Value, const Visit&)>;
-// @runtime Transform transform
+// @runtime Transform
 enum class Transform { map, filter, takeWhile, skipWhile, take, skip, flatMap, flatten };
-template <Transform Mode>
-inline Value transform(Walk source, Int count, MapItem fn, Ptr<Label> label,
-                       bool cancelOnly, WalkItem nested) {
-    return stream([=](Machine& parent, const Visit& visit) {
+// @runtime mapNativePairs
+template <typename Left, typename Right, typename Out = Value, typename Map>
+Value mapNativePairs(Value source, Map fn, Ptr<Label> label) {
+    auto body = [source=std::move(source),fn=std::move(fn),label](Machine& parent,const TypedVisit<Out>& visit) {
+        loop(parent,[&](Machine& m){
+            const auto* base=as<Ptr<VectorBase>>(source).get();
+            if (const auto* pairs=dynamic_cast<const NativePairVector<Left,Right>*>(base)) {
+                for (const auto& row : pairs->rows) visit(fn(m,std::get<0>(row),std::get<1>(row)));
+            } else {
+                for (const auto& item : base->items()) {
+                    const auto& fields=as<Ptr<Tuple>>(item)->values;
+                    visit(fn(m,as<Left>(fields[0]),as<Right>(fields[1])));
+                }
+            }
+        },label);
+    };
+    if constexpr (std::is_same_v<Out,Value>) return stream(std::move(body));
+    else return typedStream<Out>(std::move(body));
+}
+// @runtime transformTyped
+template <typename PredicateResult> bool streamPredicate(const PredicateResult& result) {
+    if constexpr (std::is_same_v<PredicateResult,bool>) return result;
+    else return truth(result);
+}
+template <Transform Mode, typename In, typename Out, typename Map, typename Nested = decltype(nullptr)>
+Value transformTyped(TypedWalk<In> source, Int count, Map fn, Ptr<Label> label, bool cancelOnly, Nested nested = nullptr) {
+    auto body = [source=std::move(source),count,fn=std::move(fn),label,cancelOnly,nested=std::move(nested)]
+        (Machine& parent,const TypedVisit<Out>& visit) {
         if constexpr (Mode == Transform::take) if (!count) return;
         Int remaining = count;
         bool skipping = true;
-        untilStopped([&](auto stop){
+        untilStopped([&](auto stop) {
             loop(parent,[&](Machine& m) {
-                source(m,[&](Value item) {
-                    if constexpr (Mode == Transform::take) {
-                        visit(item);
+                source(m,[&](In typedItem) {
+                    if constexpr (Mode == Transform::map) visit(fn(m,std::move(typedItem)));
+                    else if constexpr (Mode == Transform::take) {
+                        visit(std::move(typedItem));
                         if (!--remaining) stop();
                     } else if constexpr (Mode == Transform::skip) {
-                        if (remaining) --remaining; else visit(item);
-                    } else if constexpr (Mode == Transform::flatten) nested(m,item,visit);
-                    else if constexpr (Mode == Transform::map) visit(fn(m,std::move(item)));
+                        if (remaining) --remaining; else visit(std::move(typedItem));
+                    } else if constexpr (Mode == Transform::flatten) nested(m,std::move(typedItem),visit);
+                    else if constexpr (Mode == Transform::flatMap) nested(m,fn(m,std::move(typedItem)),visit);
                     else if constexpr (Mode == Transform::skipWhile) {
-                        if (skipping && truth(fn(m,item))) return;
-                        skipping = false; visit(item);
-                    } else {
-                        auto mapped = fn(m,item);
-                        if constexpr (Mode == Transform::filter) { if (truth(mapped)) visit(item); }
-                        else if constexpr (Mode == Transform::takeWhile) { if (!truth(mapped)) stop(); visit(item); }
-                        else if constexpr (Mode == Transform::flatMap) nested(m,mapped,visit);
+                        if (skipping && streamPredicate(fn(m,typedItem))) return;
+                        skipping = false;
+                        visit(std::move(typedItem));
+                    } else if constexpr (Mode == Transform::filter) {
+                        if (streamPredicate(fn(m,typedItem))) visit(std::move(typedItem));
+                    } else if constexpr (Mode == Transform::takeWhile) {
+                        if (!streamPredicate(fn(m,typedItem))) stop();
+                        visit(std::move(typedItem));
                     }
                 });
             },label,cancelOnly);
         });
-    });
+    };
+    if constexpr (std::is_same_v<Out,Value>) return stream(std::move(body));
+    else return typedStream<Out>(std::move(body));
+}
+// @runtime transform
+template <Transform Mode>
+inline Value transform(Walk source, Int count, MapItem fn, Ptr<Label> label, bool cancelOnly, WalkItem nested) {
+    return transformTyped<Mode,Value,Value>(std::move(source),count,std::move(fn),label,cancelOnly,std::move(nested));
 }
 
-// @runtime split
-inline Value split(const Value& source, const Value& separator) {
-    return stream([text = as<std::string>(source), sep = as<std::string>(separator)](Machine&,const Visit& visit) {
-        if (sep.empty()) {
-            for (std::size_t pos = 0; pos < text.size();) {
-                auto start = pos;
-                if (!decode(text,pos)) throw std::runtime_error("Invalid UTF-8");
-                visit(text.substr(start,pos-start));
-            }
-            return;
-        }
-        for (std::size_t pos=0;;) {
-            auto end = text.find(sep,pos);
-            visit(text.substr(pos,end == std::string::npos ? end : end-pos));
-            if (end == std::string::npos) return;
-            pos = end+sep.size();
-        }
-    });
-}
 // @runtime SplitInput splitParts
 struct SplitInput { std::string text, separator; };
 template <typename VisitPart>
@@ -1729,6 +1900,17 @@ inline void splitParts(const SplitInput& input, const VisitPart& visit) {
         pos=end+sep.size();
     }
 }
+// @runtime split
+template <bool Typed>
+inline Value split(const Value& source, const Value& separator) {
+    using Item = std::conditional_t<Typed,std::string,Value>;
+    auto body = [input = SplitInput{as<std::string>(source),as<std::string>(separator)}]
+        (Machine&, const TypedVisit<Item>& visit) {
+        splitParts(input,[&](std::string_view part) { visit(std::string(part)); });
+    };
+    if constexpr (Typed) return typedStream<Item>(std::move(body));
+    else return stream(std::move(body));
+}
 // @runtime Compare
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
 // @runtime equalScalarVectors
@@ -1736,12 +1918,45 @@ template <typename T>
 bool equalScalarVectors(Machine&, const Value& a, const Value& b) {
     const auto& x = as<Ptr<VectorBase>>(a);
     const auto& y = as<Ptr<VectorBase>>(b);
-    if (x == y) return true;
+    if constexpr (!std::is_same_v<T,double>) if (x == y) return true;
     const auto* left = dynamic_cast<const ScalarVector<T>*>(x.get());
     const auto* right = dynamic_cast<const ScalarVector<T>*>(y.get());
     if (!left || !right) return equal(a,b);
     const auto xs = left->scalars(), ys = right->scalars();
     return std::equal(xs.begin(),xs.end(),ys.begin(),ys.end());
+}
+// @runtime compareScalarVectors
+template <typename T> int compareScalarVectors(const Value& a, const Value& b) {
+    const NativeVectorReader<T> xs(a),ys(b);
+    for (std::size_t i=0; i<std::min(xs.size(),ys.size()); ++i)
+        if (const int rank=order(xs[i],ys[i])) return rank;
+    return order(xs.size(),ys.size());
+}
+// @runtime hashScalarVector
+template <typename T> std::uint32_t hashScalarVector(const Value& value) {
+    const NativeVectorReader<T> xs(value);
+    auto hash=hashText("vector");
+    for (std::size_t i=0; i<xs.size(); ++i) hash=hashMix(hash,hashNumericScalar(xs[i]));
+    return hash;
+}
+// @runtime groupOrderedCounts
+template <typename Key, typename Equal>
+Value groupOrderedCounts(Machine& m, Value sorted, Equal eq) {
+    const auto items = as<Ptr<VectorBase>>(sorted)->items();
+    std::vector<std::tuple<Key,Int>> result;
+    if (!items.empty()) {
+        std::size_t first = 0;
+        const auto emit = [&](std::size_t end) {
+            result.emplace_back(as<Key>(items[first]),static_cast<Int>(end-first));
+        };
+        for (std::size_t i=1; i<items.size(); ++i) {
+            if (eq(m,items[i],items[first])) continue;
+            emit(i);
+            first=i;
+        }
+        emit(items.size());
+    }
+    return nativePairVector<Key,Int>(std::move(result));
 }
 // @runtime Partition partition
 enum class Partition { windows, chunks, chunkBy };
@@ -1954,8 +2169,9 @@ Values withNativeWorklist(Machine& parent, WorklistRoute& state, Body body, Ptr<
     child.worklist = &state;
     return body(child);
 }
-// @runtime Consumption Consume consume
+// @runtime Consumption
 struct Consumption { Value value; std::optional<Values> broken; };
+// @runtime Consume consume
 enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, dict, counts, groupBy };
 template <Consume Mode>
 inline Consumption consume(Machine& parent, Walk source, const Value& arg,
@@ -2013,13 +2229,13 @@ inline Consumption consume(Machine& parent, Walk source, const Value& arg,
     return {std::move(result),std::move(broken)};
 }
 // @runtime sortScalarVectors
-template <typename T>
-Consumption sortScalarVectors(Machine& parent, Walk source, Ptr<Label> label) {
+template <typename T, typename Item>
+Consumption sortScalarVectors(Machine& parent, TypedWalk<Item> source, Ptr<Label> label) {
     struct Row { Ptr<ScalarVector<T>> value; UInt prefix; };
     std::vector<Row> rows;
     auto broken = loop(parent,[&](Machine& m){
-        source(m,[&](Value item){
-            auto data = scalarData<T>(item);
+        source(m,[&](Item typedItem){
+            auto data = scalarData<T>(typedItem);
             UInt prefix = 0;
             if constexpr (std::is_same_v<T,Byte>) {
                 const auto bytes = data->scalars();
@@ -2042,4 +2258,19 @@ Consumption sortScalarVectors(Machine& parent, Walk source, Ptr<Label> label) {
     Values result;result.reserve(rows.size());
     for (auto& row : rows) result.emplace_back(Ptr<VectorBase>(std::move(row.value)));
     return {vector(std::move(result)),std::move(broken)};
+}
+// @runtime testStream
+template <bool All, typename T, typename Predicate>
+std::pair<bool,std::optional<Values>> testStream(Machine& parent, TypedWalk<T> source, Predicate fn, Ptr<Label> label) {
+    bool result = All;
+    std::optional<Values> broken;
+    untilStopped([&](auto stop) {
+        broken = loop(parent,[&](Machine& m) {
+            source(m,[&](T typedItem) {
+                result = fn(m,std::move(typedItem));
+                if (result != All) stop();
+            });
+        },label);
+    });
+    return {result,std::move(broken)};
 }

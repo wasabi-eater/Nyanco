@@ -58,7 +58,7 @@ main = print "EffectWorker transform"`));
   const arithmetic = transpileCpp(compile('main = 1 + 2'));
   assert.doesNotMatch(arithmetic, /inline Values Machine::perform|std::string show\(/);
   const octets = transpileCpp(compile('main = bytes "abc"'));
-  assert.match(octets, /textStream<walkBytes>/);
+  assert.match(octets, /byteStream\(v\d+\)/);
   assert.doesNotMatch(octets, /inline void walkChars|decode\(/);
   const effects = transpileCpp(compile('main = handle {print "ok"} {put: {-> text k; resume k}}'));
   assert.match(effects, /#include <coroutine>/);
@@ -108,7 +108,7 @@ test('built-in calls select their operation at C++ compile time', () => {
   const source = transpileCpp(program);
   const emitted = source.slice(source.lastIndexOf('\nnamespace nyanco {'));
   for (const call of ['intOp<Arithmetic::divide>', 'vectorTail(', 'vectorLength(',
-    'transform<Transform::map>', 'transform<Transform::take>', 'partition<Partition::chunks>',
+    'transformTyped<Transform::map,Int,Int>', 'transformTyped<Transform::take,Int,Int>', 'partition<Partition::chunks>',
     'combinatorics<Combinatorics::combinations>', 'scalarOrder<Int>', 'queueOp<0>']) {
     assert.ok(emitted.includes(call),call);
   }

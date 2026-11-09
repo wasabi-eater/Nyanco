@@ -1,7 +1,6 @@
 chooseTwo = _ * (_ - 1) / 2
 
-sort_counts = sort; chunkBy {}; map {count}
-projectedPairs = sort_counts; map {chooseTwo}; sum
+projectedPairs = orderedCounts; map {chooseTwo _.1}; sum
 
 main =
     read; split " "; vmap {parseInt} -> [n m]

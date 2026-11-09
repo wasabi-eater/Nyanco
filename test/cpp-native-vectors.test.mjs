@@ -58,9 +58,46 @@ test('index, sort, search and slice hot paths never box vector elements',{skip:!
   assert.equal(run.stdout,'3\n2\n2\n2\n2\n');assert.equal(run.stderr.trim(),'0');
 });
 
-test('byte-vector sorting and grouped counts keep ordering, snapshots and effects',{skip:!available},()=>{
+test('native collectors, numeric parsers and scalar vector operations avoid element boxing',{skip:!available},()=>{
+  const program=compile(`main =
+    pairs <- vzip [1,2,3] [10,20]
+    pairs; map {_.0 + _.1}; sum; print
+    unzip pairs -> left right
+    left; map {+ 2}; sum; print
+    print (sum right)
+    bytes "Aé"; vector -> raw
+    fromBytes <- vbytes "Aé"
+    print (raw == fromBytes)
+    print (raw < vbytes "B")
+    print ((hash raw) == (hash fromBytes))
+    print ([0.0] == [-0.0])
+    print ((hash [0.0]) == (hash [-0.0]))
+    print (parseInt " +7 " + 1)
+    print (parseFloat " 1.5 " + 0.5)
+    print (catch {parseInt "invalid"})
+`);
+  const output=[];
+  new VM({...program,output:line=>output.push(line)}).evaluate('main');
+  let code=transpileCpp(program);
+  for(const spelling of ['zipNativeVectors<Int,Int>','unzipNativeVector<Int,Int>','mapNativePairs<Int,Int,Int>','transformTyped<Transform::map,Int,Int>',
+    'equalScalarVectors<double>','compareScalarVectors<Byte>','hashScalarVector<double>'])assert.ok(code.includes(spelling),spelling);
+  assert.match(code,/Int v\d+ = (?:\(co_await )?parseNumber<Int, true>/);
+  assert.match(code,/double v\d+ = (?:\(co_await )?parseNumber<double, true>/);
+  code=code.replace('struct VectorBase {','inline unsigned boxings = 0;\nstruct VectorBase {')
+    .replace('boxing.boxed.reserve(size());','++boxings; boxing.boxed.reserve(size());')
+    .replace('Values values;values.reserve(rows.size());','++boxings; Values values;values.reserve(rows.size());')
+    .replace('return nyanco::runTask(coroutineMain());','int status=nyanco::runTask(coroutineMain()); std::cerr << nyanco::boxings << "\\n"; return status;');
+  assert.match(code,/nyanco::boxings/);
+  const actual=execute(code);
+  assert.equal(actual.stdout,output.join('\n')+'\n');
+  assert.equal(actual.stderr.trim(),'0');
+  assert.equal(execute(transpileCpp(program,{nativeLocals:false,optimizeVectors:false})).stdout,actual.stdout);
+});
+
+test('native pair vectors and grouped counts preserve fields, snapshots and effects',{skip:!available},()=>{
   const program=compile(`effect classify : int -> int
 streamWithOffset a = map [1,2] {+ a}
+twice = * 2
 replacement = if True {exn "replacement"} {1}
 main =
     xs <- [byte 0, byte 255, byte 128, byte 1]
@@ -74,6 +111,18 @@ main =
     print (vector (map (chunkBy [1,1,2,1,1,1] {}) {count}))
     print (vector (map (chunkBy [1,2,-1,3] {>= 0}) {count}))
     print (orderedCounts [3,1,3,3,2,1])
+    orderedCounts [3,1,3,3,2,1]; map {twice _.1}; vector; print
+    orderedCounts [3,1,3,3,2,1]; map {.1; print $} -> later
+    print "created"
+    print (vector later)
+    orderedCounts [3,1,3,3,2,1]; dup; map {_.1}; vector; print; print
+    orderedCounts [3,1,3,3,2,1]; map {_.0}; vector; print
+    pairs <- [#(5, 10), #(7, 20)]
+    pairs; map {_.0 + _.1}; vector; print
+    pairs; map {-> #(a, b); a + b}; vector; print
+    pairs; map {}; vector; print
+    print ((pairs with [0] = #(8, 12)).[0]); print pairs.[0]
+    orderedCounts [[1],[1],[2,3]]; map {(length _.0) + _.1}; vector; print
     groups <- chunkBy [1,1,2] {}
     print (vector (map groups {count}))
     print (vector (map groups {vector}))
@@ -84,8 +133,12 @@ main =
   const expected=[];
   new VM({...program,output:line=>expected.push(line)}).evaluate('main');
   const code=transpileCpp(program);
-  assert.match(code,/sortScalarVectors<Byte>/);
+  assert.match(code,/sortScalarVectors<Byte,Ptr<VectorBase>>/);
   assert.match(code,/partition<Partition::chunkBy,true>/);
+  assert.match(code,/groupOrderedCounts<Int>/);
+  assert.match(code,/nativePairVector<Int,Int>\(std::vector<std::tuple<Int,Int>>/);
+  assert.match(code,/mapNativePairs<Int,Int,Int>/);
+  assert.match(code,/mapNativePairs<Ptr<VectorBase>,Int,Int>/);
   assert.match(code,/scalarSetAt<Byte>/);
   assert.match(code,/class CoroutineWorker/);
   assert.equal(execute(code).stdout,expected.join('\n')+'\n');

@@ -8,7 +8,7 @@ import {cppLifetimes} from './cpp-lifetimes.mjs';
 import {parseExpression} from '../../frontend/language.mjs';
 import {checkExpression, formatType, missingOperands, StaticTypeError} from '../../types/types.mjs';
 import {T, tuple, neverValues, StoppedEmission, items, effectParts, copyEnv, freshTypes} from '../native-types.mjs';
-import {transforms, streamTransforms, countTransform} from '../../runtime/iteration.mjs';
+import {transforms, streamTransforms, countTransform, predicateTransform} from '../../runtime/iteration.mjs';
 import {patternNames} from '../../types/type-syntax.mjs';
 import {hashText} from '../../runtime/hash-map.mjs';
 import {lowerCppCoroutines} from './cpp-coroutines.mjs';
@@ -156,6 +156,25 @@ export function transpileCpp(program, {
     return ['Int','Byte','double'].includes(native) ? native : item.numericLiterals ? 'Int' : null;
   };
   const localType = type => nativeLocals && nativeVectors && type && T.prune(type).tag==='list' ? 'Ptr<VectorBase>' : cppType(type);
+  function streamRepresentation(type) {
+    const resolved = T.prune(type);
+    if (resolved.tag === 'atom' && resolved.name === 'string') return 'std::string';
+    if (resolved.tag === 'atom' && resolved.name === 'char') return 'Char';
+    return resolved.numericLiterals ? 'Int' : localType(resolved);
+  }
+  function typedIterable(type) {
+    type = T.prune(type);
+    if (!nativeLocals || !optimizeVectors || lookupInstance(definitions.classes.get('streem'),[type])) return null;
+    if (type.name === 'range') return 'Int';
+    return ['list','stream'].includes(type.tag) && streamRepresentation(type.item) !== 'Value'
+      ? streamRepresentation(type.item) : null;
+  }
+  function nativePairTypes(type) {
+    type = T.prune(type);
+    if (type.tag !== 'tuple' || type.items.length !== 2 || T.prune(type.tail).tag !== 'tuple-end') return null;
+    const fields = type.items.map(localType);
+    return fields.includes('Value') ? null : fields;
+  }
   const managed = type => type==='Value' || type.startsWith('Ptr<');
   const vectorFactory = (type,data) => `${vectorScalar(type) ? 'scalarVector<'+vectorScalar(type)+'>' : 'vector'}(${data})`;
   const lifetimePlans = new WeakMap();
@@ -164,6 +183,7 @@ export function transpileCpp(program, {
   const helpers = new Map();
   const sites = [];
   const sitesByNode = new WeakMap();
+  const materializedSites = new Set();
   const representations = new Map();
   const scalarBindings = new Map();
   const cellBindings = new Map();
@@ -171,13 +191,18 @@ export function transpileCpp(program, {
   const knownSplits = new Map();
   const knownByteStreams = new Map();
   const knownChunks = new Map();
+  const pairLiterals = new Map();
   let inlineDepth = 0;
+  function quoteValue(site, env, self = '{}') {
+    materializedSites.add(site);
+    return `std::make_shared<Quote>(Quote{${site}, ${env}, ${self}})`;
+  }
   function materializeQuote(value,ctx) {
     const known = knownQuotes.get(value);
     if (!known?.deferred) return;
     known.deferred = false;
     const captured = known.directEnv ? captureEnv(ctx,known.env,known.names) : known.env;
-    ctx.add(`Value ${value} = std::make_shared<Quote>(Quote{${known.site}, ${captured}, {}});`);
+    ctx.add(`Value ${value} = ${quoteValue(known.site,captured)};`);
   }
   let next = 0;
   const id = prefix => `${prefix}${next++}`;
@@ -185,7 +210,7 @@ export function transpileCpp(program, {
   const latent = effect => typedDispatch ? T.effectSnapshot(effect.effects) : undefined;
   const signatureKey = (input, output, effect) => formatType(T.quote(tuple(input), tuple(output), effect && latent(effect)));
   const representation = value => representations.get(value) || representations.get(/^std::move\((\w+)\)$/.exec(value)?.[1]) || 'Value';
-  function singleUseStream(producer,ctx,source,stack) {
+  function singleUseValue(producer,ctx,source,stack) {
     if(producer?.ctx!==ctx || stack.includes(source) || ctx.splitAliases?.(source))return false;
     const reference=new RegExp('\\b'+source+'\\b');
     return !ctx.lines.slice(producer.line+1).some(line=>reference.test(line));
@@ -231,9 +256,22 @@ export function transpileCpp(program, {
     const snapshot = id('captured');
     const dynamic = names.filter(name=>!scalars.has(name)&&!shared.has(name));
     ctx.add(`Env ${snapshot} = ${env}.select({${dynamic.map(string).join(', ')}});`);
-    for (const name of names) if (scalars.has(name)) ctx.add(`${snapshot}.bind(${string(name)}, ${scalars.get(name)});`);
+    for (const name of names) if (scalars.has(name)) {
+      const value = scalars.get(name), type = representation(value);
+      if (nativeLocals && type !== 'Value') {
+        ctx.add(`${snapshot}.bindCell(${string(name)}, std::make_shared<NativeCell<${type}>>(${value}, false));`);
+      } else ctx.add(`${snapshot}.bind(${string(name)}, ${value});`);
+    }
     for (const name of names) if (shared.has(name)) ctx.add(`${snapshot}.bindCell(${string(name)}, ${shared.get(name).ref});`);
     return snapshot;
+  }
+  function captureLayout(env, names) {
+    return nativeLocals ? names.flatMap(name => {
+      const cell = cells(env).get(name);
+      if (cell) return [{name,type:cell.type,mutable:true}];
+      const type = representation(bindings(env).get(name));
+      return type === 'Value' ? [] : [{name,type,mutable:false}];
+    }) : [];
   }
 
   function context() {
@@ -295,6 +333,14 @@ export function transpileCpp(program, {
           if(field.mutable||mutable?.get(field.value))cells(env).set(field.value,{ref:ctx.value(`std::make_shared<NativeCell<Value>>(std::move(${value}))`,'Ptr<NativeCell<Value>>'),type:'Value'});
           else bindings(env).set(field.value,value);
         });});
+        continue;
+      }
+      const pair = ctx.nativePairs?.get(inputs[i]);
+      if (pair && p.kind==='tuple-pattern' && p.fields.length===2 &&
+          p.fields.every(field=>field.kind==='word' && !field.mutable && !mutable?.get(field.value))) {
+        p.fields.forEach((field,j)=>{
+          if(field.value!=='_')bindings(env).set(field.value,ctx.value(pair[j],representation(pair[j])));
+        });
         continue;
       }
       if(at&&p.kind==='tuple-pattern'&&element?.tag==='tuple'&&p.fields.length===element.items.length&&
@@ -429,7 +475,7 @@ export function transpileCpp(program, {
       spec.outputTypes.forEach((type,i) => stack.push(ctx.value(`std::get<${i}>(std::move(${result}))`,type)));
     }
   }
-  function registerSite(node, env, body = node.body, type = null) {
+  function registerSite(node, env, body = node.body, type = null, captures = []) {
     const arities = [];
     if (type) {
       // Keep the creation context as well as the minimal stack effect. Loop
@@ -443,13 +489,14 @@ export function transpileCpp(program, {
       }
     }
     const key = [...env].map(([name, scheme]) =>
-      name + '=' + (scheme.callable ? 'function:' : 'value:') + formatType(scheme.type)).join(';') + ';arity=' + JSON.stringify(arities);
+      name + '=' + (scheme.callable ? 'function:' : 'value:') + formatType(scheme.type)).join(';') +
+      ';arity=' + JSON.stringify(arities) + ';captures=' + JSON.stringify(captures);
     if (!sitesByNode.has(node)) sitesByNode.set(node, new Map());
     const existing = sitesByNode.get(node);
     if (existing.has(key)) return existing.get(key);
     if (sites.length >= 500) throw new Error('C++ quotation specialization limit exceeded');
     const site = sites.length;
-    sites.push({site, node, body, env: copyEnv(env), arities});
+    sites.push({site, node, body, env: copyEnv(env), arities, captures});
     existing.set(key, site);
     return site;
   }
@@ -478,14 +525,16 @@ export function transpileCpp(program, {
     const enclosingTail = ctx.tailPositions;
     const inheritsTail = tail && stack.length === parts.input.length;
     // The caller can need its original state on another branch or cancellation.
-    const inputs = take(stack,parts.input.length).map(value => ctx.value(ctx.consumableInputs?.has(value)?`std::move(${value})`:value,representation(value)));
+    const inputs = take(stack,parts.input.length).map(value => ctx.nativePairs?.has(value) ? value :
+      ctx.value(ctx.consumableInputs?.has(value)?`std::move(${value})`:value,representation(value)));
     const local = needsLocalEnv(known.node.body) ? cloneEnv(ctx,known.env) : known.env;
     inlineDepth++;
     ctx.tailPositions = inheritsTail ? tailPositions(known.node.body,analysis.trace) : null;
     let result;
     try { result = emit(known.node.body,inputs,local,new Map(),analysis.trace,ctx); }
     finally { inlineDepth--; ctx.tailPositions = enclosingTail; }
-    ir.describe(analysis.trace,{kind:'inline-quotation',site:known.site},parts.input,parts.output);
+    const describe = () => ir.describe(analysis.trace,{kind:'inline-quotation',site:known.site},parts.input,parts.output);
+    if (ctx.pendingDescriptions) ctx.pendingDescriptions.push(describe); else describe();
     if (result.never) return result;
     stack.push(...result);
     return stack;
@@ -677,6 +726,13 @@ return {option(${args[0]})};
     const check = call => kind === 'eq' ? `if (!${call}) return false;` : `if (auto rank = ${call}) return rank;`;
     const fallback = {eq:'equal(a,b)',ord:'compare(a,b)',hash:'hashValue(a)',show:'show(a)'}[kind];
     if (type.tag === 'list') {
+      const native=vectorScalar(type);
+      if (native && kind!=='show' && !lookupInstance(definitions.classes.get(kind),[T.prune(type.item)])) {
+        if (kind==='eq') ctx.add(`return equalScalarVectors<${native}>(m,a,b);`);
+        else if (kind==='ord') ctx.add(`return compareScalarVectors<${native}>(a,b);`);
+        else ctx.add(`return hashScalarVector<${native}>(a);`);
+        return fn;
+      }
       ctx.add('const auto& xs = as<Ptr<VectorBase>>(a)->items();');
       if (pair) {
         ctx.add('const auto& ys = as<Ptr<VectorBase>>(b)->items();');
@@ -912,9 +968,25 @@ return {option(${args[0]})};
           case 'list':
           case 'tuple': {
             const elements = child(n.body);
+            const outputType = T.prune(info.output).item;
+            const pair = nativeLocals && optimizeVectors && nativeVectors && nativePairTypes(n.kind==='list' ? T.prune(outputType).item : outputType);
+            if (n.kind==='list' && pair && elements.length && new Set(elements).size===elements.length &&
+                elements.every(value=>singleUseValue(pairLiterals.get(value),ctx,value,stack))) {
+              const row = `std::tuple<${pair.join(',')}>`;
+              for (const value of elements) {
+                const {line,fields} = pairLiterals.get(value);
+                ctx.lines[line] = `${row} ${value}{${fields.join(',')}};`;
+                representations.set(value,row);
+              }
+              const rows=elements.map(value=>`std::move(${value})`).join(',');
+              stack.push(ctx.value(`nativePairVector<${pair.join(',')}>(std::vector<${row}>{${rows}})`));
+              break;
+            }
             const owned = elements.map((value,i) => ctx.move(value,elements.filter((_,j) => i !== j)));
-            const native = n.kind === 'list' && vectorScalar(T.prune(info.output).item);
-            stack.push(ctx.value(native ? `scalarVector<${native}>(std::vector<${native}>{${elements.map(value=>readAs(value,native)).join(', ')}})` : `${n.kind === 'list' ? 'vector' : 'tuple'}(${values(owned)})`));
+            const native = n.kind === 'list' && vectorScalar(outputType);
+            const value=ctx.value(native ? `scalarVector<${native}>(std::vector<${native}>{${elements.map(value=>readAs(value,native)).join(', ')}})` : `${n.kind === 'list' ? 'vector' : 'tuple'}(${values(owned)})`);
+            if (n.kind==='tuple' && pair) pairLiterals.set(value,{ctx,line:ctx.lines.length-1,fields:owned.map((field,i)=>readAs(field,pair[i]))});
+            stack.push(value);
             break;
           }
           case 'interpolation': {
@@ -948,9 +1020,11 @@ return {option(${args[0]})};
           case 'field':
             stack.push(ctx.value(`field(${stack.pop()}, ${string(n.name)})`));
             break;
-          case 'tuple-index':
-            stack.push(ctx.value(`tupleAt(${stack.pop()}, ${n.index})`));
+          case 'tuple-index': {
+            const source=stack.pop(), field=ctx.nativePairs?.get(source)?.[n.index];
+            stack.push(field ? ctx.value(field,representation(field)) : ctx.value(`tupleAt(${source}, ${n.index})`));
             break;
+          }
           case 'list-index': {
             if(n.sliceMethod){const source=stack.pop();stack.push(callSlice(ctx,n,info.indexGet,[source,...n.fields.map(f=>child(f.body)[0])]));break;}
             const source = stack.pop(), index = child(n.body)[0];
@@ -1014,29 +1088,34 @@ return {option(${args[0]})};
             break;
           }
           case 'quote': {
-            const site = registerSite(n, info.env,n.body,T.prune(info.output).item);
             const names = lifetimes.captures.get(n) || [];
+            const site = registerSite(n,info.env,n.body,T.prune(info.output).item,captureLayout(env,names));
             const consumer = lowered.slice(instructionIndex+1).find(i => i.source.kind !== 'quote')?.source;
+            const standard = definitions.get(consumer?.value)?.[0]?.token.file === '<standard>';
+            const callbackConsumer = nativeLocals && lowered[instructionIndex+1]?.source === consumer &&
+              (['map','filter','takeWhile','skipWhile','flatMap','chunkBy','groupBy','sortBy','maxiBy','miniBy','all','any','fromYield'].includes(consumer?.value) ||
+                standard && consumer.value === 'repeatWith');
             const immediate = consumer?.kind === 'word' && !trace.get(consumer)?.env.has(consumer.value) &&
-              ['call','if','when','while','each','fold','vmap','vfilter','vscan','partitionPoint'].includes(consumer.value) &&
-              (!definitions.has(consumer.value) || consumer.value === 'partitionPoint' && definitions.get(consumer.value)[0].token.file === '<standard>') && !n.blockLabel;
+              (callbackConsumer || ['call','if','when','while','each','fold','vmap','vfilter','vscan','partitionPoint'].includes(consumer.value)) &&
+              (!definitions.has(consumer.value) || standard && ['partitionPoint','repeatWith'].includes(consumer.value)) && !n.blockLabel;
             const directEnv = immediate && (nativeLocals || !needsLocalEnv(n.body));
             const captured = directEnv ? env : captureEnv(ctx,env,names);
-            const value = immediate ? id('v') : ctx.value(`std::make_shared<Quote>(Quote{${site}, ${captured}, {}})`);
+            const value = immediate ? id('v') : ctx.value(quoteValue(site,captured));
             const scalarCaptures = names.flatMap(name=>{
               const local = bindings(env).get(name);
               return local && !managed(representation(local)) ? [[name,local]] : [];
             });
             knownQuotes.set(value,{node:n,env:captured,types:copyEnv(info.env),ctx,site,names,directEnv,deferred:immediate,lifetimes,scalarCaptures});
-            if(instruction.ir&&nativeLocals&&directEnv)instruction.ir.memory={binding:'lexical-capture',reason:'synchronous-call'};
+            if(instruction.ir&&nativeLocals&&directEnv)instruction.ir.memory={binding:'lexical-capture',reason:callbackConsumer?'compiled-callback':'synchronous-call'};
             stack.push(value);
             break;
           }
           case 'local-function': {
-            const site = registerSite(n, info.localEnv);
+            const names = lifetimes.captures.get(n) || [];
+            const site = registerSite(n,info.localEnv,n.body,null,captureLayout(env,names));
             const name = string(n.name);
-            const captured = captureEnv(ctx,env,lifetimes.captures.get(n) || []);
-            ctx.add(`${env}.bind(${name}, std::make_shared<Quote>(Quote{${site}, ${captured}, ${name}}));`);
+            const captured = captureEnv(ctx,env,names);
+            ctx.add(`${env}.bind(${name}, ${quoteValue(site,captured,name)});`);
             bindings(env).delete(n.name);
             cells(env).delete(n.name);
             break;
@@ -1262,22 +1341,54 @@ return {option(${args[0]})};
 ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
 }`;
   }
-  function callback(ctx, q, effect, at) {
+  const typedWalker = (source,type) => `[${source}](Machine& m, const TypedVisit<${type}>& visit) { walkTyped<${type}>(m,${source},visit); }`;
+  function callback(ctx, q, effect, at, layout = null, output = 'Value', arity = 1) {
     const inner = context();
-    inner.consumableInputs = new Set(['item']);
     const known = knownQuotes.get(q);
-    const env = `as<Ptr<Quote>>(${q})->env`;
-    const scalars = known?.ctx === ctx && !known.directEnv ? known.scalarCaptures : [];
+    const pair = Array.isArray(layout) ? layout : null;
+    if (pair && (!known || known.node.blockLabel || inlineDepth>=12)) return null;
+    const scalar = typeof layout === 'string' ? layout : null;
+    const fields = pair && pair.map(type=>{
+      const field=id('pairField');representations.set(field,type);return field;
+    });
+    const input = fields ? id('nativeTuple') : scalar || output !== 'Value' ? id('typedItem') : 'item';
+    const args = arity ? [input] : [];
+    if (scalar) representations.set(input,scalar);
+    inner.consumableInputs = new Set([input]);
+    if (fields) {
+      inner.nativePairs = new Map([[input,fields]]);
+      inner.pendingDescriptions = [];
+    }
+    const canInline = known?.ctx === ctx && !known.node.blockLabel && inlineDepth < 12;
+    // A compiled lazy callback owns its captures. Only mutable bindings share
+    // a cell, so updates made after creating the stream are still visible.
+    const lexical = canInline && known.directEnv && known.names.every(name =>
+      bindings(known.env).has(name) || cells(known.env).has(name));
+    const env = lexical ? id('callbackEnv') : `as<Ptr<Quote>>(${q})->env`;
+    const scalars = lexical ? known.names.filter(name=>bindings(known.env).has(name))
+      .map(name=>[name,bindings(known.env).get(name)]) : canInline && !known.directEnv ? known.scalarCaptures : [];
+    const shared = lexical ? known.names.filter(name=>cells(known.env).has(name))
+      .map(name=>[name,cells(known.env).get(name)]) : [];
     let expanded;
     if (known && !known.node.blockLabel) {
       scalarBindings.set(env,new Map(scalars));
-      try { expanded = inlineQuote(inner,q,effect,['item'],{...known,ctx:inner,env}); }
-      finally { scalarBindings.delete(env); }
+      cellBindings.set(env,new Map(shared));
+      try { expanded = inlineQuote(inner,q,effect,[...args],{...known,ctx:inner,env}); }
+      finally { scalarBindings.delete(env); cellBindings.delete(env); }
     }
-    const result = expanded || callQuote(inner, q, effect, ['item'], at);
-    if (!result.never) inner.add(`return ${result[0]};`);
-    const captures = [...new Set([q,...scalars.map(([,value])=>value)])];
-    return `[${captures.join(', ')}](Machine& m, Value item) -> Value {\n${inner.lines.join('\n')}\n}`;
+    if (fields) {
+      // Any reference to the whole tuple requires the regular boxed ABI.
+      const reference = new RegExp('\\b'+input+'\\b');
+      if (!expanded || expanded.includes(input) || inner.lines.some(line=>reference.test(line))) return null;
+      inner.pendingDescriptions.forEach(describe=>describe());
+    }
+    if (!lexical) materializeQuote(q,ctx);
+    const result = expanded || callQuote(inner, q, effect, args, at);
+    if (!result.never && output !== 'void') inner.add(`return ${readAs(result[0],output)};`);
+    if (lexical && inner.lines.some(line=>line.includes(env))) inner.lines.unshift(`Env ${env} = m.globals;`);
+    const captures = [...new Set([...(lexical?[]:[q]),...scalars.map(([,value])=>value),...shared.map(([,cell])=>cell.ref)])];
+    const parameters = fields ? fields.map((field,i)=>`const ${pair[i]}& ${field}`).join(', ') : `${scalar || 'Value'} ${input}`;
+    return `[${captures.join(', ')}](Machine& m${arity ? ', '+parameters : ''}) -> ${output} {\n${inner.lines.join('\n')}\n}`;
   }
   function directPartitionPoint(n,info,stack,ctx) {
     const q = stack.at(-1), known = knownQuotes.get(q);
@@ -1365,17 +1476,28 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     if(['repeat','repeatWith'].includes(name)&&definitions.get(name)?.[0].token.file==='<standard>'){
       const value=stack.at(-1),known=knownQuotes.get(value);
       if(name==='repeat'||!known?.node.blockLabel){
-        stack.pop();const inner=context();
-        const result=name==='repeat'?[value]:(known?inlineQuote(inner,value,items(info.input).at(-1),[],{...known,ctx:inner,env:`as<Ptr<Quote>>(${value})->env`}):null)??callQuote(inner,value,items(info.input).at(-1),[],at);
-        if(!result.never)inner.add(`visit(${result[0]});`);
-        stack.push(ctx.value(`stream([${value}](Machine& parent,const Visit& visit){loop(parent,[&](Machine& m){while(true){\n${inner.lines.join('\n')}\n}});})`));return stack;
+        stack.pop();
+        const type = nativeLocals && optimizeVectors ? streamRepresentation(T.prune(T.prune(info.output).item).item) : 'Value';
+        const captured = name === 'repeat' ? ctx.value(readAs(value,type),type) : id('repeated');
+        if (name === 'repeatWith') ctx.add(`auto ${captured} = ${callback(ctx,value,items(info.input).at(-1),at,null,type,0)};`);
+        const result = name === 'repeat' ? captured : `${captured}(m)`;
+        const factory = type === 'Value' ? 'stream' : `typedStream<${type}>`;
+        const visitor = type === 'Value' ? 'Visit' : `TypedVisit<${type}>`;
+        stack.push(ctx.value(`${factory}([${captured}](Machine& parent,const ${visitor}& visit) {
+loop(parent,[&](Machine& m) { while(true) visit(${result}); });
+})`));
+        return stack;
       }
     }
     if (name === 'unzip' && definitions.get(name)?.[0].token.file === '<standard>') {
       const source = stack.pop(), type = items(info.input).at(-1);
       if(nativeLocals){
-        const state=stack.map(value=>ctx.value(value,representation(value))),left=id('unzipped'),right=id('unzipped'),append=id('appendPair'),broken=id('breakResult');
         const outputTypes=items(info.output),lt=outputTypes.at(-2),rt=outputTypes.at(-1),ln=vectorScalar(lt),rn=vectorScalar(rt);
+        if (ln && rn && T.prune(type).tag==='list' && !lookupInstance(definitions.classes.get('streem'),[T.prune(type)])) {
+          stack.push(...ctx.call(`unzipNativeVector<${ln},${rn}>`,[source],2));
+          return stack;
+        }
+        const state=stack.map(value=>ctx.value(value,representation(value))),left=id('unzipped'),right=id('unzipped'),append=id('appendPair'),broken=id('breakResult');
         ctx.add(`${ln?'std::vector<'+ln+'>':'Values'} ${left};`,`${rn?'std::vector<'+rn+'>':'Values'} ${right};`);
         if(T.prune(type).tag==='list')ctx.add(`${left}.reserve(vectorLength(${source}));`,`${right}.reserve(vectorLength(${source}));`);
         ctx.add(`auto ${append} = [&](Value pair) {`,`const auto& fields=as<Ptr<Tuple>>(pair)->values;`,
@@ -1420,6 +1542,7 @@ ${inner.lines.join('\n')}
       stack.push(...dynamicResults(ctx,action,outCount()-stack.length));
       return stack;
     }
+    if (name === 'orderedCounts' && emitOrderedCounts(n,info,stack,ctx)) return stack;
     if (definitions.has(name)) {
       callNamed(ctx, name, info.effect, stack);
       return stack;
@@ -1459,7 +1582,9 @@ ${inner.lines.join('\n')}
       else {
         const value = pop(), [source, result] = conversion.types.map(cppType);
         const widening = source === result || result === 'double' || source === 'Byte' && result === 'Int';
-        if (nativeLocals && source !== 'Value' && result !== 'Value' && widening) {
+        if (nativeLocals && representation(value)==='Char' && ['Int','double'].includes(result)) {
+          stack.push(ctx.value(`static_cast<${result}>(${value}.code)`,result));
+        } else if (nativeLocals && source !== 'Value' && result !== 'Value' && widening) {
           stack.push(ctx.value(`static_cast<${result}>(${readAs(value,source)})`,result));
         } else push(`cast<${castType.get(conversion.destination)}>(m, ${value}, ${at})`);
       }
@@ -1469,7 +1594,10 @@ ${inner.lines.join('\n')}
       const kind = name.startsWith('v') ? 'textVector' : 'textStream';
       const walk = name.endsWith('chars') ? 'walkChars' : 'walkBytes';
       const text = pop();
-      push(`${kind}<${walk}>(${text}, ${at})`);
+      if (name==='bytes' && nativeLocals && optimizeVectors) push(`byteStream(${text})`);
+      else if (name==='chars' && nativeLocals && optimizeVectors) push(`charStream(${text}, ${at})`);
+      else if (name==='vbytes' && nativeLocals && vectorScalar(T.prune(info.output).item)==='Byte') push(`byteVector(${text})`);
+      else push(`${kind}<${walk}>(${text}, ${at})`);
       if (name === 'bytes') knownByteStreams.set(stack.at(-1),{ctx,line:ctx.lines.length-1,text});
     } else if (['head','tail','length'].includes(name)) {
       const value = pop();
@@ -1484,7 +1612,9 @@ ${inner.lines.join('\n')}
     } else if (name === 'at' || name === 'setAt') {
       stack.push(callIndex(ctx,n,info.effect,take(stack,name === 'at' ? 2 : 3)));
     } else if (['parseInt','parseFloat','toNum'].includes(name)) {
-      push(`parseNumber<${name === 'parseInt' ? 'Int' : 'double'}, ${name !== 'toNum'}>(m, ${pop()}, ${at})`);
+      const type = name==='parseInt' ? 'Int' : 'double', strict = name!=='toNum';
+      const text = pop(), parse = representation(text)==='std::string' ? 'parseNumberText' : 'parseNumber';
+      stack.push(ctx.value(`${parse}<${type}, ${strict}>(m, ${text}, ${at})`,nativeLocals && strict ? type : 'Value'));
     } else if (name === 'nop') {
       return stack;
     } else if (name === 'dup') stack.push(stack.at(-1));
@@ -1547,7 +1677,7 @@ ${inner.lines.join('\n')}
       const body = ['__a','call','__b','call'].map(value => ({...n,kind:'word',value}));
       const site = registerSite(n,captured,body,T.prune(info.output).item), e = id('env');
       ctx.add(`Env ${e};`, `${e}.bind("__a", ${a});`, `${e}.bind("__b", ${b});`);
-      push(`std::make_shared<Quote>(Quote{${site}, ${e}, {}})`);
+      push(quoteValue(site,e));
     } else if (name === 'handle') {
       const [q,handlers] = take(stack,2);
       const inner = context(), body = call(q,info.bodyType,[],inner);
@@ -1574,9 +1704,7 @@ ${handler.lines.join('\n')}
         ctx.add(`if (resumeTail(${k}, tailContinuation, ${values(args)}, ${at})) return {};`);
       stack.push(...dynamicResults(ctx,`resume(${k}, ${values(args)}, ${at})`,parts.output.length));
     } else if (name === 'fromYield') {
-      const q = pop(), inner = context();
-      call(q,info.bodyType,[],inner);
-      push(`fromYield(${label}, [${q}](Machine& m) {\n${inner.lines.join('\n')}\n})`);
+      push(`fromYield(${label}, ${callback(ctx,pop(),info.bodyType,at,null,'void',0)})`);
     } else {
       return collectionWord(n,info,stack,ctx,label,reuse);
     }
@@ -1591,7 +1719,7 @@ ${handler.lines.join('\n')}
     if (name === 'vmap' && split?.ctx === ctx && quote?.ctx === ctx && !quote.node.blockLabel &&
         parser.length === 1 && parser[0].kind === 'word' && ['parseInt','parseFloat'].includes(parser[0].value) &&
         !definitions.has(parser[0].value) && !quote.types.has(parser[0].value) &&
-        singleUseStream(split,ctx,source,stack)) {
+        singleUseValue(split,ctx,source,stack)) {
       // The stream is consumed once here. Its producer can store the two
       // strings directly; no substring Values or type-erased walker are needed.
       ctx.lines[split.line] = `SplitInput ${source}{as<std::string>(${split.text}), as<std::string>(${split.separator})};`;
@@ -1602,7 +1730,7 @@ ${handler.lines.join('\n')}
       const native = vectorScalar(T.prune(info.output).item);
       ctx.add(`${native ? 'std::vector<'+native+'>' : 'Values'} ${values};`, `auto ${broken} = loop(m,[&](Machine& m) {`,
         `splitParts(${source},[&](std::string_view part) {`,
-        `${values}.push_back(${native ? 'as<'+native+'>(' : ''}parseNumberText<${number},true>(m,part,${loc(parser[0])})${native ? ')' : ''});`, '});', `},${label});`);
+        `${values}.push_back(parseNumberText<${number},true>(m,part,${loc(parser[0])}));`, '});', `},${label});`);
       state.push(ctx.value(vectorFactory(T.prune(info.output).item,`std::move(${values})`)));
       replaceOnBreak(ctx,state,broken);
       return state;
@@ -1617,8 +1745,9 @@ ${handler.lines.join('\n')}
     if (name === 'vscan') ctx.add(`${collected}.push_back(${accumulator});`);
     const sourceType=T.prune(type.at(acc ? -3 : -2)),nativeItem=vectorScalar(sourceType);
     const inline = nativeLocals && quote?.ctx===ctx && !quote.node.blockLabel && inlineDepth<12;
-    const directBytes = inline && singleUseStream(bytes,ctx,source,stack);
+    const directBytes = inline && singleUseValue(bytes,ctx,source,stack);
     const direct = inline && (directBytes || sourceType.tag==='list' || sourceType.name==='range');
+    const typedItem = !direct && typedIterable(sourceType);
     let item='item', range=null, cursor=null;
     const release=[];
     if(direct){
@@ -1645,10 +1774,13 @@ ${handler.lines.join('\n')}
           `${itemType} ${item} = ${steal} ? ${itemType==='Value'?`std::move(${slot})`:`takeAs<${itemType}>(${slot})`} : ${readAs(value,itemType)};`);
       }
       else {range=data;cursor=id('cursor');ctx.add(`for(Int ${cursor}=${data}.first;;) {`,`if(${cursor}==${data}.last&&!${data}.inclusive)break;`,`Int ${item}=${cursor};`);}
-    }else ctx.add(`auto ${walk} = ${walker(source,sourceType,n)};`,
-      `auto ${broken} = loop(m, [&](Machine& m) {`, `${walk}(m, [&](Value item) {`);
+    }else {
+      if (typedItem) { item=id('typedItem'); representations.set(item,typedItem); }
+      ctx.add(`auto ${walk} = ${typedItem ? typedWalker(source,typedItem) : walker(source,sourceType,n)};`,
+        `auto ${broken} = loop(m, [&](Machine& m) {`, `${walk}(m, [&](${typedItem || 'Value'} ${item}) {`);
+    }
     const previousConsumable=ctx.consumableInputs;
-    if(direct&&name!=='vfilter')ctx.consumableInputs=new Set([item]);
+    if((direct||typedItem)&&name!=='vfilter')ctx.consumableInputs=new Set([item]);
     let output;
     try{output=callQuote(ctx,q,type.at(-1),[...state,...(acc ? [accumulator] : []),item],at,{allowInline:true});}
     finally{ctx.consumableInputs=previousConsumable;}
@@ -1691,7 +1823,7 @@ ${handler.lines.join('\n')}
       const mode = transforms.get(name);
       const arg = mode === 'flatten' ? null : stack.pop(), source = stack.pop();
       const chunks = knownChunks.get(source), quote = knownQuotes.get(arg);
-      if (name === 'map' && !n.handlerLabel && singleUseStream(chunks,ctx,source,stack) &&
+      if (name === 'map' && !n.handlerLabel && singleUseValue(chunks,ctx,source,stack) &&
           quote?.ctx === ctx && !quote.node.blockLabel && !quote.types.has('count') &&
           definitions.get('count')?.[0]?.token.file === '<standard>') {
         const body = quote.node.body.filter(node=>node.kind!=='capture' || node.slots.length);
@@ -1703,16 +1835,45 @@ ${handler.lines.join('\n')}
           return stack;
         }
       }
-      const type = types.at(arg ? -2 : -1), walk = walker(source,type,n);
+      const type = T.prune(types.at(arg ? -2 : -1));
+      const lazy = streamTransforms.has(name);
+      const outputType = T.prune(info.output).item;
       const count = countTransform(mode) ? `countValue(m, ${arg}, ${string(name)}, ${at})` : '0';
-      const fn = arg && !countTransform(mode) ? callback(ctx,arg,types.at(-1),at) : 'MapItem{}';
+      if (name==='map' && nativeLocals && optimizeVectors && nativeVectors && type.tag==='list' &&
+          !lookupInstance(definitions.classes.get('streem'),[type])) {
+        const pair = nativePairTypes(type.item), out = streamRepresentation(T.prune(outputType).item);
+        const fn = pair && callback(ctx,arg,types.at(-1),at,pair,out);
+        if (fn) {
+          const layout = out === 'Value' ? pair : [...pair,out];
+          push(`mapNativePairs<${layout.join(',')}>(${source},${fn},${label})`);
+          return stack;
+        }
+      }
+      const input = typedIterable(type);
+      const item = streamRepresentation(T.prune(outputType).item);
       const nestedType = mode === 'flatten' ? T.iterableItem(type)
         : mode === 'flatMap' ? items(T.prune(types.at(-1)).output).at(-1) : null;
+      const nestedItem = nestedType && typedIterable(nestedType);
+      if ((!nestedType && input) || nestedItem || (nativeLocals && optimizeVectors && mode==='map' && item!=='Value')) {
+        const nestedInput = mode === 'flatten' ? input || 'Value' : nestedItem ? localType(nestedType) : 'Value';
+        const result = mode === 'map' ? item : predicateTransform(mode) ? 'bool' : nestedInput;
+        const fn = !arg || countTransform(mode) ? 'nullptr'
+          : callback(ctx,arg,types.at(-1),at,input,result);
+        if (fn) {
+          const walk = input ? typedWalker(source,input) : walker(source,type,n);
+          const nested = nestedItem ? `,[](Machine& m, ${nestedInput} item, const TypedVisit<${nestedItem}>& visit) { walkTyped<${nestedItem}>(m,item,visit); }` : '';
+          const transformed = ctx.value(`transformTyped<Transform::${mode},${input || 'Value'},${item}>(${walk},${count},${fn},${lazy?label:'Ptr<Label>{}'},${!lazy}${nested})`);
+          if (lazy) stack.push(transformed);
+          else return collect(ctx,stack,typedWalker(transformed,item),label,outputType,vectorScalar(outputType));
+          return stack;
+        }
+      }
+      const walk = walker(source,type,n);
+      const fn = arg && !countTransform(mode) ? callback(ctx,arg,types.at(-1),at) : 'MapItem{}';
       const nested = nestedType ? `[](Machine& m, Value item, const Visit& visit) {
 auto walkItem = ${walker('item',nestedType,n)};
 walkItem(m,visit);
 }` : '{}';
-      const lazy = streamTransforms.has(name);
       const stream = ctx.value(`transform<Transform::${mode}>(${walk}, ${count}, ${fn}, ${lazy ? label : 'Ptr<Label>{}'}, ${!lazy}, ${nested})`);
       if (lazy) stack.push(stream);
       else return collect(ctx, stack, walker(stream,T.prune(info.output).item,n), label);
@@ -1720,7 +1881,7 @@ walkItem(m,visit);
     }
     if (name === 'split') {
       const [source,separator] = take(stack,2);
-      const line = ctx.lines.length, result = ctx.value(`split(${source}, ${separator})`);
+      const line = ctx.lines.length, result = ctx.value(`split<${nativeLocals && optimizeVectors}>(${source}, ${separator})`);
       knownSplits.set(result,{text:source,separator,line,ctx});
       stack.push(result);
       return stack;
@@ -1742,6 +1903,9 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       const [left,right] = take(stack,2);
       const lazy = name === 'zip';
       const vectors=T.prune(types.at(-2)).tag==='list'&&T.prune(types.at(-1)).tag==='list';
+      const pair = !lazy && vectors && nativeLocals && nativeVectors && optimizeVectors &&
+        nativePairTypes(T.prune(T.prune(info.output).item).item);
+      if (pair) { push(`zipNativeVectors<${pair.join(',')}>(${left},${right})`); return stack; }
       const combined = ctx.value(vectors?`zipVectors(${left},${right},${lazy?label:'Ptr<Label>{}'})`:`zip(${walker(left,types.at(-2),n)}, ${walker(right,types.at(-1),n)}, ${lazy ? label : 'Ptr<Label>{}'})`);
       if (lazy) stack.push(combined);
       else return collect(ctx,stack,`[${combined}](Machine& m,const Visit& visit){ walk(m,${combined},visit); }`,label);
@@ -1815,12 +1979,38 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
     T.unify(effect.input,T.stack(T.EMPTY,type,type));
     return effect;
   }
-  function collect(ctx, stack, walk, label, resultType = null) {
+  function emitOrderedCounts(n,info,stack,ctx) {
+    if (!nativeLocals || !nativeVectors || !optimizeVectors || definitions.get(n.value)?.[0].token.file !== '<standard>' ||
+        definitions.methods.get('==')?.className !== 'eq' ||
+        ['sort','length','head','each','vpush','=='].some(name=>definitions.has(name) || ir.globals.has(name))) return false;
+    const {input,output} = effectParts(info.effect);
+    if (input.length!==1 || output.length!==1) return false;
+    const pair = T.prune(T.prune(output[0]).item);
+    const item = T.prune(pair.items[0]);
+    const row = vectorScalar(item), scalar = cppType(item);
+    const eqClass = definitions.classes.get('eq');
+    if (lookupInstance(eqClass,[item])) return false;
+    let eq;
+    if (['Int','Byte'].includes(row) && !lookupInstance(eqClass,[T.prune(item.item)])) {
+      eq = `equalScalarVectors<${row}>`;
+    } else if (['Int','Byte','bool'].includes(scalar)) {
+      eq = `[](Machine&,const Value& a,const Value& b){return as<${scalar}>(a)==as<${scalar}>(b);}`;
+    } else return false;
+    const sortInfo = {input:tuple(input),output:tuple([{tag:'list',item}]),comparison:comparisonEffect('<',item)};
+    const [sorted] = consume({...n,value:'sort'},sortInfo,[stack.pop()],ctx,'Ptr<Label>{}');
+    stack.push(ctx.value(`groupOrderedCounts<${localType(item)}>(m,${ctx.move(sorted)},${eq})`));
+    return true;
+  }
+  function collect(ctx, stack, walk, label, resultType = null, native = null, order = null) {
     const result = id('items'), broken = id('breakResult');
     const state = stack.map(v => ctx.value(v));
-    ctx.add(`Values ${result};`, `auto ${broken} = loop(m,[&](Machine& m) {
-(${walk})(m,[&](Value item){${result}.push_back(std::move(item));});
+    ctx.add(`${native ? 'std::vector<'+native+'>' : 'Values'} ${result};`, `auto ${broken} = loop(m,[&](Machine& m) {
+(${walk})(m,[&](${native || 'Value'} typedItem){${result}.push_back(std::move(typedItem));});
 }, ${label});`);
+    if (order) {
+      const method = order === 'sort' ? 'stable_sort' : 'reverse';
+      ctx.add(`if (!${broken}) std::${method}(${result}.begin(), ${result}.end());`);
+    }
     state.push(ctx.value(vectorFactory(resultType,`std::move(${result})`)));
     replaceOnBreak(ctx,state,broken);
     return state;
@@ -1834,8 +2024,34 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       stack.push(ctx.value(`scalarOrder<${native}>(${ctx.move(source)},${name === 'reverse'},${optimizeVectors})`));
       return stack;
     }
-    const walk = walker(source,types.at(arg ? -2 : -1),n);
-    if (name === 'vector') return collect(ctx,stack,walk,label,T.prune(info.output).item);
+    if (name === 'vector') {
+      const bytes = knownByteStreams.get(source), resultType=T.prune(info.output).item;
+      if (nativeLocals && vectorScalar(resultType)==='Byte' && singleUseValue(bytes,ctx,source,stack)) {
+        ctx.lines[bytes.line] = `Value ${source} = byteVector(${bytes.text});`;
+        knownByteStreams.delete(source);
+        stack.push(source);
+        return stack;
+      }
+      const item = typedIterable(types.at(-1));
+      if (item && item === vectorScalar(resultType)) return collect(ctx,stack,typedWalker(source,item),label,resultType,item);
+      return collect(ctx,stack,walker(source,types.at(-1),n),label,resultType);
+    }
+    const sourceType = types.at(arg ? -2 : -1), walk = walker(source,sourceType,n);
+    const itemType = typedIterable(sourceType);
+    const order = name === 'reverse' || name === 'sort' && !customMethod({...n,value:'<'},info.comparison);
+    if (order && itemType && itemType === vectorScalar(T.prune(info.output).item)) {
+      return collect(ctx,stack,typedWalker(source,itemType),label,T.prune(info.output).item,itemType,name);
+    }
+    if (itemType && ['all','any'].includes(name)) {
+      const predicate = callback(ctx,arg,types.at(-1),at,itemType,'bool');
+      if (predicate) {
+        const result = id('tested'), state = stack.map(value => ctx.value(value,representation(value)));
+        ctx.add(`auto ${result} = testStream<${name==='all'},${itemType}>(m,${typedWalker(source,itemType)},${predicate},${label});`);
+        state.push(ctx.value(`${result}.first`,'bool'));
+        replaceOnBreak(ctx,state,`${result}.second`);
+        return state;
+      }
+    }
     if (name === 'sort') {
       const item = T.prune(T.prune(info.output).item).item;
       const key = vectorScalar(item);
@@ -1843,7 +2059,8 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
           !lookupInstance(definitions.classes.get('ord'),[T.prune(T.prune(item).item)])) {
         const result = id('sorted');
         const state = stack.map(value => ctx.value(value));
-        ctx.add(`auto ${result} = sortScalarVectors<${key}>(m,${walk},${label});`);
+        const row = itemType === 'Ptr<VectorBase>' ? itemType : 'Value';
+        ctx.add(`auto ${result} = sortScalarVectors<${key},${row}>(m,${row === 'Value' ? walk : typedWalker(source,row)},${label});`);
         state.push(ctx.value(`std::move(${result}.value)`));
         replaceOnBreak(ctx,state,`${result}.broken`);
         return state;
@@ -1853,12 +2070,12 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       ? makeDict(ctx,T.prune(T.prune(info.output).item).args[0],n,T.prune(T.prune(info.output).item).args[1]) : null;
     const key = arg && !['join','nth'].includes(name) ? callback(ctx,arg,types.at(-1),at) : '{}';
     const cmp = context();
-    const order = info.comparison && !['groupBy','all','any'].includes(name);
-    const less = order ? callBinary(cmp,{...n,value:'<'},'a','b',info.comparison) : null;
+    const comparison = info.comparison && !['groupBy','all','any'].includes(name);
+    const less = comparison ? callBinary(cmp,{...n,value:'<'},'a','b',info.comparison) : null;
     const compare = less ? `[](Machine& m, const Value& a,const Value& b) { ${cmp.lines.join(' ')} return truth(${less}); }` : '{}';
     const result = id('consumed');
     const state = stack.map(v => ctx.value(v));
-    ctx.add(`auto ${result} = consume<Consume::${name}>(m,${walk},${arg || 'Value{}'},${key},${compare},${dict || '{}'},${label});`);
+    ctx.add(`auto ${result} = consume<Consume::${name}>(m,${walk},${['join','nth'].includes(name) ? arg : 'Value{}'},${key},${compare},${dict || '{}'},${label});`);
     state.push(ctx.value(`std::move(${result}.value)`));
     replaceOnBreak(ctx,state,`${result}.broken`);
     return state;
@@ -1890,7 +2107,8 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
   let changed = true;
   while (changed) {
     changed = false;
-    for (const spec of invocations.values()) for (const {site,node,body,env,arities} of sites) {
+    for (const spec of invocations.values()) for (const {site,node,body,env,arities,captures} of sites) {
+      if (!materializedSites.has(site)) continue;
       if (spec.cases.has(site)) continue;
       spec.cases.set(site,null);
       // A non-returning quotation can discard any preserved stack prefix.
@@ -1918,6 +2136,19 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       if (spec.tailHandler && !node.blockLabel) ctx.tailPositions = tailPositions(body,analysis.trace);
       scalarBindings.delete('local');
       cellBindings.delete('local');
+      for (const capture of captures) {
+        const {name,type,mutable} = capture;
+        const cell = `local.cell(${string(name)})`;
+        if (mutable) {
+          const ref = ctx.value(`std::static_pointer_cast<NativeCell<${type}>>(${cell})`,`Ptr<NativeCell<${type}>>`);
+          cells('local').set(name,{ref,type});
+        } else {
+          const slot = id('capturedSlot');
+          ctx.add(`const ${type}& ${slot} = static_cast<const NativeCell<${type}>&>(*${cell}).value;`);
+          representations.set(slot,type);
+          bindings('local').set(name,slot);
+        }
+      }
       const results = emit(body,arguments_(spec.input.length),'local',new Map(),analysis.trace,ctx);
       ir.describe(analysis.trace,{kind:'quotation',site,signature:spec.key},spec.input,spec.output);
       if (node.blockLabel) {

@@ -1,8 +1,19 @@
 export const problemIDs = [
+ 'abc438_e',
  'abc480_a','abc480_b','abc480_c','abc480_d',
  'abc481_a','abc481_b','abc481_c','abc481_d',
+ 'abc482_c',
  'abc483_e','abc483_e-unpacked',
 ];
+export const problemLimit = id => id==='abc438_e' ? 3000 : id.startsWith('abc483_e') ? 4000 : 2000;
+
+function bucketInput(successors,queries){
+ return [`${successors.length} ${queries.length}`,successors.join(' '),...queries.map(q=>q.join(' '))].join('\n')+'\n';
+}
+
+function bandInput(size,points,queries){
+ return [`${size} ${size} ${points.length} ${queries.length}`,...points.map(p=>p.join(' ')),...queries.map(q=>q.join(' '))].join('\n')+'\n';
+}
 
 function typoInput(words){return `${words.length} ${words[0].length}\n${words.join('\n')}\n`;}
 
@@ -30,6 +41,30 @@ function typoPairsByBlock(words){
 }
 
 export function stressCases(id){
+ if(id==='abc438_e'){
+  const n=200000,queries=Array.from({length:n},(_,i)=>[1000000000-i*4831,i*7919%n+1]);
+  const triangular=x=>x*(x+1)/2;
+  return [true,false].map(cycle=>{
+   const successors=Array.from({length:n},(_,i)=>i+1<n?i+2:cycle?1:n);
+   const output=queries.map(([turns,start])=>{
+    if(!cycle){
+     const before=Math.min(turns,n-start);
+     return triangular(start+before-1)-triangular(start-1)+(turns-before)*n;
+    }
+    const remainder=turns%n, first=Math.min(remainder,n-start+1);
+    return Math.floor(turns/n)*triangular(n)+triangular(start+first-1)-triangular(start-1)+triangular(remainder-first);
+   }).join('\n')+'\n';
+   return {name:cycle?'max-cycle':'max-chain',input:bucketInput(successors,queries),output};
+  });
+ }
+ if(id==='abc482_c'){
+  const n=300000,points=Array.from({length:n},(_,i)=>[i+1,n-i]);
+  const queries=Array.from({length:n},(_,i)=>{
+   const a=i*7919%n+1,b=i*104729%n+1;
+   return [i%2+1,Math.min(a,b),Math.max(a,b)];
+  });
+  return [{name:'max-permutation',input:bandInput(n,points,queries),output:queries.map(([,lo,hi])=>hi-lo+1).join('\n')+'\n'}];
+ }
  if(id.startsWith('abc483_e')){
   const n=200000;let seed=0x483;
   const letter=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return 97+(seed>>>0)%26;};
@@ -81,6 +116,32 @@ export function stressCases(id){
 export function smallCases(id){
  let seed=123456789;const rnd=n=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n;};
  const out=[],emit=(input,answer)=>out.push({name:'small-'+out.length,input,output:Array.isArray(answer)?answer.join('\n')+'\n':answer+'\n'});
+ if(id==='abc438_e'){
+  emit(bucketInput([2,1],[[1000000000,1],[999999999,2]]),[1500000000,1499999999]);
+  for(let trial=0;trial<20;trial++){
+   const n=2+rnd(12),successors=Array.from({length:n},()=>1+rnd(n));
+   const queries=Array.from({length:12},()=>[1+rnd(73),1+rnd(n)]);
+   emit(bucketInput(successors,queries),queries.map(([turns,start])=>{
+    let sum=0,person=start;
+    for(let t=0;t<turns;t++){sum+=person;person=successors[person-1];}
+    return sum;
+   }));
+  }
+  return out;
+ }
+ if(id==='abc482_c'){
+  for(let trial=0;trial<20;trial++){
+   const size=1+rnd(11),points=[];
+   for(let r=1;r<=size;r++)for(let c=1;c<=size;c++)if(rnd(9)<3)points.push([r,c]);
+   if(!points.length)points.push([1,1]);
+   const queries=Array.from({length:14},()=>{
+    const a=1+rnd(size),b=1+rnd(size);
+    return [1+rnd(2),Math.min(a,b),Math.max(a,b)];
+   });
+   emit(bandInput(size,points,queries),queries.map(([kind,lo,hi])=>points.filter(p=>lo<=p[kind-1]&&p[kind-1]<=hi).length));
+  }
+  return out;
+ }
  if(id.startsWith('abc483_e')){
   const check=words=>{
    let count=0;
