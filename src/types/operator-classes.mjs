@@ -14,7 +14,14 @@ export const standardOperatorClasses=new Map([
   ['eq',['==','/=']],['ord',['<','<=','>','>=']],['and',['.&.']],['or',['.|.']],['xor',['xor']],['shl',['.<<.']],['shr',['.>>.']],['append',['++']],
 ]);
 export const operatorFallback=(c,t)=>c.operatorClass && [...c.methods.keys()].filter(op=>operatorSpecs.has(op)).every(op=>operatorSpecs.get(op).accept(t));
-export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='set'?'set':v?.kind==='dict'?'dict':v?.kind==='range'?'range':v?.kind==='scalar'?v.type:typeof v==='number'?'int':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
+export const runtimeTypeKey=v=>Array.isArray(v)?'vector':['set','dict','range','deque','heap'].includes(v?.kind)?v.kind:v?.kind==='scalar'?v.type:typeof v==='number'?'int':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
+const collectionOperations = new Map([
+  ['push',new Map([['vector','vpush'],['set','sinsert'],['deque','qpush'],['heap','hpush']])],
+  ['pop',new Map([['vector','vpop'],['deque','qpopFront'],['heap','hpop']])],
+  ['peek',new Map([['vector','vpeek'],['deque','qpeek'],['heap','hpeek']])],
+]);
+export const collectionOperationWord=(name,kind)=>collectionOperations.get(name)?.get(kind);
+export const collectionOperationTarget=(type,name)=>collectionOperationWord(name,type?.tag==='list'?'vector':type?.tag==='adt'?type.name:null);
 export function collectionQueryType(type, query) {
   if (type.tag==='list') return 'vector';
   if (type.tag==='adt' && ['dict','set','deque','heap'].includes(type.name)) return type.name;
@@ -24,6 +31,7 @@ export function collectionQueryType(type, query) {
 export function builtinInstance(c,t) {
   if(!c)return false;
   if(c.collectionQuery)return !!collectionQueryType(t,c.name);
+  if(c.collectionOperation)return !!collectionOperationTarget(t,c.name);
   if(c.sliceClass)return t.tag==='list';
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
   return !!(c.name==='eq'&&t.tag==='continuation'||(c.hashClass||c.name==='eq'||c.name==='ord')&&(t.tag==='atom'&&(c.name==='ord'?['int','float','byte','char','string','bool','range']:['int','float','byte','char','string','bool','range']).includes(t.name)||['list','tuple','tuple-tail','tuple-end','record','record-row','record-empty'].includes(t.tag)||t.tag==='adt'&&(['option','result','dict'].includes(t.name)||t.name==='set'&&c.name!=='ord'))||c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='adt'&&['dict','deque','heap','set'].includes(t.name)||t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
@@ -69,6 +77,13 @@ export function installOperatorClasses(classes,methods) {
     const associated=membership?[{name:'item',owner:name,param:"'member"}]:[];
     const m={name,className:name,param,signature,inputCount:membership?2:1,dispatchIndex:membership?1:0,collectionQuery:true};
     classes.set(name,{name,param,associated,methods:new Map([[name,m]]),instances:new Map(),standard:true,collectionQuery:true});
+    methods.set(name,m);
+  }
+  for(const [name,signature] of [['push',"'c 'item -> 'c"],['pop',"'c -> ( option 'item ) 'c"],['peek',"'c -> ( option 'item )"]]){
+    if(classes.has(name))continue;
+    const param="'c",associated=[{name:'item',owner:name,param:"'item"}];
+    const m={name,className:name,param,signature,inputCount:name==='push'?2:1,dispatchIndex:0,collectionOperation:true};
+    classes.set(name,{name,param,associated,methods:new Map([[name,m]]),instances:new Map(),standard:true,collectionOperation:true});
     methods.set(name,m);
   }
   for(const [name,method] of [['indexGet','at'],['indexSet','setAt']])if(!classes.has(name)){

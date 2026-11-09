@@ -22,6 +22,7 @@ assign('vector','vector Push cons head tail length reverse toVector sliceBetween
 put('vector','isEmpty');put('vector','in');
 assign('vector','vscan vreplicate');put('vector','scan','vscan');put('vector','replicate','vreplicate');
 put('vector','push','vpush');assigned.add('push');assigned.add('vpush');
+assign('vector','vpop vpeek');put('vector','pop','vpop');put('vector','peek','vpeek');
 assign('deque','deque toDeque');
 assign('heap','heap toHeap');
 assign('worklist','withHeap withDeque');
@@ -53,7 +54,7 @@ for(const name of ['vector','deque','heap','stream','dict','set','range','option
 for(const name of definitions.classes.keys())put(({slice:'vector',streem:'stream',indexGet:'vector',indexSet:'vector',bits:'bits',num:'numeric',into:'numeric'})[name]||'classes',name,name,'class');
 for(const [name,op] of definitions.effects)if(!op.qualifiedName)put(['read','put'].includes(name)?'io':'effects',name,name,'effect');
 for(const name of definitions.constructors.keys())put(['None','Some'].includes(name)?'option':'result',name,name,'constructor');
-for(const [name,method] of definitions.methods)if(method.collectionQuery||!groups.get('classes')?.has(name)&&!assigned.has(name))put('classes',name,name,'method');
+for(const [name,method] of definitions.methods)if(method.collectionQuery||method.collectionOperation||!groups.get('classes')?.has(name)&&!assigned.has(name))put('classes',name,name,'method');
 
 // The prelude source is parsed here, so its pub imports are the source of truth
 // for unqualified standard names in the module loader.

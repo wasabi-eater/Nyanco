@@ -10,7 +10,7 @@ import {withOption,isStandardOption} from '../runtime/builtin-option.mjs';
 import {ioEffects,effectFamilies} from '../runtime/builtin-effects.mjs';
 import {classConstraint} from './class-syntax.mjs';
 import {lowerName,instanceKey} from './type-names.mjs';
-import {operatorFallback,operatorSpecs,builtinInstance,collectionQueryType,installOperatorClasses} from './operator-classes.mjs';
+import {operatorFallback,operatorSpecs,builtinInstance,collectionQueryType,collectionOperationTarget,installOperatorClasses} from './operator-classes.mjs';
 // Hindley–Milner-style value and stack-row inference. No program code is run.
 import { typeSyntax, patternNames } from './type-syntax.mjs';
 export class StaticTypeError extends Error {
@@ -113,6 +113,13 @@ function requireAssociated(c,container,items,token) {
     unify(items[0],item,token);
     if(membership==='dict'||membership==='set')requireClass('hash',item,token);
     if(!['dict','string','range'].includes(membership))requireClass('eq',item,token);
+    return;
+  }
+  if(c.collectionOperation&&collectionOperationTarget(container,c.name)){
+    const item=container.tag==='list'?container.item:container.args[0];
+    unify(items[0],item,token);
+    if(container.name==='set'){requireClass('hash',item,token);requireClass('eq',item,token);}
+    if(container.name==='heap'&&c.name!=='peek')requireClass('ord',item,token);
     return;
   }
   const instance=c.instances.get(instanceKey(container));
@@ -744,6 +751,10 @@ function builtinSchemes() {
   }
   for(const name of ['readRef','writeRef']){const s=row(),r=variable(),a=variable(),ref=adt('mutref',[r,a]);out.set(name,generalize(quote(name==='readRef'?push(s,ref):stack(s,ref,a),name==='readRef'?push(s,a):s,effects([{name:'borrowMut',args:[r]}]))));}
   add('vpush',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
+  for(const name of ['vpop','vpeek'])add(name,()=>{
+    const s=row(),a=variable(),xs=list(a),result=push(s,adt('option',[a]));
+    return quote(push(s,xs),name==='vpop'?push(result,xs):result);
+  });
   add('__emptySet',()=>{const s=row(),a=variable();requireClass('hash',a);requireClass('eq',a);return quote(s,push(s,adt('set',[a])));});
   {const s=row(),a=variable();out.set('vreplicate',generalize(quote(stack(s,INT,a),push(s,list(a)),effects([{name:'exn',args:[]}]))));}
   {const s=row(),c=variable(),item=variable(),a=variable(),latent=variable('effect-row'),callback=variable('effect-row');requireIterable(c,item,null,latent);const output=push(s,list(a));out.set('vscan',generalize(quote(stack(s,c,a,quote(stack(EMPTY,a,item),push(EMPTY,a),callback)),output,effects([],[{row:latent,exclude:['cancel','break'],loop:true,breakOutput:output},{row:callback,exclude:['cancel','break'],loop:true,breakOutput:output}]))));}
@@ -828,7 +839,7 @@ function builtinSchemes() {
   add('vfilter',()=>{const s=row(),a=variable(),c=variable();requireIterable(c,a);return quote(stack(s,c,quote(push(s,a),push(s,BOOL))),push(s,list(a)));});
   add('fold',()=>{const s=row(),a=variable(),b=variable(),c=variable();s.keepNativePrefix=true;requireIterable(c,a);return quote(stack(s,c,b,quote(stack(s,b,a),push(s,b))),push(s,b));});
   add('cons',()=>{const s=row(),a=variable();return quote(stack(s,a,list(a)),push(s,list(a)));});
-  add('push Push ::',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
+  add('Push ::',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
   add('concat ++',()=>{const s=row(),a=variable();return quote(stack(s,list(a),list(a)),push(s,list(a)));});
   add('head',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,a));});
   add('tail',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,list(a)));});
@@ -1189,7 +1200,7 @@ class Inference {
         current=concatRows(current,answer);
       }
       else if(this.functions.has(node.value)) {
-        if(['maxi','mini','maxiBy','miniBy','nth'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
+        if(['maxi','mini','maxiBy','miniBy','nth','pop','peek','vpop','vpeek'].includes(node.value)&&!isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError(node.value+' requires data option a = None | Some a',node);
         if(node.value==='toNum' && !isStandardOption({dataTypes:this.dataTypes,constructors:this.constructors}))throw new StaticTypeError('toNum requires data option a = None | Some a',node);
         if((['each','vmap','vfilter','fold','sortBy','maxiBy','miniBy','all','any','while','when','chunkBy','groupBy'].includes(node.value)||transforms.has(node.value))) {
           const adapt=(type)=>{type=prune(type);if(type.tag!=='quote'||!isBottom(type.output))return type;
@@ -1491,7 +1502,10 @@ function prepare(definitions,globalValues,initialized=false) {
     if(m.specialEach){inference.functions.set(name,eachEffect());continue;}
     const associated=activeClasses.get(m.className).associated||[],parameters=[...classParameters(activeClasses.get(m.className)),...associated.map(a=>a.param)];
     const arguments_=parameters.join(' '),getter=m.indexUpdate?`, indexGet ${arguments_}`:'';
-    const scheme=annotation(`${m.className} ${arguments_}${getter} => ${m.signature}`,m.token,definitions.dataTypes||new Map(),parameters);
+    const dataTypes=definitions.dataTypes||new Map();
+    const methodTypes=m.collectionOperation&&name!=='push'&&!isStandardOption(definitions)
+      ?new Map(dataTypes).set('option',{parameters:["'a"]}):dataTypes;
+    const scheme=annotation(`${m.className} ${arguments_}${getter} => ${m.signature}`,m.token,methodTypes,parameters);
     if(m.indexUpdate)unify(stackTail(prune(prune(scheme.type.input).item).input),EMPTY,m.token);
     if(!scheme.type.effectBound)scheme.type.effects=effects();
     const input=[];let t=prune(scheme.type.input);while(t.tag==='push'){input.unshift(prune(t.item));t=prune(t.rest);}
@@ -1681,7 +1695,7 @@ function executionTypes(base,definitions) {
     activate();const method=definitions.methods.get(node.value);if(method.specialCast)return castInfo(definitions,node,effect).target;let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
-    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialSlice||method.specialCast||method.specialBits||method.collectionQuery&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
+    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialSlice||method.specialCast||method.specialBits||(method.collectionQuery||method.collectionOperation)&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
     if(!result && (operatorFallback(definitions.classes.get(method.className),type)||['eq','ord'].includes(method.className)&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;

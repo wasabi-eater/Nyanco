@@ -12,7 +12,7 @@ import {withOption} from '../runtime/builtin-option.mjs';
 import {readLine} from '../runtime/io-input.mjs';
 import {ioEffects,effectFamilies} from '../runtime/builtin-effects.mjs';
 import {typeName} from '../types/type-names.mjs';
-import {runtimeTypeKey} from '../types/operator-classes.mjs';
+import {runtimeTypeKey,collectionOperationWord} from '../types/operator-classes.mjs';
 import {expandClasses} from '../types/type-classes.mjs';
 import { typeSyntax, patternNames } from '../types/type-syntax.mjs';
 import {tokenLine,tokenEndLine} from './source-layout.mjs';
@@ -1592,7 +1592,7 @@ export class VM {
           if(op.never)throw new LanguageError('Non-returning effect returned',t);
           stack.push(...returned);
         }
-        else if (BUILTINS.has(t.value) && !this.definitions.methods?.get(t.value)?.collectionQuery) {
+        else if (BUILTINS.has(t.value) && !this.definitions.methods?.get(t.value)?.collectionQuery && !this.definitions.methods?.get(t.value)?.collectionOperation) {
           const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialSlice?{sliceEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t)||ownershipPlan?.lookup.get(t)?.ownership?.mode==='move',...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
           if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxiBy','miniBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
@@ -1610,6 +1610,13 @@ export class VM {
           if(m.collectionQuery&&(!target||target===t.value)){
             yield* BUILTINS.get(t.value)(this,stack,t);
             continue;
+          }
+          if(m.collectionOperation&&(!target||target===t.value)){
+            const operation=collectionOperationWord(t.value,key);
+            if(operation){
+              yield* BUILTINS.get(operation)(this,stack,{...t,reuseVector:this.vectorReuse.has(t)||ownershipPlan?.lookup.get(t)?.ownership?.mode==='move'});
+              continue;
+            }
           }
           if(m.indexUpdate&&(!target||target===t.value))target='__tc_'+t.value;
           if(!target)throw new LanguageError(`No instance: ${c.name} ${key||format(v)}`,t);
@@ -1778,6 +1785,11 @@ define('Push',2,(vm,s,t)=>{const x=s.pop(),xs=vm.expect(s.pop(),'list',t);if(t.r
 BUILTINS.set('push', BUILTINS.get('Push'));
 BUILTINS.set('vpush', BUILTINS.get('Push'));
 BUILTINS.set('::', BUILTINS.get('Push'));
+for(const name of ['vpop','vpeek'])define(name,1,(vm,s,t)=>{
+  const xs=vm.expect(s.pop(),'list',t),found=xs.length>0;
+  s.push({kind:'adt',typeName:'option',constructor:found?'Some':'None',fields:found?[xs.at(-1)]:[]});
+  if(name==='vpop')s.push(found?vectorView(xs,0,xs.length-1):xs);
+});
 define('concat',2,(vm,s,t)=>{ const b=vm.expect(s.pop(),'list',t),a=vm.expect(s.pop(),'list',t); if(t.reuseVector&&canMutateVector(a)){vm.vectorUpdates.inPlace++;for(const x of b)a.push(x);s.push(a);}else{vm.vectorUpdates.copied++;s.push([...a,...b]);} });
 define('++',2,(vm,s,t)=>{
   if(typeof s.at(-2)==='string'){const b=vm.expect(s.pop(),'string',t),a=s.pop();s.push(a+b);}

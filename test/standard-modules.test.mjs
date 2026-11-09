@@ -17,7 +17,7 @@ test('std.prelude publicly reexports every existing standard word, class, type a
  const definitions=compile('').definitions,prelude=standardModule('std.prelude');
  const effects=[...definitions.effects.values()].filter(op=>!op.qualifiedName).map(op=>op.name);
  for(const names of [builtinNames(),[...definitions.keys()].filter(n=>!n.startsWith('__')),[...definitions.classes.keys()],[...definitions.methods.keys()],effects,[...definitions.constructors.keys()]])
-  for(const name of names)assert.ok(prelude.exports.has(name==='push'?'vpush':name),name);
+  for(const name of names)assert.ok(prelude.exports.has(name),name);
  assert.equal(standardModule('std.vector').exports.get('map').internal,'vmap');
  assert.equal(standardModule('std.stream').exports.get('map').internal,'map');
  assert.equal(standardModule('std.stream').exports.get('count').internal,'count');
@@ -26,19 +26,19 @@ test('std.prelude publicly reexports every existing standard word, class, type a
   assert.equal(prelude.exports.get(name).internal,name);
  }
  assert.equal(prelude.exports.get('count').internal,'count');
- for(const name of ['length','isEmpty','in']){
+ for(const name of ['length','isEmpty','in','push','pop','peek']){
   const symbol=prelude.exports.get(name);
   assert.equal(symbol.access.get('type'),'pub');
   assert.equal(symbol.access.get('value'),'pub');
  }
  assert.equal(prelude.exports.get('vmap').internal,'vmap');
  assert.equal(standardModule('std.vector').exports.get('push').internal,'vpush');
- assert.ok(prelude.exports.has('vpush'));assert.ok(!prelude.exports.has('push'));
+ assert.ok(prelude.exports.has('vpush'));assert.equal(prelude.exports.get('push').internal,'push');
  assert.equal(prelude.exports.get('map').internal,'map');
  for(const operation of ['push','pop','peek']){
   const symbol=standardModule('std.worklist').exports.get(operation);
   assert.equal(definitions.effects.get(symbol.internal).qualifiedName,'std.worklist.'+operation);
-  assert.ok(!prelude.exports.has(operation));
+  assert.notEqual(prelude.exports.get(operation).internal,symbol.internal);
  }
  assert.doesNotThrow(()=>compileModule(fileURLToPath(new URL('../std/prelude.nyan',import.meta.url))));
 });

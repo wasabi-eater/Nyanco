@@ -4,7 +4,7 @@ import {withStandardFunctions} from '../../runtime/builtin-functions.mjs';
 import {withOption} from '../../runtime/builtin-option.mjs';
 import {ioEffects, worklistOperations} from '../../runtime/builtin-effects.mjs';
 import {lookupInstance} from '../../types/class-relations.mjs';
-import {collectionQueryType} from '../../types/operator-classes.mjs';
+import {collectionQueryType,collectionOperationTarget} from '../../types/operator-classes.mjs';
 import {cppLifetimes} from './cpp-lifetimes.mjs';
 import {parseExpression} from '../../frontend/language.mjs';
 import {checkExpression, formatType, missingOperands, StaticTypeError} from '../../types/types.mjs';
@@ -905,7 +905,7 @@ return {option(${args[0]})};
         ? `std::move(${value})` : value; };
       if (instruction.ir && optimizeVectors) {
         if (lifetimes.takes.has(n)) instruction.ir.memory = {binding:'take-if-unshared',reason:'last-use-before-write-or-scope-end'};
-        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','updateAt','tryUpdateAt','hpush','hpop','qpush','qpushFront','qpop','qpopFront','qpopBack'].includes(n.value)) {
+        if (canReuse.has(n.value) || n.kind === 'path-update' || ['setAt','updateAt','tryUpdateAt','hpush','hpop','qpush','qpushFront','qpop','qpopFront','qpopBack','pop','vpop'].includes(n.value)) {
           instruction.ir.ownership = {mode:'cow',reason:'runtime-reference-count',staticMode:instruction.ownership?.mode};
         }
       }
@@ -1491,6 +1491,17 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       return stack;
     }
     if (method?.collectionQuery) return collectionQuery(ctx,n,info,stack);
+    if (method?.collectionOperation) {
+      const target=collectionOperationTarget(T.prune(info.effect.dispatchType),name);
+      if(!target)unsupported(n);
+      const operation={...n,value:target};
+      if(target==='vpush'){
+        const [source,item]=take(stack,2);
+        stack.push(callBinary(ctx,operation,source,item,info.effect,reuse));
+        return stack;
+      }
+      return collectionWord(operation,info,stack,ctx,label,reuse);
+    }
     if (method?.indexUpdate) {
       const types=items(info.effect.input),container=T.prune(types.at(-3));
       if(container.tag==='list'){
@@ -1837,6 +1848,12 @@ ${handler.lines.join('\n')}
   function collectionWord(n, info, stack, ctx, label, reuse) {
     const name = n.value, at = loc(n), types = items(info.input);
     const push = expression => stack.push(ctx.value(expression));
+    if(name==='vpop'||name==='vpeek'){
+      const source=stack.pop(),item=vectorScalar(types.at(-1))||'Value';
+      if(name==='vpeek')push(`vectorPeek<${item}>(${source})`);
+      else stack.push(...ctx.call(`vectorPop<${item}>`,[source,String(reuse)],2));
+      return stack;
+    }
     if(name==='vreplicate'){
       const [count,value]=take(stack,2),native=vectorScalar(T.prune(info.output).item);
       const size=`static_cast<std::size_t>(countValue(m,${count},"vreplicate",${at}))`;

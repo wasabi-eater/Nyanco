@@ -17,6 +17,15 @@ instance isEmpty (bag 'a) where
 instance eq 'a => in (bag 'a) where
     item : 'a
     in key (Bag xs) = in key xs
+instance push (bag 'a) where
+    item : 'a
+    push (Bag xs) item = Bag (push xs item)
+instance pop (bag 'a) where
+    item : 'a
+    pop (Bag xs) = pop xs; Bag
+instance peek (bag 'a) where
+    item : 'a
+    peek (Bag xs) = peek xs
 data residue = Residue int
 instance eq residue where
     (==) (Residue a) (Residue b) = a % 10 == b % 10
@@ -36,27 +45,41 @@ main =
     print (in 2 (heap [1, 2])); print (length (heap [1, 2]))
     print (in 2 (3 .. 1)); print (in 1 (3 .. 1)); print (in 1 (3 ..= 1))
     print (isEmpty (1 .. 1)); print (isEmpty (1 ..= 1))
+    push (Bag [1]) 2; dup; peek; print; pop; drop; print
+    mut xs <- [0, 1]
+    xs -> saved
+    xs ! push 2
+    xs ! pop; print
+    print xs; print saved
+    []; pop; print; print
+    print (peek [])
+    deque [1]; push 2; dup; peek; print; pop; vector; print; print
+    heap [1]; push 2; dup; peek; print; pop; vector; print; print
+    [1, 2]; std.vector.peek; print
 `;
 const withSet=`    print (length (set [0, 0, 1])); print (in 1 (set [0, 1])); print (isEmpty (set []))
+    set [1]; push 2; push 2; sort; print
 `;
-const expected=['2','True','True','False','True','(Ok True)','True','7','True','True','1','True','False','True','2','True','2','True','False','True','True','False'];
+const expected=['2','True','True','False','True','(Ok True)','True','7','True','True','1','True','False','True','2','True','2','True','False','True','True','False',
+ '(Some 2)','(Some 2)','(Some 2)','[0, 1]','[0, 1]','[]','None','None','(Some 1)','[2]','(Some 1)','(Some 2)','[1]','(Some 2)','(Some 2)'];
 const program=text=>compile(text,'<collection-classes>',new Map(),{tokens:standardTokens(text)});
 function evaluate(p){
  const output=[];new VM({...p,output:line=>output.push(line)}).evaluate('main');return output;
 }
 
-test('length, isEmpty and in infer constraints and dispatch on standard and user types',()=>{
- assert.deepEqual(evaluate(program(source+withSet)),[...expected,'2','True','True']);
+test('collection methods infer constraints and dispatch on standard and user types',()=>{
+ assert.deepEqual(evaluate(program(source+withSet)),[...expected,'2','True','True','[1, 2]']);
  const vm=new VM();
- for(const name of ['length','isEmpty','in'])assert.match(vm.infer(name),new RegExp('^'+name+' '));
- for(const expr of ['length 0','isEmpty False','in "a" [0]','in {nop} [{nop}]'])
+ for(const name of ['length','isEmpty','in','push','pop','peek'])assert.match(vm.infer(name),new RegExp('^'+name+' '));
+ for(const expr of ['length 0','isEmpty False','in "a" [0]','in {nop} [{nop}]','push [1] "a"','pop (set [1])','peek (set [1])'])
   assert.throws(()=>vm.evaluate(expr),/No instance|Cannot unify/,expr);
+ assert.doesNotThrow(()=>compile('data option = Nothing\nmain = push [1] 2'));
 });
 
 const compiler=process.platform==='win32'?'cl':'c++';
 const hasCpp=!spawnSync(compiler,[compiler==='cl'?'/h':'--version'],{stdio:'ignore',windowsHide:true}).error;
 const hasGo=!spawnSync('go',['version'],{stdio:'ignore',windowsHide:true}).error;
-for(const target of ['cpp','go'])test(`collection queries match the VM in ${target}`,{skip:!(target==='cpp'?hasCpp:hasGo)},()=>{
+for(const target of ['cpp','go'])test(`collection methods match the VM in ${target}`,{skip:!(target==='cpp'?hasCpp:hasGo)},()=>{
  const p=program(source+(target==='cpp'?withSet:''));
  const dir=mkdtempSync(join(tmpdir(),'nyanco-collection-classes-'));
  try{

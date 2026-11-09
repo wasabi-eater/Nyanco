@@ -418,6 +418,26 @@ Results<2> unzipNativeVector(const Value& source) {
 inline Value record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
 // @runtime option
 inline Value option(std::optional<Value> value = {});
+// @runtime vectorPeek
+template <typename T>
+Value vectorPeek(const Value& source) {
+    if constexpr (std::is_same_v<T,Value>) {
+        const auto items=as<Ptr<VectorBase>>(source)->items();
+        return items.empty() ? option() : option(items.back());
+    } else {
+        const NativeVectorReader<T> items(source);
+        return items.size()==0 ? option() : option(Value{items[items.size()-1]});
+    }
+}
+// @runtime vectorPop
+template <typename T>
+Results<2> vectorPop(Value source, bool reuse) {
+    if (!as<Ptr<VectorBase>>(source)->size()) return {option(),std::move(source)};
+    auto data=vectorWritable<T>(std::move(source),reuse);
+    Value item=std::move(data->values.back());
+    data->values.pop_back();
+    return {option(std::move(item)),Ptr<VectorBase>(std::move(data))};
+}
 // @runtime Queue QueueNode queueOp queueItems
 struct QueueNode {
     Value value; Ptr<QueueNode> next;

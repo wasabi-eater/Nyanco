@@ -282,6 +282,13 @@ func charText(c Char) string {
 func vbytes(value any,loc string) []any {s:=stringValue(value,loc);out:=make([]any,len(s));for i:=range out{out[i]=uint8(s[i])};return out}
 
 func optionValue(value any,found bool) any {if found{return &ADT{"option","Some",[]any{value}}};return &ADT{"option","None",nil}}
+func vectorPeek(value any,loc string) any {
+ xs:=list(value,loc);if len(xs)==0{return optionValue(nil,false)};return optionValue(xs[len(xs)-1],true)
+}
+func vectorPop(value any,loc string)(any,any) {
+ xs:=list(value,loc);if len(xs)==0{return optionValue(nil,false),xs}
+ last:=len(xs)-1;return optionValue(xs[last],true),append([]any{},xs[:last]...)
+}
 func(m *Machine) bitOperation(name string,a,b any,loc string) any {
  logical:=name==".&."||name==".|."||name=="xor"
  if x,ok:=a.(bool);ok&&logical{y:=boolean(b,loc);switch name{case ".&.":return x&&y;case ".|.":return x||y;default:return x!=y}}

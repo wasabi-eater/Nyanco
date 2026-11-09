@@ -118,7 +118,7 @@ export function expandClasses(groups,definitions,previous,builtins,globals) {
     if(c.operatorClass && head.tag!=='adt' && operatorFallback(c,head))fail(`Primitive operator instance already exists: ${name} ${target}`,token);
     if(c.indexClass&&(head.tag==='adt'&&head.name==='dict'||head.tag==='list'||head.tag==='atom'&&head.name==='string'))fail('Built-in indexer instance already exists',token);
     if(c.sliceClass&&head.tag==='list')fail('Built-in slice instance already exists',token);
-    if(c.collectionQuery&&builtinInstance(c,head))fail(`Built-in ${name} instance already exists`,token);
+    if((c.collectionQuery||c.collectionOperation)&&builtinInstance(c,head))fail(`Built-in ${name} instance already exists`,token);
     if(name==='streem' && ['vector','range','dict','deque','heap'].includes(target))fail('Built-in streem instance already exists',token);
     if([...c.instances.values()].some(i=>instanceHeads(i).every((t,n)=>t.tag==='param'||heads[n].tag==='param'||instanceKey(t)===instanceKey(heads[n]))))fail(`Duplicate instance or overlapping instance: ${name} ${target}`,token);
     const instance={target,head,heads,context,implementations:new Map(),token};c.instances.set(target,instance);

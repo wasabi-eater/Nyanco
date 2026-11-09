@@ -1,7 +1,7 @@
 import {createTypedIR} from '../typed-ir.mjs';
 import {collectionOperations} from '../../runtime/collections.mjs';
 import {lookupInstance} from '../../types/class-relations.mjs';
-import {collectionQueryType} from '../../types/operator-classes.mjs';
+import {collectionQueryType,collectionOperationTarget} from '../../types/operator-classes.mjs';
 import {withStandardFunctions} from '../../runtime/builtin-functions.mjs';
 import {combinationNames} from '../../runtime/combinatorics.mjs';
 import {vectorOwnership} from '../ownership.mjs';
@@ -304,7 +304,7 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const m=definitions.methods.get(n.value),input=items(T.prune(info.effect).input);
         let type=T.prune(info.effect.dispatchType||input[input.length-m.inputCount+m.dispatchIndex]);if(type.numericLiterals){T.unify(type,{tag:'atom',name:'int'},n);type=T.prune(type);}
         const target=lookupInstance(definitions.classes.get(m.className),(info.effect.dispatchTypes||[type]).map(t=>{t=T.prune(t);if(t.numericLiterals){T.unify(t,{tag:'atom',name:'int'},n);t=T.prune(t);}return t;}))?.implementations.get(n.value);
-        if(!target&&m.collectionQuery)builtin(n,info,values,ctx,env,at);
+        if(!target&&(m.collectionQuery||m.collectionOperation))builtin(n,info,values,ctx,env,at);
         else{
           if(!target)throw new StaticTypeError(`Ambiguous or unresolved class method: ${n.value}; add a type annotation`,n);
           const spec=named(target,info.effect),vs=values.splice(values.length-spec.input.length);
@@ -458,7 +458,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     return ctx.value(`${showFunction(type)}(m,${value})`);
   }
   function builtin(n,info,v,ctx,env,at) {
-    const name=n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
+    const method=definitions.methods.get(n.value);
+    const operation=method?.collectionOperation&&collectionOperationTarget(T.prune(info.effect.dispatchType),n.value);
+    if(method?.collectionOperation&&(!operation||operation==='sinsert'))
+      throw new StaticTypeError('Unsupported by the Go backend: '+n.value+' '+formatType(info.effect.dispatchType),n);
+    const name=operation||n.value,pop=()=>v.pop(),topTypes=items(info.input),label=n.handlerLabel?`${env}.read(${str(n.handlerLabel)}).(*EffectLabel)`:'nil';
     const call=(q,t,values=v)=>invoke(ctx,q,values,T.prune(t),at);
     const returnedBreak=(result)=>{ctx.lines.push(`_=${result}`);if(v.length)ctx.lines.push(`if ${result}!=nil{${v}=${v.map((_,i)=>`${result}[${i}]`)}}`);};
     if(definitions.methods.get(name)?.collectionQuery){
@@ -478,6 +482,12 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
         const eq=comparisonFunction(types.at(-2));
         v.push(ctx.value(`containsElement(m,${values},${item},${eq})`));
       }
+      return;
+    }
+    if(name==='vpeek'||name==='vpop'){
+      const source=pop();
+      if(name==='vpeek')v.push(ctx.value(`vectorPeek(${source},${at})`));
+      else v.push(...ctx.call('vectorPop',[source,at],2));
       return;
     }
     if(['windows','chunks','chunkBy','groupBy'].includes(name)){

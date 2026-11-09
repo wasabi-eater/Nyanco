@@ -47,7 +47,7 @@ main =
 
 | 型 | 生成と操作 |
 | --- | --- |
-| `[a]` | リテラル `[]`、変換 `vector`、末尾追加 `vpush`、`head`、`tail`、`length` |
+| `[a]` | リテラル `[]`、変換 `vector`、末尾の操作 `vpush`・`vpop`・`vpeek`、`head`、`tail`、`length` |
 | `dict k v` | リテラル `[:]`、tuple列からの変換 `dict`、`values`、`counts`、`countsBy` |
 | `set a` | `set`、`sinsert`、`sremove`、`scontains`、`sunion`、`sintersection`、`sdifference` |
 | `deque a` | `deque`、`qpush`、`qpushFront`、`qpopFront`、`qpopBack`、`qpeek`、`qpeekBack` |
@@ -60,6 +60,10 @@ main =
 `in x xs` は `in` クラスのメソッドです。要素型はコンテナの関連型 `item` で決まります。`in 0 [0, 1, 2]` は `True` です。辞書ではキー、文字列では `char` を探します。rangeも検索できます。ユーザー定義の型では `instance in 型 where` の中に `item : 型` と `in` の実装を書きます。
 
 set同士の `a .&. b` は積集合（`sintersection`）、`a - b` は差集合（`sdifference`）、`a .|. b` は和集合（`sunion`）です。
+
+`push xs x`、`pop xs`、`peek xs` はそれぞれ同名の型クラスのメソッドです。関連型 `item` が要素型を決めます。vectorでは末尾、dequeでは前端、heapでは最大要素が `pop` と `peek` の対象です。dequeへの `push` は後端に追加し、setへの `push` は集合に要素を追加します。
+
+`pop` は `option` と更新後のコンテナをこの順に返します。`peek` は `option` だけを返します。空のコンテナではどちらも `None` です。たとえば `[1, 2]; push 3; pop` は `Some 3` と `[1, 2]` を積みます。
 
 `vmap`、`vfilter`、`vflatMap`、`vflatten`、`vtake`、`vskip`、`vzip` は結果をvectorにまとめます。`vreplicate n x` は値を `n` 個並べ、`vscan xs init f` は初期値を含む累積結果を返します。
 
