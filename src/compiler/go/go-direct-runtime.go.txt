@@ -149,6 +149,15 @@ func concatPattern(rest int, sizes []int, ps ...Pattern) Pattern {
   return true
  }
 }
+func stringConcatPattern(prefix,suffix string,middle Pattern) Pattern {
+ fixed:=len(prefix)+len(suffix)
+ return func(v any,e *Env) bool {
+  text,ok:=v.(string)
+  if !ok || len(text)<fixed || !strings.HasPrefix(text,prefix) || !strings.HasSuffix(text,suffix) {return false}
+  if middle==nil {return len(text)==fixed}
+  return middle(text[len(prefix):len(text)-len(suffix)],e)
+ }
+}
 func(m *Machine) sliceVector(value,startValue,endValue any,from bool,loc string) any {
  xs:=value.([]any);start:=vectorOffset(startValue.(int64),len(xs));end:=vectorOffset(endValue.(int64),len(xs))
  if from{end=int64(len(xs))}

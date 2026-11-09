@@ -48,6 +48,11 @@ export function transpileDirect(program,{expression='main',showStack=false,entry
     if(p.kind==='tuple-pattern')return `tuplePattern(${p.fields.map(pattern).join(',')})`;
     if(p.kind==='literal')return `literalPattern(${lit(p.value,p.numericKind==='float'?'float':'int',p.numberSource)})`;
     if(p.kind==='word')return `${p.mutable?"mutablePattern":"variablePattern"}(${str(p.value)})`;
+    if(p.kind==='concat-pattern' && p.stringParts){
+      const {prefix,suffix}=p.stringParts;
+      const middle=p.rest<0?'nil':pattern(p.fields[p.rest]);
+      return `stringConcatPattern(${str(prefix)},${str(suffix)},${middle})`;
+    }
     const fields=p.fields.map(pattern).join(',');
     if(p.kind==='or-pattern')return `orPattern(${fields})`;
     if(p.kind==='concat-pattern')return `concatPattern(${p.rest},[]int{${p.fields.map((part,i)=>i===p.rest?-1:part.fields.length)}},${fields})`;

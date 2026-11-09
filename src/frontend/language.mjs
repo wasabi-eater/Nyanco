@@ -805,13 +805,27 @@ function parsePatterns(tokens, constructors,{mutableParameters=false,bindingComm
   }
   function alternative() {
     function concatenation(){
-      let left=cons(atom());
-      if(tokens[i]?.value!=='++')return left;
+      const left=cons(atom());
+      const hasConcat=()=>tokens[i]?.kind==='word' && tokens[i].value==='++';
+      if(!hasConcat())return left;
       const fields=[left],op=tokens[i];
-      while(tokens[i]?.value==='++'){i++;fields.push(cons(atom()));}
-      const rest=fields.findIndex(p=>p.kind!=='list-pattern');
-      if(fields.filter(p=>p.kind!=='list-pattern').length>1)throw new LanguageError('Concatenation pattern allows at most one variable-length part',op);
-      return {...op,kind:'concat-pattern',fields,rest};
+      while(hasConcat()){i++;fields.push(cons(atom()));}
+      const literalString=p=>p.kind==='literal' && typeof p.value==='string';
+      const isString=fields.some(literalString);
+      if(isString && fields.some(p=>p.kind==='list-pattern'))
+        throw new LanguageError('Concatenation pattern cannot mix string and vector parts',op);
+      const fixed=isString ? literalString : p=>p.kind==='list-pattern';
+      const rest=fields.findIndex(p=>!fixed(p));
+      if(fields.filter(p=>!fixed(p)).length>1)throw new LanguageError('Concatenation pattern allows at most one variable-length part',op);
+      const pattern={...op,kind:'concat-pattern',fields,rest};
+      if(isString) {
+        const join=parts=>parts.map(p=>p.value).join('');
+        pattern.stringParts={
+          prefix:join(rest<0?fields:fields.slice(0,rest)),
+          suffix:rest<0?'':join(fields.slice(rest+1))
+        };
+      }
+      return pattern;
     }
     let left=concatenation();
     while(tokens[i]?.kind==='word' && tokens[i].value==='||') {
@@ -860,6 +874,14 @@ function matchPattern(pattern,value,bindings,valueType) {
   if(pattern.kind==='literal')return typeof pattern.value==='number'&&['int','float','byte'].includes(scalarType(value))?pattern.value===scalarValue(value):equal(pattern.value,value);
   if(pattern.kind==='list-pattern')return Array.isArray(value) && value.length===pattern.fields.length && pattern.fields.every((p,i)=>matchPattern(p,value[i],bindings,valueType));
   if(pattern.kind==='concat-pattern'){
+    if(pattern.stringParts) {
+      const {prefix,suffix}=pattern.stringParts;
+      if(typeof value!=='string' || value.length<prefix.length+suffix.length ||
+         !value.startsWith(prefix) || !value.endsWith(suffix))return false;
+      if(pattern.rest<0)return value.length===prefix.length+suffix.length;
+      const middle=value.slice(prefix.length,value.length-suffix.length);
+      return matchPattern(pattern.fields[pattern.rest],middle,bindings,valueType);
+    }
     if(!Array.isArray(value))return false;
     const fixed=pattern.fields.reduce((n,p,i)=>n+(i===pattern.rest?0:p.fields.length),0);
     if(value.length<fixed||pattern.rest<0&&value.length!==fixed)return false;

@@ -12,7 +12,7 @@ export function analyzeOwnership(region,types){
  const escape=id=>{for(const resource of referenced(id))escaped.add(resource);};
  const fresh=id=>resources.set(id,next++);
  const forward=(to,from)=>{if(resources.has(from))resources.set(to,resources.get(from));if(held.has(from))held.set(to,held.get(from));if(callbacks.has(from))callbacks.set(to,callbacks.get(from));};
- const concatenation=patterns=>(patterns||[]).some(p=>p.kind==='concat-pattern'||concatenation(p.fields));
+ const vectorConcatenation=patterns=>(patterns||[]).some(p=>(p.kind==='concat-pattern'&&!p.stringParts)||vectorConcatenation(p.fields));
  for(const i of region.instructions){
   const name=i.name,vector=['vpush','push','Push','::','concat','++'].includes(name),heap=['hpush','hpop'].includes(name);
   const container=i.arguments[0],resource=resources.get(container);
@@ -21,7 +21,7 @@ export function analyzeOwnership(region,types){
    i.ownership={mode:'view',reason:'immutable-shared-storage'};
    i.arguments.forEach(escape);
    if(resource!==undefined&&i.results[0]!==undefined)resources.set(i.results[0],resource);
-  }else if(i.op==='bind'&&concatenation(i.source?.patterns)){
+  }else if(i.op==='bind'&&vectorConcatenation(i.source?.patterns)){
    i.ownership={mode:'view',reason:'pattern-shared-storage'};
    i.arguments.forEach(escape);
   }else if((vector||heap)&&i.op==='call'){

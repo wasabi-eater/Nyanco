@@ -84,6 +84,11 @@ function literal(node, type = node.numericKind === 'float' ? 'float' : 'int') {
   return `bits(UINT64_C(${BigInt.asUintN(64, n)}))`;
 }
 function pattern(node, constructors) {
+  if (node.kind === 'concat-pattern' && node.stringParts) {
+    const {prefix,suffix} = node.stringParts;
+    const middle = node.rest < 0 ? '' : pattern(node.fields[node.rest],constructors);
+    return `Pattern{PatternKind::concatenateString, {}, ${values([string(prefix),string(suffix)])}, {${middle}}, {}}`;
+  }
   const kind = patternKinds[node.kind];
   if (!kind) throw new StaticTypeError(`Unsupported C++ pattern: ${node.kind}`, node);
   const name = node.kind === 'word' ? string(node.value) : '{}';

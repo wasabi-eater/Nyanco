@@ -963,7 +963,7 @@ inline std::uint32_t hashValue(const Value& v) {
 }
 
 // @runtime Pattern PatternKind
-enum class PatternKind { word, literal, constructor, vector, push, tuple, record, alternative, concatenate };
+enum class PatternKind { word, literal, constructor, vector, push, tuple, record, alternative, concatenate, concatenateString };
 struct Pattern {
     PatternKind kind;
     std::string name;
@@ -1002,6 +1002,16 @@ inline bool match(const Pattern& p, const Value& value, Env& env) {
         if (is<Int>(p.literals[0]) && is<Byte>(value)) return as<Int>(p.literals[0]) == as<Byte>(value);
         if (is<Int>(p.literals[0]) && is<double>(value)) return static_cast<double>(as<Int>(p.literals[0])) == as<double>(value);
         return equal(p.literals[0], value);
+    case PatternKind::concatenateString: {
+        if (!is<std::string>(value)) return false;
+        const std::string_view text = as<std::string>(value);
+        const auto& prefix = as<std::string>(p.literals[0]);
+        const auto& suffix = as<std::string>(p.literals[1]);
+        const auto fixed = prefix.size() + suffix.size();
+        if (text.size() < fixed || !text.starts_with(prefix) || !text.ends_with(suffix)) return false;
+        if (p.fields.empty()) return text.size() == fixed;
+        return match(p.fields[0], std::string(text.substr(prefix.size(), text.size()-fixed)), env);
+    }
 // @if-runtime Adt
     case PatternKind::constructor: {
         const auto* adt = adtPointer(value);

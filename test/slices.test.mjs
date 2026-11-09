@@ -69,6 +69,44 @@ main =
  assert.equal(format(evaluate(guarded).stack),'[[2], []]');
 });
 
+const stringPatterns=`unwrapText ("«" ++ middle ++ "猫" ++ "»") = middle
+unwrapText _ = "miss"
+exactText ("a" ++ "++" ++ "猫") = True
+exactText ("" ++ "") = True
+exactText _ = False
+nestedText ("<" ++ ("(" ++ middle ++ ")") ++ ">") = middle
+eitherText ("左:" ++ text || "右:" ++ text) = text
+literalPair "a" "++" = True
+`;
+const stringPatternCases=String.raw`    print (unwrapText "«🙂é猫»")
+    print (unwrapText "«猫»")
+    print (unwrapText "«犬»")
+    print (unwrapText "«»")
+    print (exactText "a++猫"); print (exactText "a++猫x")
+    print (exactText ""); print (exactText "x")
+    print (nestedText "<(猫)>")
+    print (eitherText "右:犬")
+    print (literalPair "a" "++")
+    "前\u0000猫終" -> "前\u0000" ++ ~ ++ "終"; print
+    "[猫]" -> "[" ++ mut inside ++ "]"
+    inside ! ++ "🙂"; print inside
+    "犬!" -> text ++ "!"; print text
+    "x"; case
+        -> "x" ++ _ ++ "x" ? print "overlap"
+        otherwise drop; print "no overlap"
+    end
+`;
+test('string concatenation patterns match literal ends and bind a string remainder',()=>{
+ const {output,program}=evaluate(stringPatterns+'main =\n'+stringPatternCases);
+ assert.deepEqual(output,['🙂é','','miss','miss','True','False','True','False','猫','犬','True','猫','猫🙂','犬','no overlap']);
+ assert.match(program.types.get('unwrapText'),/string -> .*string/);
+ for(const source of ['f (a ++ "literal" ++ b) = a','f ("a" ++ x ++ "b" ++ y) = x'])
+  assert.throws(()=>compile(source),/at most one variable-length/);
+ assert.throws(()=>compile('f ("a" ++ [x]) = x'),/cannot mix string and vector/);
+ assert.throws(()=>compile('main = [1,2] -> "a" ++ rest'),/unify/);
+ assert.throws(()=>evaluate('main = "a" -> "a" ++ "a"'),/pattern did not match/);
+});
+
 const persistence=`main =
     mut xs <- [0,1,2,3]
     view <- xs.[1:3]
@@ -130,7 +168,7 @@ test('Go and C++ execute slices, custom instances, patterns and copy-on-write',t
   '    strip [1,9,3]; print',
   '    [1,2] -> [a] ++ [b]; a + b; print',
  ].join('\n');
- const source=custom+functions+persistence.replace('    mut xs',extra+'\n    mut xs');
+ const source=custom+functions+stringPatterns+persistence.replace('    mut xs',extra+'\n'+stringPatternCases+'    mut xs');
  const expected=evaluate(source).output.join('\n')+'\n',dir=mkdtempSync(join(tmpdir(),'nyanco-slices-'));
  try{
   const program=compile(source),go=join(dir,'main.go');writeFileSync(go,transpileGo(program));

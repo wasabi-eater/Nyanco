@@ -1334,9 +1334,14 @@ class Inference {
       pattern.fields.forEach((p,i)=>this.pattern(p,items[i],env));
     }
     else if(pattern.kind==='literal')unify(type,typeof pattern.value==='number'?((pattern.numericKind==='float'||!Number.isInteger(pattern.value))?FLOAT:{...variable(),numericLiterals:[pattern.numberSource??String(pattern.value)]}):this.value(pattern.value,pattern),pattern);
-    else if(pattern.kind==='list-pattern' || pattern.kind==='push-pattern' || pattern.kind==='concat-pattern') {
+    else if(pattern.kind==='concat-pattern') {
+      const sequence=pattern.stringParts ? STRING : list(variable());
+      unify(type,sequence,pattern);
+      pattern.fields.forEach(p=>this.pattern(p,sequence,env));
+    }
+    else if(pattern.kind==='list-pattern' || pattern.kind==='push-pattern') {
       const item=variable();unify(type,list(item),pattern);
-      pattern.fields.forEach((p,i)=>this.pattern(p,pattern.kind==='concat-pattern'||pattern.kind==='push-pattern' && i===0 ? list(item) : item,env));
+      pattern.fields.forEach((p,i)=>this.pattern(p,pattern.kind==='push-pattern' && i===0 ? list(item) : item,env));
     }
     else if(pattern.kind==='constructor') {
       const {fields,result}=constructorTypes(this.constructors.get(pattern.value));
