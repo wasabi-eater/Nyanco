@@ -2,6 +2,7 @@ import {summarizeRetention} from './retention.mjs';
 import {instanceKey} from '../types/type-names.mjs';
 import {loweringTypes,typeIR as T,formatType} from '../types/types.mjs';
 import {analyzeOwnership} from './ir-ownership.mjs';
+import {collectionQueryType} from '../types/operator-classes.mjs';
 
 // Types are snapshots, not references into the mutable unification graph.
 // Value numbers describe data flow; structured instructions retain child
@@ -41,7 +42,8 @@ export function createTypedIR(definitions,{ownership=true,inference:provided=nul
   if(source.kind!=='word'||info.env?.has(source.value))return null;
   if(['when','if','call','dip','fold','while'].includes(source.value)&&!definitions.methods?.has(source.value))return 'callback';
   if(source.value==='each'&&definitions.methods?.get('each')?.specialEach){const sourceType=T.prune(row(info.input).values.at(-2));if(sourceType.tag==='list'||sourceType.tag==='adt'&&['heap','deque','dict','set'].includes(sourceType.name)||sourceType.tag==='atom'&&sourceType.name==='range')return 'callback';}
-  if(['length','head','tail','print','put','not','hlength','hpeek','hisEmpty','qlength','qpeek','qpeekBack','qisEmpty','slength','sisEmpty'].includes(source.value)&&!definitions.methods?.has(source.value))return 'borrow';
+  if(['head','tail','print','put','not','hlength','hpeek','hisEmpty','qlength','qpeek','qpeekBack','qisEmpty','slength','sisEmpty'].includes(source.value)&&!definitions.methods?.has(source.value))return 'borrow';
+  if(['length','isEmpty'].includes(source.value)&&info.effect&&collectionQueryType(T.prune(row(info.effect.input).values.at(-1)),source.value))return 'borrow';
   if(source.value==='at'&&info.effect){const container=T.prune(row(info.effect.input).values.at(-2));if(container.tag==='list'||container.tag==='atom'&&container.name==='string')return 'borrow';}
   if(source.value==='show'&&row(info.input).values.every(t=>standardShow(t)))return 'borrow';
   return null;

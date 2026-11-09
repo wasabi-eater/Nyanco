@@ -162,6 +162,13 @@ public:
         return scalars.empty() ? as<T>(boxed[index]) : scalars[index];
     }
 };
+// @runtime scalarContains
+template <typename T, typename Source>
+bool scalarContains(const Source& source, T item) {
+    const NativeVectorReader<T> values(source);
+    for (std::size_t i=0; i<values.size(); ++i) if (values[i]==item) return true;
+    return false;
+}
 // @runtime byteVector
 inline Value byteVector(const Value& text) {
     return Ptr<VectorBase>(std::make_shared<ScalarVector<Byte>>(as<std::string>(text)));
@@ -219,6 +226,12 @@ Value makeAdt(Constructor constructor) {
 }
 // @runtime Range
 struct Range { Int first, last; bool inclusive; };
+// @runtime rangeEmpty rangeContains
+inline bool rangeEmpty(const Range& r) { return r.first==r.last && !r.inclusive; }
+inline bool rangeContains(const Range& r, Int item) {
+    if (item==r.last) return r.inclusive;
+    return r.first<=r.last ? r.first<=item && item<r.last : r.last<item && item<=r.first;
+}
 // @runtime Collection
 struct Collection { std::string kind; Values values; };
 // @include hash-trie
@@ -298,6 +311,12 @@ struct Quote { std::size_t site; Env env; std::string self; };
 struct Label { const void* target = nullptr; };
 // @runtime Machine
 struct Machine;
+// @runtime containsElement
+template <typename Items, typename Equal>
+bool containsElement(Machine& m, const Items& values, const Value& item, Equal equalItem) {
+    for (const auto& value : values) if (equalItem(m,value,item)) return true;
+    return false;
+}
 // @runtime Visit
 using Visit = std::function<void(Value)>;
 // @runtime NativeVisitor

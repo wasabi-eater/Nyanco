@@ -26,6 +26,11 @@ test('std.prelude publicly reexports every existing standard word, class, type a
   assert.equal(prelude.exports.get(name).internal,name);
  }
  assert.equal(prelude.exports.get('count').internal,'count');
+ for(const name of ['length','isEmpty','in']){
+  const symbol=prelude.exports.get(name);
+  assert.equal(symbol.access.get('type'),'pub');
+  assert.equal(symbol.access.get('value'),'pub');
+ }
  assert.equal(prelude.exports.get('vmap').internal,'vmap');
  assert.equal(standardModule('std.vector').exports.get('push').internal,'vpush');
  assert.ok(prelude.exports.has('vpush'));assert.ok(!prelude.exports.has('push'));

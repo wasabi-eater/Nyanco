@@ -25,11 +25,13 @@ export function withStandardFunctions(definitions){
  add('unzip',['xs'],'pairs <- vector xs; vmap pairs {-> #(a, _); a}, vmap pairs {-> #(_, b); b}');
  add('__tc_updateAt',['xs','i','f'],'xs with {[i] ! call f}');
  add('__tc_tryUpdateAt',['xs','i','f'],'xs with {?[i] ! call f}');
+ // The search helpers require a vector even though length is overloaded.
+ add('__tc_vectorLength',[],'length',"['a] -> int / {}");
  if(isStandardOption(result))add('tryAt',['xs','i'],'xs.?[i]');
  // Helpers that pattern-match standard ADTs must wait until constructors are
  // registered, and must not assume a user-defined option/result has that shape.
  if(isStandardOption(result))add('partitionPoint',['xs','predicate'],`mut lo <- 0
-mut hi <- length xs
+mut hi <- __tc_vectorLength xs
 while {lo < hi} {
     mid <- lo + (hi - lo) / 2
     xs.?[mid]; case

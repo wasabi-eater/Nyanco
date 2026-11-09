@@ -55,6 +55,10 @@ main =
 
 `vector`、`dict`、`set`、`deque`、`heap` は入力を走査してコンテナに変換します。空のsetやdequeは `set []`、`deque []` と書きます。辞書のキーとsetの要素には `hash` 制約が必要です。辞書で同じキーを挿入すると値を置き換えます。辞書・setの走査順には依存できません。`values` は辞書の値のstreamを返します。
 
+`length xs` と `isEmpty xs` は同名の型クラスのメソッドです。vector、dict、set、deque、heap、stringに使えます。文字列の長さはUTF-8のバイト数です。rangeにも `isEmpty` を使えます。
+
+`in x xs` は `in` クラスのメソッドです。要素型はコンテナの関連型 `item` で決まります。`in 0 [0, 1, 2]` は `True` です。辞書ではキー、文字列では `char` を探します。rangeも検索できます。ユーザー定義の型では `instance in 型 where` の中に `item : 型` と `in` の実装を書きます。
+
 `vmap`、`vfilter`、`vflatMap`、`vflatten`、`vtake`、`vskip`、`vzip` は結果をvectorにまとめます。`vreplicate n x` は値を `n` 個並べ、`vscan xs init f` は初期値を含む累積結果を返します。
 
 `partitionPoint xs predicate` は、真が先・偽が後になる境界の添字を返します。ソート済みのvectorに対する `binarySearch xs key` と `binarySearchBy xs key project` は、一致した添字を `Ok`、見つからない場合の挿入位置を `Err` で返します。

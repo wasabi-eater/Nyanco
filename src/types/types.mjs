@@ -10,7 +10,7 @@ import {withOption,isStandardOption} from '../runtime/builtin-option.mjs';
 import {ioEffects,effectFamilies} from '../runtime/builtin-effects.mjs';
 import {classConstraint} from './class-syntax.mjs';
 import {lowerName,instanceKey} from './type-names.mjs';
-import {operatorFallback,operatorSpecs,builtinInstance,installOperatorClasses} from './operator-classes.mjs';
+import {operatorFallback,operatorSpecs,builtinInstance,collectionQueryType,installOperatorClasses} from './operator-classes.mjs';
 // Hindley–Milner-style value and stack-row inference. No program code is run.
 import { typeSyntax, patternNames } from './type-syntax.mjs';
 export class StaticTypeError extends Error {
@@ -106,6 +106,14 @@ function requireAssociated(c,container,items,token) {
   if(c.indexClass&&container.tag==='adt'&&container.name==='dict'){requireClass('hash',container.args[0],token);unify(items[0],container.args[0],token);unify(items[1],container.args[1],token);return;}
   if(c.indexClass&&(container.tag==='list'||container.tag==='atom'&&container.name==='string')){
     unify(items[0],INT,token);unify(items[1],container.tag==='list'?container.item:BYTE,token);return;
+  }
+  const membership=c.collectionQuery&&collectionQueryType(container,c.name);
+  if(membership){
+    const item=membership==='string'?CHAR:membership==='range'?INT:membership==='vector'?container.item:container.args[0];
+    unify(items[0],item,token);
+    if(membership==='dict'||membership==='set')requireClass('hash',item,token);
+    if(!['dict','string','range'].includes(membership))requireClass('eq',item,token);
+    return;
   }
   const instance=c.instances.get(instanceKey(container));
   if(!instance)throw new StaticTypeError(`No instance: ${c.name} ${formatType(container)}`,token);
@@ -822,7 +830,6 @@ function builtinSchemes() {
   add('cons',()=>{const s=row(),a=variable();return quote(stack(s,a,list(a)),push(s,list(a)));});
   add('push Push ::',()=>{const s=row(),a=variable();return quote(stack(s,list(a),a),push(s,list(a)));});
   add('concat ++',()=>{const s=row(),a=variable();return quote(stack(s,list(a),list(a)),push(s,list(a)));});
-  add('length',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,INT));});
   add('head',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,a));});
   add('tail',()=>{const s=row(),a=variable();return quote(push(s,list(a)),push(s,list(a)));});
   add('.. ..=',()=>{const s=row();return quote(stack(s,INT,INT),push(s,atom('range')));});
@@ -1674,7 +1681,7 @@ function executionTypes(base,definitions) {
     activate();const method=definitions.methods.get(node.value);if(method.specialCast)return castInfo(definitions,node,effect).target;let type=prune(effect?.dispatchType||variable());if(type.numericLiterals){unify(type,INT,node);type=prune(type);}
     if(type.tag==='var'||type.tag==='rigid')throw new StaticTypeError(`Ambiguous class method: ${node.value}; add a type annotation to determine ${method.className}`,node);
     const args=(effect.dispatchTypes||[type]).map(t=>{t=prune(t);if(t.numericLiterals){unify(t,INT,node);t=prune(t);}if(['var','rigid'].includes(t.tag))throw new StaticTypeError('Ambiguous class method: '+node.value+'; add a type annotation',node);return t;}),result=lookupInstance(definitions.classes.get(method.className),args)?.implementations.get(node.value);
-    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialSlice||method.specialCast||method.specialBits))return node.value;
+    if(!result && (method.specialHash||method.specialShow||method.specialIndex||method.specialSlice||method.specialCast||method.specialBits||method.collectionQuery&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
     if(!result && (operatorFallback(definitions.classes.get(method.className),type)||['eq','ord'].includes(method.className)&&builtinInstance(definitions.classes.get(method.className),type)))return node.value;
     if(!result)throw new StaticTypeError(`No instance: ${method.className} ${formatType(type)}`,node);
     return result;

@@ -4,6 +4,7 @@ import {withStandardFunctions} from '../../runtime/builtin-functions.mjs';
 import {withOption} from '../../runtime/builtin-option.mjs';
 import {ioEffects, worklistOperations} from '../../runtime/builtin-effects.mjs';
 import {lookupInstance} from '../../types/class-relations.mjs';
+import {collectionQueryType} from '../../types/operator-classes.mjs';
 import {cppLifetimes} from './cpp-lifetimes.mjs';
 import {parseExpression} from '../../frontend/language.mjs';
 import {checkExpression, formatType, missingOperands, StaticTypeError} from '../../types/types.mjs';
@@ -1416,6 +1417,39 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
     stack.splice(0,stack.length,...state,lo);
     return true;
   }
+  function collectionQuery(ctx,n,info,stack) {
+    const name=n.value, types=items(info.effect.input), type=T.prune(types.at(-1));
+    const kind=collectionQueryType(type,name), source=stack.pop();
+    if(!kind)unsupported(n,name);
+    const ptr={vector:'VectorBase',dict:'DictBase',set:'HashSetBase',deque:'Queue',heap:'Collection'}[kind];
+    const data=ptr?`as<Ptr<${ptr}>>(${source})`:kind==='string'?`as<std::string>(${source})`:`as<Range>(${source})`;
+    if(name==='isEmpty'&&kind==='range'){
+      stack.push(ctx.value(`rangeEmpty(${data})`,'bool'));
+      return stack;
+    }
+    if(name!=='in'){
+      const size=kind==='vector'?`vectorLength(${source})`:kind==='deque'?`${data}->size`:kind==='heap'?`${data}->values.size()`
+        :kind==='string'?`${data}.size()`:`${data}->size()`;
+      stack.push(ctx.value(name==='length'?`static_cast<Int>(${size})`:`${size} == 0`,name==='length'?'Int':'bool'));
+      return stack;
+    }
+    const item=stack.pop(), itemType=types.at(-2);
+    let test;
+    if(kind==='range')test=`rangeContains(${data},${readAs(item,'Int')})`;
+    else if(kind==='string')test=`${data}.find(utf8(as<Char>(${item}).code)) != std::string::npos`;
+    else if(kind==='dict'||kind==='set')test=`${data}->contains(${item})`;
+    else {
+      const native=vectorScalar(type);
+      if(native)test=`scalarContains<${native}>(${source},${readAs(item,native)})`;
+      else {
+        const values=kind==='vector'?`${data}->items()`:kind==='heap'?`${data}->values`:`queueItems(*${data})`;
+        const eq=valueOperation('eq',itemType,n);
+        test=`containsElement(m,${values},${item},[](Machine& m,const Value& a,const Value& b) -> bool { return ${eq}(m,a,b); })`;
+      }
+    }
+    stack.push(ctx.value(test,'bool'));
+    return stack;
+  }
   function replaceOnBreak(ctx, stack, breakResult) {
     if (!stack.length) return;
     ctx.add(`if (${breakResult}) {`);
@@ -1456,6 +1490,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       callNamed(ctx, custom, info.effect, stack);
       return stack;
     }
+    if (method?.collectionQuery) return collectionQuery(ctx,n,info,stack);
     if (method?.indexUpdate) {
       const types=items(info.effect.input),container=T.prune(types.at(-3));
       if(container.tag==='list'){
@@ -1599,10 +1634,9 @@ ${inner.lines.join('\n')}
       else if (name==='vbytes' && nativeLocals && vectorScalar(T.prune(info.output).item)==='Byte') push(`byteVector(${text})`);
       else push(`${kind}<${walk}>(${text}, ${at})`);
       if (name === 'bytes') knownByteStreams.set(stack.at(-1),{ctx,line:ctx.lines.length-1,text});
-    } else if (['head','tail','length'].includes(name)) {
+    } else if (['head','tail'].includes(name)) {
       const value = pop();
-      if (name === 'length') stack.push(ctx.value(`vectorLength(${value})`,'Int'));
-      else if(name==='head'&&nativeLocals&&vectorScalar(inputs().at(-1))){const native=vectorScalar(inputs().at(-1));stack.push(ctx.value(`scalarHead<${native}>(${value},${at})`,native));}
+      if(name==='head'&&nativeLocals&&vectorScalar(inputs().at(-1))){const native=vectorScalar(inputs().at(-1));stack.push(ctx.value(`scalarHead<${native}>(${value},${at})`,native));}
       else push(`${name === 'head' ? 'vectorHead' : 'vectorTail'}(${value}, ${at})`);
     } else if (name === 'hash') {
       const operation = valueOperation('hash',inputs().at(-1),n);

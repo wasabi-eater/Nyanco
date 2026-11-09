@@ -15,8 +15,15 @@ export const standardOperatorClasses=new Map([
 ]);
 export const operatorFallback=(c,t)=>c.operatorClass && [...c.methods.keys()].filter(op=>operatorSpecs.has(op)).every(op=>operatorSpecs.get(op).accept(t));
 export const runtimeTypeKey=v=>Array.isArray(v)?'vector':v?.kind==='set'?'set':v?.kind==='dict'?'dict':v?.kind==='range'?'range':v?.kind==='scalar'?v.type:typeof v==='number'?'int':typeof v==='boolean'?'bool':typeof v==='string'?'string':v?.kind==='adt'?v.typeName:null;
+export function collectionQueryType(type, query) {
+  if (type.tag==='list') return 'vector';
+  if (type.tag==='adt' && ['dict','set','deque','heap'].includes(type.name)) return type.name;
+  if (type.tag==='atom' && (type.name==='string' || type.name==='range' && query!=='length')) return type.name;
+  return null;
+}
 export function builtinInstance(c,t) {
   if(!c)return false;
+  if(c.collectionQuery)return !!collectionQueryType(t,c.name);
   if(c.sliceClass)return t.tag==='list';
   const numeric=t.tag==='atom'&&['int','float','byte'].includes(t.name);
   return !!(c.name==='eq'&&t.tag==='continuation'||(c.hashClass||c.name==='eq'||c.name==='ord')&&(t.tag==='atom'&&(c.name==='ord'?['int','float','byte','char','string','bool','range']:['int','float','byte','char','string','bool','range']).includes(t.name)||['list','tuple','tuple-tail','tuple-end','record','record-row','record-empty'].includes(t.tag)||t.tag==='adt'&&(['option','result','dict'].includes(t.name)||t.name==='set'&&c.name!=='ord'))||c.showClass||c.bitClass&&t.tag==='atom'&&['int','byte'].includes(t.name)||operatorFallback(c,t)||c.castClass&&['int','float','byte','char'].includes(t.name)||c.numClass&&numeric||c.indexClass&&(t.tag==='adt'&&t.name==='dict'||t.tag==='list'||t.tag==='atom'&&t.name==='string')||c.name==='streem'&&(t.tag==='adt'&&['dict','deque','heap','set'].includes(t.name)||t.tag==='list'||t.tag==='stream'||t.tag==='atom'&&t.name==='range'));
@@ -56,6 +63,14 @@ export function installOperatorClasses(classes,methods) {
     for(const [name,method] of members)methods.set(name,method);
   }
   if(!classes.has('num'))classes.set('num',{name:'num',param:"'a",methods:new Map(),instances:new Map(),associated:[],standard:true,numClass:true,supers:['add','sub','mul','div','mod','pow','toInt','toFloat','toByte','toChar','fromInt','fromFloat','fromByte']});
+  for(const [name,signature] of [['length',"'c -> int"],['isEmpty',"'c -> bool"],['in',"'member 'c -> bool"]]) {
+    if(classes.has(name))continue;
+    const param="'c", membership=name==='in';
+    const associated=membership?[{name:'item',owner:name,param:"'member"}]:[];
+    const m={name,className:name,param,signature,inputCount:membership?2:1,dispatchIndex:membership?1:0,collectionQuery:true};
+    classes.set(name,{name,param,associated,methods:new Map([[name,m]]),instances:new Map(),standard:true,collectionQuery:true});
+    methods.set(name,m);
+  }
   for(const [name,method] of [['indexGet','at'],['indexSet','setAt']])if(!classes.has(name)){
     const associated=[{name:'key',owner:name,param:"'indexKey"},{name:'item',owner:name,param:"'indexItem"}],param="'c";
     const m={name:method,className:name,param,signature:method==='at'?"'c 'indexKey -> 'indexItem / {exn}":"'c 'indexKey 'indexItem -> 'c / {exn}",inputCount:method==='at'?2:3,dispatchIndex:0,specialIndex:true};

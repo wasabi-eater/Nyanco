@@ -1592,7 +1592,7 @@ export class VM {
           if(op.never)throw new LanguageError('Non-returning effect returned',t);
           stack.push(...returned);
         }
-        else if (BUILTINS.has(t.value)) {
+        else if (BUILTINS.has(t.value) && !this.definitions.methods?.get(t.value)?.collectionQuery) {
           const token={...t,...(t.value==='show'?{showEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialBits?{bitEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialSlice?{sliceEffect:info?.effect}:{}),...(['at','setAt'].includes(t.value)?{indexEffect:info?.effect}:{}),...(this.definitions.methods?.get(t.value)?.specialCast?{castEffect:info?.effect,conversion:info?.effect&&dispatch?.castInfo(t,info.effect)}:{}),reuseVector:this.vectorReuse.has(t)||ownershipPlan?.lookup.get(t)?.ownership?.mode==='move',...(t.handlerLabel?{label:env.get(t.handlerLabel)}:{})};
           if(dispatch&&info && (!dispatch.numericOnly||['call','each','vmap','vfilter','while','when','if','dip','compose','maxiBy','miniBy','all','any',...transforms.keys()].includes(t.value)) && stack.some(v=>v&&typeof v==='object'))token.quotations=dispatch.argumentsPlan(stack,info.input,t);
           yield* BUILTINS.get(t.value)(this,stack,token);
@@ -1607,6 +1607,10 @@ export class VM {
           this.need(stack,m.inputCount,t);const v=stack[stack.length-m.inputCount+m.dispatchIndex];
           const key=runtimeTypeKey(v);
           let target=dispatch&&info?.effect?dispatch.target(t,info.effect):c.instances.get(key)?.implementations.get(t.value);
+          if(m.collectionQuery&&(!target||target===t.value)){
+            yield* BUILTINS.get(t.value)(this,stack,t);
+            continue;
+          }
           if(m.indexUpdate&&(!target||target===t.value))target='__tc_'+t.value;
           if(!target)throw new LanguageError(`No instance: ${c.name} ${key||format(v)}`,t);
           const call={...t,value:target};yield* this.run([call],stack,env,new Map(),info?new Map([[call,info]]):undefined);
@@ -1779,7 +1783,40 @@ define('++',2,(vm,s,t)=>{
   if(typeof s.at(-2)==='string'){const b=vm.expect(s.pop(),'string',t),a=s.pop();s.push(a+b);}
   else return BUILTINS.get('concat')(vm,s,t);
 });
-define('length',1,(vm,s,t)=>s.push(vm.expect(s.pop(),'list',t).length));
+for(const name of ['length','isEmpty'])define(name,1,(vm,s,t)=>{
+  const source=s.pop();
+  const size=Array.isArray(source)?source.length
+    :typeof source==='string'?(name==='isEmpty'?source.length:new TextEncoder().encode(source).length)
+    :source?.kind==='set'?source.data.size
+    :source?.kind==='heap'?source.items.length
+    :source?.kind==='dict'||source?.kind==='deque'?source.size
+    :source?.kind==='range'&&name==='isEmpty'?Number(source.inclusive||source.start!==source.end):null;
+  if(size===null)throw new LanguageError('No instance: '+name+' '+format(source),t);
+  s.push(name==='length'?size:size===0);
+});
+define('in',2,function*(vm,s,t){
+  const source=s.pop(),item=s.pop();
+  if(typeof source==='string'){s.push(source.includes(scalarValue(item)));return;}
+  if(source?.kind==='range'){
+    const {start,end,inclusive}=source;
+    s.push(start<=end?item>=start&&(item<end||inclusive&&item===end):item<=start&&(item>end||inclusive&&item===end));
+    return;
+  }
+  if(source?.kind==='dict'){
+    const hash=yield* vm.hashValue(item,t);
+    s.push(!!dictGet(source,item,hash,equal));return;
+  }
+  if(source?.kind==='set'){
+    s.push(source,item);yield* BUILTINS.get('scontains')(vm,s,t);return;
+  }
+  const values=Array.isArray(source)?source:['deque','heap'].includes(source?.kind)?collectionItems(source):null;
+  if(!values)throw new LanguageError('No instance: in '+format(source),t);
+  for(const value of values){
+    const operands=[value,item];yield* vm.binary('==',operands,t);
+    if(operands[0]){s.push(true);return;}
+  }
+  s.push(false);
+});
 for(const name of ['head','tail']) define(name,1,(vm,s,t)=>{ const list=vm.expect(s.pop(),'list',t); if(!list.length) throw new LanguageError(`${name}: empty list`,t); s.push(name==='head'?list[0]:list.slice(1)); });
 for(const name of ['range','..','..='])define(name,2,(vm,s,t)=>{
   const end=vm.expect(s.pop(),'number',t),start=vm.expect(s.pop(),'number',t);

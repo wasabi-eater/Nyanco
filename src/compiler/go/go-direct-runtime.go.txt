@@ -6,6 +6,12 @@ type Char rune
 type Cell struct{value any}
 type Range struct {start,end int64;inclusive bool}
 func (r *Range) step() int64 {if r.start>r.end{return -1};return 1}
+func (r *Range) empty() bool {return r.start==r.end&&!r.inclusive}
+func (r *Range) contains(item int64) bool {
+ if item==r.end{return r.inclusive}
+ if r.start<=r.end{return r.start<=item&&item<r.end}
+ return r.end<item&&item<=r.start
+}
 func (r *Range) count() int {n:=int(r.end-r.start);if n<0{n=-n};if r.inclusive{n++};return n}
 type Env struct{values map[string]any;locals map[string]bool}
 type NativeVisitor struct{visit func(any)}
@@ -31,6 +37,10 @@ func walkHash(n *hashNode,visit func(hashPair)){if n==nil{return};if n.bucket!=n
 func(d *Dict) walk(visit func(any,any)){walkHash(d.root,func(p hashPair){visit(p.key,p.value)})}
 func(d *Dict) entries() [][2]any{pairs:=[]hashPair{};walkHash(d.root,func(p hashPair){pairs=append(pairs,p)});sort.Slice(pairs,func(i,j int)bool{return pairs[i].index<pairs[j].index});result:=[][2]any{};for _,p:=range pairs{result=append(result,[2]any{p.key,p.value})};return result}
 func(d *Dict) get(key any)(any,bool){p:=findHash(d.root,key,d.hashKey(key),0);if p==nil{return nil,false};return p.value,true}
+func(d *Dict) contains(key any)bool{return findHash(d.root,key,d.hashKey(key),0)!=nil}
+func containsElement(m *Machine,items []any,item any,equalItem func(*Machine,any,any) bool)bool{
+ for _,value:=range items{if equalItem(m,value,item){return true}};return false
+}
 func(d *Dict) set(key,value any) *Dict{hash:=d.hashKey(key);old:=findHash(d.root,key,hash,0);index,size:=d.size,d.size;if old!=nil{index=old.index}else{size++};return &Dict{root:insertHash(d.root,hashPair{key,value,index},hash,0),size:size,hash:d.hash}}
 func makeDict(pairs [][2]any,hash func(any)uint32) *Dict{d:=newDict(hash);for _,p:=range pairs{d=d.set(p[0],p[1])};return d}
 func hashMix(hash,value uint32)uint32{return (hash^value)*16777619}
@@ -204,7 +214,6 @@ func unary(name string,value any,loc string) any {
  switch name {
  case "show":return text(value)
  case "not":return !boolean(value,loc)
- case "length":return int64(len(list(value,loc)))
  case "head","tail":xs:=list(value,loc);if len(xs)==0{fail(loc,name+": empty list")};if name=="head"{return xs[0]};return append([]any{},xs[1:]...)
  };fail(loc,"Unknown unary operation: "+name);return nil
 }
