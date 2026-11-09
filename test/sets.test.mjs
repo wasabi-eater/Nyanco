@@ -28,6 +28,7 @@ instance hash residue where
 instance eq residue where
     (==) (Residue a) (Residue b) = a % 10 == b % 10
     (/=) (Residue a) (Residue b) = a % 10 /= b % 10
+difference = -
 main =
     toSet [3,1,3,2] -> original
     sinsert original 4; sremove 2; toVector; sort; print
@@ -51,13 +52,24 @@ main =
     saved; toVector; print; changing; toVector; print
     0; each original {+}; print
     show original; print
+    original .&. set [2,4]; sort; print
+    original .|. set [2,4]; sort; print
+    difference original (set [2,4]); sort; print
+    other <- set [Residue 21,Residue 9]
+    print ((residues .&. other) == set [Residue 1])
+    print ((residues - other) == set [Residue 2])
+    print ((residues .|. other) == set [Residue 1,Residue 2,Residue 9])
+    print (difference 5 2); print (3 .&. 5); print (3 .|. 5)
+    print (True .&. False); print ((Some 1) .|. (Some 2))
 `;
 test('set type constraints, custom hashing/equality and persistent snapshots',()=>{
  const {output}=run(source);
  assert.deepEqual(output.slice(0,10),['[1, 3, 4]','[1, 2, 3]','True','3','True','[1, 2, 3, 4]','[2]','[1, 3]','True','True']);
  assert.ok(output.includes('(Some "nested")'));
+ assert.deepEqual(output.slice(-11),['[2]','[1, 2, 3, 4]','[1, 3]','True','True','True','3','1','7','False','(Some 1)']);
  assert.throws(()=>compile('main = set []; sinsert {nop}'),/instance|constraint/i);
  assert.throws(()=>compile('main = (toSet [1]) < (toSet [2])'),/instance.*ord/i);
+ assert.throws(()=>compile('main = (set [1]) .|. (set ["x"])'),/Cannot unify/);
  const vm=new VM();assert.match(vm.infer('set'),/hash 'b/);assert.match(vm.infer('sinsert'),/eq 'a/);
 });
 test('set standard module, annotations and language service',()=>{

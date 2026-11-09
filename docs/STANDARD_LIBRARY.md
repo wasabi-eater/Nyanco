@@ -59,6 +59,8 @@ main =
 
 `in x xs` は `in` クラスのメソッドです。要素型はコンテナの関連型 `item` で決まります。`in 0 [0, 1, 2]` は `True` です。辞書ではキー、文字列では `char` を探します。rangeも検索できます。ユーザー定義の型では `instance in 型 where` の中に `item : 型` と `in` の実装を書きます。
 
+set同士の `a .&. b` は積集合（`sintersection`）、`a - b` は差集合（`sdifference`）、`a .|. b` は和集合（`sunion`）です。
+
 `vmap`、`vfilter`、`vflatMap`、`vflatten`、`vtake`、`vskip`、`vzip` は結果をvectorにまとめます。`vreplicate n x` は値を `n` 個並べ、`vscan xs init f` は初期値を含む累積結果を返します。
 
 `partitionPoint xs predicate` は、真が先・偽が後になる境界の添字を返します。ソート済みのvectorに対する `binarySearch xs key` と `binarySearchBy xs key project` は、一致した添字を `Ok`、見つからない場合の挿入位置を `Err` で返します。

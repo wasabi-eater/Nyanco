@@ -74,9 +74,22 @@ handle body {
   add('withDeque',['initial','body'],handleWorklist('qpush','qpopFront','qpeek'));
  }
  add('set',['xs'],'fold xs __emptySet {sinsert}');
- add('sunion',['xs','ys'],'fold ys xs {sinsert}');
- add('sintersection',['xs','ys'],'filter xs {scontains ys _}; set');
- add('sdifference',['xs','ys'],'filter xs {scontains ys _; not}; set');
+ for(const [className,operator,name,body] of [
+  ['and','.&.','sintersection','filter xs {scontains ys _}; set'],
+  ['sub','-','sdifference','filter xs {scontains ys _; not}; set'],
+  ['or','.|.','sunion','fold ys xs {sinsert}'],
+ ]){
+  add(name,['xs','ys'],body);
+  const cls=result.classes.get(className);
+  if(!cls?.standard||!cls.methods.has(operator)||cls.instances.has('set'))continue;
+  const implementation='__tc_set_'+name;
+  add(implementation,['xs','ys'],body);
+  const item={tag:'param',name:"'a"},head={tag:'adt',name:'set',args:[item]};
+  const instances=new Map(cls.instances);
+  instances.set('set',{target:'set',head,heads:[head],context:[['hash',item],['eq',item]],
+   implementations:new Map([[operator,implementation]]),associated:new Map(),token});
+  result.classes.set(className,{...cls,instances});
+ }
  add('loop',[],'while {True} _');
  // The outer loop also catches break during initialization. The inner loop
  // ends on break/cancel in cont; the final cancel prevents initialization restarting.
