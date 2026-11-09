@@ -39,7 +39,8 @@ test('update paths and replacement arities are statically checked',()=>{
 });
 test('list bounds use exn, indices run once, and failed mutation retains the root',()=>{
  const {p,stack,output}=run('index = print "index"; 0;; main = [1] with {.[index] ! + 2}');assert.deepEqual(stack,[[3]]);assert.deepEqual(output,['index']);assert.match(p.types.get('main'),/exn/);
- for(const index of ['-1','1'])assert.deepEqual(run(`main = handle {[1] with {.[${index}] = 9}; drop; 0} {exn: {-> message k; 7}}`).stack,[7]);
+ assert.deepEqual(run('main = [1,2] with {.[-1] = 9}').stack,[[1,9]]);
+ for(const index of ['-2','1'])assert.deepEqual(run(`main = handle {[1] with {.[${index}] = 9}; drop; 0} {exn: {-> message k; 7}}`).stack,[7]);
  assert.deepEqual(run('main = [1] -> mut xs; handle {xs.[3] := 9} {exn: {-> message k; nop}}; xs').stack,[[1]]);
 });
 test('effects, dependencies and typed class dispatch work inside update expressions',()=>{
