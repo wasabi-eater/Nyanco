@@ -33,17 +33,18 @@ const headers = new Map(Object.entries({
   limits: 'numeric_limits',
   map: 'map',
   memory: 'make_shared shared_ptr dynamic_pointer_cast static_pointer_cast construct_at destroy_at',
-  mutex: 'lock_guard mutex unique_lock',
+  mutex: 'call_once lock_guard mutex once_flag unique_lock',
   new: 'launder',
   optional: 'nullopt optional',
   span: 'span',
-  stdexcept: 'runtime_error',
+  stdexcept: 'out_of_range runtime_error',
   string: 'getline string to_string',
   string_view: 'string_view',
   system_error: 'errc',
   thread: 'thread',
-  tuple: 'get tuple apply tuple_element_t',
+  tuple: 'get tuple apply tie tuple_element_t',
   type_traits: 'conditional_t is_same_v is_nothrow_move_constructible_v',
+  typeinfo: 'type_info',
   unordered_map: 'unordered_map',
   utility: 'move pair in_place_type exchange',
   variant: 'variant visit get_if',
@@ -61,7 +62,7 @@ function parts(text, excluded = []) {
     result.push({text:source, when, refs});
   }
   let start = 0;
-  for (const block of text.matchAll(/^\/\/ @if-runtime (\w+)\r?\n([\s\S]*?)^\/\/ @end-runtime\r?\n/gm)) {
+  for (const block of text.matchAll(/^\/\/ @if-runtime (\w+)\r?\n([\s\S]*?)^\/\/ @end-runtime(?:\r?\n|$)/gm)) {
     add(text.slice(start,block.index));
     add(block[2],block[1]);
     start = block.index + block[0].length;
@@ -126,6 +127,7 @@ export function emitCppRuntime(program, declarations) {
   const render = group => group.filter(fragment=>used.has(fragment))
     .map(fragment=>fragment.parts.filter(part=>active.has(part)).map(part=>part.text).join('')).join('\n\n');
   return {
+    usesEvents:names.has('Event'),
     includes:[...includes].sort().map(header => `#include <${header}>`).join('\n'),
     runtime:render(fragments.slice(0,runtime.length)),
     declarations:render(fragments.slice(runtime.length))

@@ -134,7 +134,7 @@ main =
   new VM({...program,output:line=>expected.push(line)}).evaluate('main');
   const code=transpileCpp(program);
   assert.match(code,/sortScalarVectors<Byte,Ptr<VectorBase>>/);
-  assert.match(code,/partition<Partition::chunkBy,true>/);
+  assert.match(code,/partition<Partition::chunkBy,true,/);
   assert.match(code,/groupOrderedCounts<Int>/);
   assert.match(code,/nativePairVector<Int,Int>\(std::vector<std::tuple<Int,Int>>/);
   assert.match(code,/mapNativePairs<Int,Int,Int>/);

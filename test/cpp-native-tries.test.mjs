@@ -40,7 +40,8 @@ function native(code){
  const dir=mkdtempSync(join(tmpdir(),'nyanco-native-tries-'));
  try{
   const scalarAlias=code.includes('using ScalarVector =')?'static_assert(std::is_same_v<ScalarVector<Int>,VectorStorage<Int>>);':'';
-  code+=`\nnamespace nyanco {template<class E> concept HasPayload=requires(E e){e.value;};static_assert(!HasPayload<SetEntry<Int>>);static_assert(sizeof(SetEntry<Int>)==sizeof(Int));static_assert(sizeof(DictEntry<Int,Int>)<sizeof(DictEntry<>));static_assert(std::is_same_v<Vector,VectorStorage<Value>>);${scalarAlias}}\n`;
+  const boxedAlias=code.includes('using Vector =')?'static_assert(std::is_same_v<Vector,VectorStorage<Value>>);':'';
+  code+=`\nnamespace nyanco {template<class E> concept HasPayload=requires(E e){e.value;};static_assert(!HasPayload<SetEntry<Int>>);static_assert(sizeof(SetEntry<Int>)==sizeof(Int));static_assert(sizeof(DictEntry<Int,Int>)<sizeof(DictEntry<>));${boxedAlias}${scalarAlias}}\n`;
   const cpp=join(dir,'main.cpp'),exe=join(dir,'main.exe');writeFileSync(cpp,code);
   const args=compiler==='cl'?['/nologo','/std:c++20','/EHsc','/utf-8','/O2','/bigobj',cpp,'/Fe:'+exe]:['-std=c++20','-O2',cpp,'-o',exe];
   const built=spawnSync(compiler,args,{cwd:dir,encoding:'utf8',windowsHide:true,timeout:120000});assert.equal(built.status,0,built.stdout+built.stderr);
@@ -67,6 +68,5 @@ main =
 `;
  const p=compile(text);const code=transpileCpp(p);
  assert.doesNotMatch(code,/make_shared<Native(?:Dict|Set)<Int/);
- // Include all aliases required by the common compile-time layout assertions.
  assert.equal(native(code),expected(p));
 });

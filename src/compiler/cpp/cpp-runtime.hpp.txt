@@ -16,40 +16,56 @@ template <std::size_t N> using Results = std::array<Value, N>;
 // @runtime Ptr
 template <typename T> using Ptr = std::shared_ptr<T>;
 // @runtime as
-template <typename T> const T& as(const Value& value) { return std::any_cast<const T&>(value); }
-template <typename T> requires (!std::is_same_v<T,Value>) const T& as(const T& value) { return value; }
+template <typename T> const T& as(const T& value) { return value; }
+// @if-runtime Value
+template <typename T> requires (!std::is_same_v<T,Value>) const T& as(const Value& value) { return std::any_cast<const T&>(value); }
+// @end-runtime
 // @runtime takeAs
-template <typename T> T takeAs(Value& value) { T result=std::move(std::any_cast<T&>(value));value.reset();return result; }
-template <typename T> requires (!std::is_same_v<T,Value>) T takeAs(T& value) { return std::move(value); }
+template <typename T> T takeAs(T& value) { return std::move(value); }
+// @if-runtime Value
+template <typename T> requires (!std::is_same_v<T,Value>) T takeAs(Value& value) { T result=std::move(std::any_cast<T&>(value));value.reset();return result; }
+// @end-runtime
 // @runtime is
 template <typename T> bool is(const Value& value) { return value.type() == typeid(T); }
 // @runtime fail
 [[noreturn]] inline void fail(const std::string& at, const std::string& message) {
     throw std::runtime_error(at + ": " + message);
 }
+// @runtime initializedGlobal
+template <typename T>
+T& initializedGlobal(T& slot, bool initialized, std::string_view name) {
+    if (!initialized) fail("<initialization>", "Missing generated binding: " + std::string(name));
+    return slot;
+}
 
 // @runtime Char
 struct Char { char32_t code; };
-// @runtime VectorBase VectorStorage Vector VectorBoxing vectorWritable vectorStorageView
+// @runtime VectorBase VectorStorage VectorBoxing vectorWritable vectorStorageView
 struct VectorBase {
-    mutable Ptr<VectorBase> nativeCache;
     virtual ~VectorBase() = default;
-    virtual std::span<const Value> items() const = 0;
     virtual std::size_t size() const = 0;
     virtual bool native() const = 0;
+// @if-runtime Value
+    mutable Ptr<VectorBase> nativeCache;
+    virtual std::span<const Value> items() const = 0;
+// @end-runtime
 };
+// @if-runtime Value
 template <typename T> struct VectorBoxing {
     mutable Values boxed;
     mutable bool boxedReady = false;
 };
 template <> struct VectorBoxing<Value> {};
+// @end-runtime
 template <typename T> struct VectorStorage final : VectorBase {
     // The string's inline buffer avoids a separate allocation for short byte vectors.
     using Storage = std::conditional_t<std::is_same_v<T,Byte>,std::string,std::vector<T>>;
     Storage values;
     Ptr<VectorBase> owner;
     std::span<const T> view;
+// @if-runtime Value
     [[no_unique_address]] VectorBoxing<T> boxing;
+// @end-runtime
     static Storage storage(std::vector<T>&& data) {
         if constexpr (std::is_same_v<T,Byte>)
             return data.empty() ? std::string{} : std::string(reinterpret_cast<const char*>(data.data()),data.size());
@@ -64,7 +80,13 @@ template <typename T> struct VectorStorage final : VectorBase {
         else return std::span<const T>(values);
     }
     std::size_t size() const override { return scalars().size(); }
-    bool native() const override { return !std::is_same_v<T,Value>; }
+    bool native() const override {
+// @if-runtime Value
+        return !std::is_same_v<T,Value>;
+// @end-runtime
+        return true;
+    }
+// @if-runtime Value
     std::span<const Value> items() const override {
         if constexpr (std::is_same_v<T,Value>) return scalars();
         else {
@@ -76,18 +98,21 @@ template <typename T> struct VectorStorage final : VectorBase {
             return boxing.boxed;
         }
     }
+// @end-runtime
     void invalidate() {
+// @if-runtime Value
         nativeCache.reset();
         if constexpr (!std::is_same_v<T,Value>) { boxing.boxed.clear();boxing.boxedReady=false; }
+// @end-runtime
     }
 };
-using Vector = VectorStorage<Value>;
 template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Ptr<VectorBase> base,bool reuse) {
     auto* typed = dynamic_cast<VectorStorage<T>*>(base.get());
     Ptr<VectorStorage<T>> result;
     if (typed && reuse && base.use_count() == 1 && !typed->owner)
         result = std::static_pointer_cast<VectorStorage<T>>(std::move(base));
     else if (typed) result = std::make_shared<VectorStorage<T>>(*typed);
+// @if-runtime Value
     else {
         std::vector<T> data; data.reserve(base->size());
         for (const auto& item : base->items()) {
@@ -96,37 +121,50 @@ template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Ptr<VectorBase
         }
         result = std::make_shared<VectorStorage<T>>(std::move(data));
     }
+// @end-runtime
+    if (!result) throw std::runtime_error("Unexpected vector layout");
     result->invalidate();return result;
 }
+// @if-runtime Value
 template <typename T> inline Ptr<VectorStorage<T>> vectorWritable(Value value,bool reuse) {
     return vectorWritable<T>(std::move(std::any_cast<Ptr<VectorBase>&>(value)),reuse);
 }
+// @end-runtime
 template <typename T> inline Ptr<VectorStorage<T>> vectorStorageView(Ptr<VectorStorage<T>> source,std::size_t start,std::size_t count) {
     auto result=std::make_shared<VectorStorage<T>>(std::vector<T>{});
     result->owner=source->owner?source->owner:source;
     result->view=source->scalars().subspan(start,count);
     return result;
 }
+// @runtime Vector
+using Vector = VectorStorage<Value>;
 // @runtime ScalarVector scalarVector scalarData scalarPush scalarConcat
 template <typename T> using ScalarVector = VectorStorage<T>;
 template <typename T> inline Ptr<VectorBase> scalarVector(std::vector<T> data) {
     return std::make_shared<ScalarVector<T>>(std::move(data));
 }
+// @if-runtime Value
 template <typename T> inline Ptr<VectorBase> scalarVector(Values data) {
     std::vector<T> result; result.reserve(data.size());
     for (const auto& item : data) result.push_back(as<T>(item));
     return scalarVector<T>(std::move(result));
 }
+// @end-runtime
 template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Ptr<VectorBase>& base) {
     if (auto typed = std::dynamic_pointer_cast<ScalarVector<T>>(base)) return typed;
+// @if-runtime Value
     if (auto typed = std::dynamic_pointer_cast<ScalarVector<T>>(base->nativeCache)) return typed;
     std::vector<T> data; data.reserve(base->size());
     for (const auto& item : base->items()) data.push_back(as<T>(item));
     auto result = std::make_shared<ScalarVector<T>>(std::move(data));
     base->nativeCache = result;
     return result;
+// @end-runtime
+    throw std::runtime_error("Unexpected vector layout");
 }
+// @if-runtime Value
 template <typename T> inline Ptr<ScalarVector<T>> scalarData(const Value& value) { return scalarData<T>(as<Ptr<VectorBase>>(value)); }
+// @end-runtime
 template <typename T, typename Source> inline Ptr<VectorBase> scalarPush(Source source, T item, bool reuse) {
     auto result = vectorWritable<T>(std::move(source),reuse);
     result->values.push_back(item);
@@ -142,22 +180,36 @@ inline Ptr<VectorBase> scalarConcat(Source source, const Other& other, bool reus
 // @runtime NativeVectorReader
 template <typename T> class NativeVectorReader {
     std::span<const T> scalars;
+// @if-runtime Value
     std::span<const Value> boxed;
+// @end-runtime
 public:
     template <typename Source>
     explicit NativeVectorReader(const Source& source) {
         const auto* base=as<Ptr<VectorBase>>(source).get();
-        if constexpr (std::is_same_v<T,Int> || std::is_same_v<T,Byte> || std::is_same_v<T,double>) {
+        if constexpr (!std::is_same_v<T,bool>) {
             if (const auto* typed=dynamic_cast<const ScalarVector<T>*>(base)) {
                 scalars=typed->scalars();
                 return;
             }
         }
+// @if-runtime Value
         boxed=base->items();
+        return;
+// @end-runtime
+        throw std::runtime_error("Unexpected vector layout");
     }
-    std::size_t size() const { return scalars.empty() ? boxed.size() : scalars.size(); }
+    std::size_t size() const {
+// @if-runtime Value
+        if (scalars.empty()) return boxed.size();
+// @end-runtime
+        return scalars.size();
+    }
     const T& operator[](std::size_t index) const {
-        return scalars.empty() ? as<T>(boxed[index]) : scalars[index];
+// @if-runtime Value
+        if (scalars.empty()) return as<T>(boxed[index]);
+// @end-runtime
+        return scalars[index];
     }
 };
 // @runtime scalarContains
@@ -183,9 +235,94 @@ inline Ptr<VectorBase> vectorView(const Source& value, std::size_t start, std::s
     return Ptr<VectorBase>(std::move(result));
 }
 // @runtime Tuple
-struct Tuple { Values values; };
+struct Tuple {
+    virtual ~Tuple() = default;
+    virtual std::size_t size() const = 0;
+// @if-runtime boxedTupleItems
+    virtual std::span<const Value> boxedTupleItems() const = 0;
+// @end-runtime
+};
+// @runtime BoxedTuple
+struct BoxedTuple final : Tuple {
+    Values fields;
+    explicit BoxedTuple(Values values) : fields(std::move(values)) {}
+    std::span<const Value> boxedTupleItems() const override { return fields; }
+    std::size_t size() const override { return fields.size(); }
+};
+// @runtime NativeTuple nativeTuple typedTupleAt
+template <typename... Fields> struct NativeTuple final : Tuple {
+    std::tuple<Fields...> fields;
+    explicit NativeTuple(std::tuple<Fields...> value) : fields(std::move(value)) {}
+    std::size_t size() const override { return sizeof...(Fields); }
+// @if-runtime boxedTupleItems
+    mutable std::once_flag materialized;
+    mutable Values boxed;
+    std::span<const Value> boxedTupleItems() const override {
+        std::call_once(materialized,[&] {
+            boxed = std::apply([](const auto&... field) { return Values{field...}; },fields);
+        });
+        return boxed;
+    }
+// @end-runtime
+};
+template <typename... Fields> Ptr<Tuple> nativeTuple(std::tuple<Fields...> fields) {
+    return std::make_shared<NativeTuple<Fields...>>(std::move(fields));
+}
+template <std::size_t I, typename... Fields>
+const auto& typedTupleAt(const Ptr<Tuple>& value) {
+    if (const auto* native = dynamic_cast<const NativeTuple<Fields...>*>(value.get()))
+        return std::get<I>(native->fields);
+// @if-runtime boxedTupleItems
+    return as<std::tuple_element_t<I,std::tuple<Fields...>>>(value->boxedTupleItems()[I]);
+// @end-runtime
+    throw std::runtime_error("Unexpected tuple layout");
+}
 // @runtime Record
-struct Record { std::map<std::string, Value> fields; };
+struct Record {
+    virtual ~Record() = default;
+// @if-runtime boxedRecordItems
+    using Items = std::map<std::string,Value>;
+    virtual const Items& boxedRecordItems() const = 0;
+// @end-runtime
+};
+// @runtime BoxedRecord
+struct BoxedRecord final : Record {
+    Items fields;
+    explicit BoxedRecord(Items value) : fields(std::move(value)) {}
+    const Items& boxedRecordItems() const override { return fields; }
+};
+// @runtime NativeRecord nativeRecord typedRecordAt
+template <typename Layout> struct NativeRecord final : Record {
+    Layout fields;
+    explicit NativeRecord(Layout value) : fields(std::move(value)) {}
+// @if-runtime boxedRecordItems
+    mutable std::once_flag materialized;
+    mutable Items boxed;
+    const Items& boxedRecordItems() const override {
+        std::call_once(materialized,[&] {
+            Items result;
+            std::size_t index = 0;
+            std::apply([&](const auto&... field) {
+                (result.emplace(std::string(Layout::keys[index++]),field), ...);
+            },fields.members());
+            boxed = std::move(result);
+        });
+        return boxed;
+    }
+// @end-runtime
+};
+template <typename Layout> Ptr<Record> nativeRecord(Layout fields) {
+    return std::make_shared<NativeRecord<Layout>>(std::move(fields));
+}
+template <typename Layout, std::size_t I, typename Field>
+const Field& typedRecordAt(const Ptr<Record>& value) {
+    if (const auto* native = dynamic_cast<const NativeRecord<Layout>*>(value.get()))
+        return std::get<I>(native->fields.members());
+// @if-runtime boxedRecordItems
+    return as<Field>(value->boxedRecordItems().at(std::string(Layout::keys[I])));
+// @end-runtime
+    throw std::runtime_error("Unexpected record layout");
+}
 // @runtime AdtTag
 struct AdtTag {
     std::size_t family, alternative;
@@ -230,6 +367,7 @@ public:
         static constexpr std::size_t sizes[] = {Constructors::count...};
         return sizes[value.index()];
     }
+// @if-runtime Value
     Value field(std::size_t index) const {
         return std::visit([&](const auto& constructor) -> Value {
             Value result;
@@ -240,6 +378,7 @@ public:
             return result;
         },value);
     }
+// @end-runtime
     const AdtInfo& info() const {
         static constexpr AdtInfo alternatives[] = {Constructors::info...};
         return alternatives[value.index()];
@@ -255,7 +394,9 @@ class Adt {
         void (*move)(void*, void*) noexcept;
         AdtTag (*tag)(const void*);
         std::size_t (*count)(const void*);
+// @if-runtime Value
         Value (*field)(const void*, std::size_t);
+// @end-runtime
         const AdtInfo& (*info)(const void*);
     };
     alignas(void*) std::byte storage[adtInlineBytes];
@@ -275,7 +416,9 @@ class Adt {
             },
             [](const void* source) { return stored<Family>(source).tag(); },
             [](const void* source) { return stored<Family>(source).count(); },
+// @if-runtime Value
             [](const void* source,std::size_t index) { return stored<Family>(source).field(index); },
+// @end-runtime
             [](const void* source) -> const AdtInfo& { return stored<Family>(source).info(); },
         };
         return table;
@@ -321,7 +464,9 @@ public:
     }
     AdtTag tag() const { return ops->tag(storage); }
     std::size_t count() const { return ops->count(storage); }
+// @if-runtime Value
     Value field(std::size_t index) const { return ops->field(storage,index); }
+// @end-runtime
     const AdtInfo& info() const { return ops->info(storage); }
 };
 // @runtime makeAdt
@@ -330,17 +475,22 @@ Adt makeAdt(Constructor constructor) {
     return Adt::make<Family>(std::move(constructor));
 }
 // @runtime adtPointer
-inline const Adt* adtPointer(const Value& value) { return std::any_cast<Adt>(&value); }
 inline const Adt* adtPointer(const Adt& value) { return &value; }
+// @if-runtime Value
+inline const Adt* adtPointer(const Value& value) { return std::any_cast<Adt>(&value); }
+// @end-runtime
 // @runtime adtField
 template <typename Family, typename Constructor, std::size_t Index>
 auto adtField(const Adt& value) {
     if (const auto* constructor = value.template get<Family,Constructor>())
         return std::get<Index>(constructor->fields);
+// @if-runtime Value
     auto boxed = value.field(Index);
     using Field = std::tuple_element_t<Index,decltype(Constructor::fields)>;
     if constexpr (std::is_same_v<Field,Value>) return boxed;
     else return takeAs<Field>(boxed);
+// @end-runtime
+    throw std::runtime_error("Unexpected ADT layout");
 }
 // @runtime Range
 struct Range { Int first, last; bool inclusive; };
@@ -363,88 +513,85 @@ template <int Operation, typename Source> inline auto setOp(Source source,const 
         return result;
     }
 }
-// @runtime Cell Env takeCell NativeCell takeLocal
+// @runtime Cell
 struct Cell {
-    Value value; bool mutable_; bool borrowed = false;
-    explicit Cell(Value data={},bool mut=false):value(std::move(data)),mutable_(mut){}
+    bool borrowed = false;
     virtual ~Cell()=default;
-    virtual Value read() const{return value;}
-    virtual Value take(){Value result=std::move(value);value.reset();return result;}
-    virtual void write(Value data){value=std::move(data);}
+// @if-runtime Value
+    virtual Value read() const = 0;
+    virtual Value take() = 0;
+    virtual void write(Value data) = 0;
+// @end-runtime
 };
+// @runtime NativeCell takeLocal
 template<typename T> struct NativeCell final : Cell {
     T value;
-    explicit NativeCell(T data, bool mut = true):Cell({},mut),value(std::move(data)){}
+    explicit NativeCell(T data):value(std::move(data)){}
+// @if-runtime Value
     Value read() const override{return value;}
     Value take() override{Value result=std::move(value);value=T{};return result;}
     void write(Value data) override{
         if constexpr(std::is_same_v<T,Value>)value=std::move(data);
         else value=std::move(std::any_cast<T&>(data));
     }
+// @end-runtime
 };
 template<typename T> T takeLocal(const Ptr<NativeCell<T>>& cell){
     if(cell.use_count()!=1||cell->borrowed)return cell->value;
     T result=std::move(cell->value);cell->value=T{};return result;
 }
-inline Value takeCell(const Ptr<Cell>& cell) {
-    if (cell.use_count() != 1 || cell->borrowed) return cell->read();
-    return cell->take();
-}
-struct Env {
-    using Bindings = std::unordered_map<std::string, Ptr<Cell>>;
-    Ptr<Bindings> bindings = std::make_shared<Bindings>();
-    void writable() {
-        if (bindings.use_count() != 1) bindings = std::make_shared<Bindings>(*bindings);
-    }
-    Ptr<Cell> cell(const std::string& name) const {
-        auto found = bindings->find(name);
-        if (found == bindings->end()) throw std::runtime_error("Missing generated binding: " + name);
-        return found->second;
-    }
-    Value read(const std::string& name) const { return cell(name)->read(); }
-    Value take(const std::string& name) {
-        auto& binding = bindings->at(name);
-        if (bindings.use_count() != 1 || binding.use_count() != 1 || binding->borrowed) return binding->read();
-        return binding->take();
-    }
-    Env select(std::initializer_list<std::string> names) const {
-        Env result;
-        for (const auto& name : names) {
-            auto found = bindings->find(name);
-            if (found != bindings->end()) result.bindings->emplace(name,found->second);
-        }
-        return result;
-    }
-    void bind(const std::string& name, Value value, bool mutable_ = false) {
-        writable();
-        (*bindings)[name] = std::make_shared<Cell>(Cell{std::move(value), mutable_});
-    }
-    void bindCell(const std::string& name, const Ptr<Cell>& cell) {
-        writable();(*bindings)[name]=cell;
-    }
-    void update(const std::string& name, Value value) { cell(name)->write(std::move(value)); }
-    void erase(const std::string& name) { writable(); bindings->erase(name); }
-};
-// @runtime Quote
-struct Quote { std::size_t site; Env env; std::string self; };
-// @runtime Label
-struct Label { const void* target = nullptr; };
+// @runtime Visit
+using Visit = std::function<void(Value)>;
 // @runtime Machine
 struct Machine;
+// @runtime TypedVisit TypedWalk
+template <typename T> using TypedVisit = std::function<void(T)>;
+template <typename T> using TypedWalk = std::function<void(Machine&, const TypedVisit<T>&)>;
+// @runtime Quote
+struct Quote {
+    std::size_t site;
+    explicit Quote(std::size_t site) : site(site) {}
+// @if-runtime nativeVisitorQuote
+    const std::type_info* visitorType = nullptr;
+// @end-runtime
+};
+// @runtime Label
+struct Label { const void* target = nullptr; };
 // @runtime containsElement
 template <typename Items, typename Equal>
 bool containsElement(Machine& m, const Items& values, const Value& item, Equal equalItem) {
     for (const auto& value : values) if (equalItem(m,value,item)) return true;
     return false;
 }
-// @runtime Visit
-using Visit = std::function<void(Value)>;
-// @runtime NativeVisitor
-struct NativeVisitor { Visit visit; };
+// @runtime nativeVisitorQuote invokeNativeVisitor
+template <typename T> struct NativeVisitorQuote final : Quote {
+    TypedVisit<T> visit;
+    explicit NativeVisitorQuote(const TypedVisit<T>& visit) : Quote(0), visit(visit) {
+        visitorType = &typeid(T);
+    }
+};
+template <typename T>
+Ptr<Quote> nativeVisitorQuote(const TypedVisit<T>& visit) {
+    return std::make_shared<NativeVisitorQuote<T>>(visit);
+}
+template <typename T>
+void invokeNativeVisitor(const Ptr<Quote>& q, T item, const std::string& at) {
+    if (*q->visitorType == typeid(T)) {
+        static_cast<const NativeVisitorQuote<T>&>(*q).visit(std::move(item));
+        return;
+    }
+    if (*q->visitorType == typeid(Value)) {
+        static_cast<const NativeVisitorQuote<Value>&>(*q).visit(std::move(item));
+        return;
+    }
+    fail(at,"Incompatible stream visitor");
+}
 // @runtime Stream
 struct Stream {
-    std::function<void(Machine&, const Visit&)> walk;
-    explicit Stream(decltype(walk) body) : walk(std::move(body)) {}
+    Stream() = default;
+// @if-runtime boxedStreamWalk
+    std::function<void(Machine&, const Visit&)> boxedStreamWalk;
+// @end-runtime
     Stream(const Stream&) = delete;
     Stream& operator=(const Stream&) = delete;
     virtual ~Stream() = default;
@@ -462,13 +609,17 @@ struct Borrow { Ptr<Cell> owner; bool active = true, suspended = false; };
 // @runtime BorrowScope
 struct BorrowScope {
     Ptr<Borrow> ref, parent;
+    void reborrow(const Ptr<Borrow>& borrow) {
+        parent = borrow;
+        if (!parent->active || parent->suspended) throw std::runtime_error("Invalid mutable reborrow");
+        ref = std::make_shared<Borrow>(Borrow{parent->owner});
+        parent->suspended = true;
+    }
+    explicit BorrowScope(const Ptr<Borrow>& borrow) { reborrow(borrow); }
     explicit BorrowScope(const Ptr<Cell>& cell) {
         const auto value=cell->read();
         if (is<Ptr<Borrow>>(value)) {
-            parent = as<Ptr<Borrow>>(value);
-            if (!parent->active || parent->suspended) throw std::runtime_error("Invalid mutable reborrow");
-            ref = std::make_shared<Borrow>(Borrow{parent->owner});
-            parent->suspended = true;
+            reborrow(as<Ptr<Borrow>>(value));
         } else {
             if (cell->borrowed) throw std::runtime_error("Value is already borrowed");
             ref = std::make_shared<Borrow>(Borrow{cell});
@@ -486,15 +637,16 @@ struct BorrowScope {
 // @runtime vector
 inline Ptr<VectorBase> vector(Values values) { return std::make_shared<Vector>(std::move(values)); }
 // @runtime tuple
-inline Ptr<Tuple> tuple(Values values) { return std::make_shared<Tuple>(Tuple{std::move(values)}); }
+inline Ptr<Tuple> tuple(Values values) { return std::make_shared<BoxedTuple>(std::move(values)); }
 // @runtime NativePairVector nativePairVector
 template <typename Left, typename Right> struct NativePairVector final : VectorBase {
     using Row = std::tuple<Left,Right>;
     std::vector<Row> rows;
-    mutable Values boxed;
     explicit NativePairVector(std::vector<Row> data) : rows(std::move(data)) {}
     std::size_t size() const override { return rows.size(); }
     bool native() const override { return true; }
+// @if-runtime Value
+    mutable Values boxed;
     std::span<const Value> items() const override {
         if (boxed.empty() && !rows.empty()) {
             Values values;values.reserve(rows.size());
@@ -503,6 +655,7 @@ template <typename Left, typename Right> struct NativePairVector final : VectorB
         }
         return boxed;
     }
+// @end-runtime
 };
 template <typename Left, typename Right>
 Ptr<VectorBase> nativePairVector(std::vector<std::tuple<Left,Right>> rows) {
@@ -528,14 +681,14 @@ std::tuple<Ptr<VectorBase>,Ptr<VectorBase>> unzipNativeVector(const Source& sour
         for (const auto& [a,b] : pairs->rows) { left.push_back(a);right.push_back(b); }
     } else {
         for (const auto& item : base->items()) {
-            const auto& fields=as<Ptr<Tuple>>(item)->values;
+            const auto& fields=as<Ptr<Tuple>>(item)->boxedTupleItems();
             left.push_back(as<Left>(fields[0]));right.push_back(as<Right>(fields[1]));
         }
     }
     return {scalarVector<Left>(std::move(left)),scalarVector<Right>(std::move(right))};
 }
 // @runtime record
-inline Ptr<Record> record(std::map<std::string, Value> fields) { return std::make_shared<Record>(Record{std::move(fields)}); }
+inline Ptr<Record> record(Record::Items fields) { return std::make_shared<BoxedRecord>(std::move(fields)); }
 // @runtime option
 inline Adt option(std::optional<Value> value = {});
 // @runtime typedOption
@@ -663,6 +816,27 @@ inline std::string join(const std::vector<std::string>& parts, const std::string
     }
     return result;
 }
+// @runtime showPairVector
+template <typename A, typename B, typename First, typename Second>
+std::string showPairVector(const Ptr<VectorBase>& source, const First& showFirst, const Second& showSecond) {
+    std::string text = "[";
+    auto appendPair = [&](const A& a, const B& b) {
+        if (text.size() > 1) text += ", ";
+        text += "#(";
+        text += showFirst(a);
+        text += " ";
+        text += showSecond(b);
+        text += ")";
+    };
+    if (const auto* pairs = dynamic_cast<const NativePairVector<A,B>*>(source.get())) {
+        for (const auto& [a,b] : pairs->rows) appendPair(a,b);
+    } else {
+        const NativeVectorReader<Ptr<Tuple>> rows(source);
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            appendPair(typedTupleAt<0,A,B>(rows[i]),typedTupleAt<1,A,B>(rows[i]));
+    }
+    return text + "]";
+}
 // @runtime shown
 inline std::string shown(std::span<const Value> values, const std::string& sep) {
     std::vector<std::string> parts;
@@ -709,6 +883,10 @@ inline std::string showAdt(const Adt& a) {
     for (std::size_t i=0; i<a.count(); ++i) text += " " + show(a.field(i));
     return text + ")";
 }
+// @runtime showRange
+inline std::string showRange(const Range& r) {
+    return "(" + std::to_string(r.first) + (r.inclusive ? " ..= " : " .. ") + std::to_string(r.last) + ")";
+}
 // @runtime show
 inline std::string show(const Value& v) {
     if (is<Int>(v)) return showScalar(as<Int>(v));
@@ -723,12 +901,12 @@ inline std::string show(const Value& v) {
     if (is<Ptr<VectorBase>>(v)) return "[" + shown(as<Ptr<VectorBase>>(v)->items(), ", ") + "]";
 // @end-runtime
 // @if-runtime Tuple
-    if (is<Ptr<Tuple>>(v)) return "#(" + shown(as<Ptr<Tuple>>(v)->values, " ") + ")";
+    if (is<Ptr<Tuple>>(v)) return "#(" + shown(as<Ptr<Tuple>>(v)->boxedTupleItems(), " ") + ")";
 // @end-runtime
 // @if-runtime Record
     if (is<Ptr<Record>>(v)) {
         std::vector<std::string> parts;
-        for (const auto& [key, value] : as<Ptr<Record>>(v)->fields) parts.push_back(key + ": " + show(value));
+        for (const auto& [key, value] : as<Ptr<Record>>(v)->boxedRecordItems()) parts.push_back(key + ": " + show(value));
         return parts.empty() ? "{:}" : "{" + join(parts, ", ") + "}";
     }
 // @end-runtime
@@ -746,10 +924,7 @@ inline std::string show(const Value& v) {
     if (is<Adt>(v)) return showAdt(as<Adt>(v));
 // @end-runtime
 // @if-runtime Range
-    if (is<Range>(v)) {
-        const auto& r = as<Range>(v);
-        return "(" + std::to_string(r.first) + (r.inclusive ? " ..= " : " .. ") + std::to_string(r.last) + ")";
-    }
+    if (is<Range>(v)) return showRange(as<Range>(v));
 // @end-runtime
 // @if-runtime Queue
     if(is<Ptr<Queue>>(v))return "deque ["+shown(queueItems(*as<Ptr<Queue>>(v)),", ")+"]";
@@ -813,14 +988,14 @@ inline int compare(const Value& a, const Value& b) {
     if (is<Ptr<VectorBase>>(a)) return compareValues(as<Ptr<VectorBase>>(a)->items(), as<Ptr<VectorBase>>(b)->items());
 // @end-runtime
 // @if-runtime Tuple
-    if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
+    if (is<Ptr<Tuple>>(a)) return compareValues(as<Ptr<Tuple>>(a)->boxedTupleItems(), as<Ptr<Tuple>>(b)->boxedTupleItems());
 // @end-runtime
 // @if-runtime Adt
     if (is<Adt>(a)) return compareAdt(as<Adt>(a),as<Adt>(b));
 // @end-runtime
 // @if-runtime Record
     if (is<Ptr<Record>>(a)) {
-        const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
+        const auto& x = as<Ptr<Record>>(a)->boxedRecordItems(); const auto& y = as<Ptr<Record>>(b)->boxedRecordItems();
         auto left = x.begin(), right = y.begin();
         for (; left != x.end() && right != y.end(); ++left, ++right) {
             if (int result = order(left->first, right->first)) return result;
@@ -876,14 +1051,14 @@ inline bool equal(const Value& a, const Value& b) {
     if (is<Ptr<VectorBase>>(a)) return equalValues(as<Ptr<VectorBase>>(a)->items(), as<Ptr<VectorBase>>(b)->items());
 // @end-runtime
 // @if-runtime Tuple
-    if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->values, as<Ptr<Tuple>>(b)->values);
+    if (is<Ptr<Tuple>>(a)) return equalValues(as<Ptr<Tuple>>(a)->boxedTupleItems(), as<Ptr<Tuple>>(b)->boxedTupleItems());
 // @end-runtime
 // @if-runtime Adt
     if (is<Adt>(a)) return equalAdt(as<Adt>(a),as<Adt>(b));
 // @end-runtime
 // @if-runtime Record
     if (is<Ptr<Record>>(a)) {
-        const auto& x = as<Ptr<Record>>(a)->fields; const auto& y = as<Ptr<Record>>(b)->fields;
+        const auto& x = as<Ptr<Record>>(a)->boxedRecordItems(); const auto& y = as<Ptr<Record>>(b)->boxedRecordItems();
         return x.size() == y.size() && std::equal(x.begin(), x.end(), y.begin(), [](const auto& p, const auto& q) {
             return p.first == q.first && equal(p.second, q.second);
         });
@@ -955,12 +1130,12 @@ inline std::uint32_t hashValue(const Value& v) {
     if (is<Ptr<VectorBase>>(v)) return hashValues(hashText("vector"),as<Ptr<VectorBase>>(v)->items());
 // @end-runtime
 // @if-runtime Tuple
-    if (is<Ptr<Tuple>>(v)) return hashValues(hashText("tuple"),as<Ptr<Tuple>>(v)->values);
+    if (is<Ptr<Tuple>>(v)) return hashValues(hashText("tuple"),as<Ptr<Tuple>>(v)->boxedTupleItems());
 // @end-runtime
 // @if-runtime Record
     if (is<Ptr<Record>>(v)) {
         auto hash = hashText("record");
-        for (const auto& [k,x] : as<Ptr<Record>>(v)->fields) hash = hashMix(hashMix(hash,hashText(k)),hashValue(x));
+        for (const auto& [k,x] : as<Ptr<Record>>(v)->boxedRecordItems()) hash = hashMix(hashMix(hash,hashText(k)),hashValue(x));
         return hash;
     }
 // @end-runtime
@@ -987,106 +1162,11 @@ inline std::uint32_t hashValue(const Value& v) {
     throw std::runtime_error("Missing hash instance");
 }
 
-// @runtime Pattern PatternKind
-enum class PatternKind { word, literal, constructor, vector, push, tuple, record, alternative, concatenate, concatenateString };
-struct Pattern {
-    PatternKind kind;
-    std::string name;
-    Values literals;
-    std::vector<Pattern> fields;
-    std::vector<std::string> keys;
-    bool mutable_ = false;
-    AdtTag constructor{};
-    int rest = -1;
-};
-// @runtime match
-inline bool match(const Pattern&, const Value&, Env&);
-// @runtime matches
-inline bool matches(const std::vector<Pattern>& patterns, std::span<const Value> values, Env& env) {
-    if (patterns.size() != values.size()) return false;
-    for (std::size_t i = 0; i < patterns.size(); ++i)
-        if (!match(patterns[i], values[i], env)) return false;
-    return true;
-}
-// @runtime match
-inline bool match(const Pattern& p, const Value& value, Env& env) {
-    switch (p.kind) {
-    case PatternKind::alternative:
-        for (const auto& choice : p.fields) {
-            Env trial;
-            if (!match(choice,value,trial)) continue;
-            env.writable();
-            for (const auto& [name,binding] : *trial.bindings) (*env.bindings)[name] = binding;
-            return true;
-        }
-        return false;
-    case PatternKind::word:
-        if (p.name != "_") env.bind(p.name, value, p.mutable_);
-        return true;
-    case PatternKind::literal:
-        if (is<Int>(p.literals[0]) && is<Byte>(value)) return as<Int>(p.literals[0]) == as<Byte>(value);
-        if (is<Int>(p.literals[0]) && is<double>(value)) return static_cast<double>(as<Int>(p.literals[0])) == as<double>(value);
-        return equal(p.literals[0], value);
-    case PatternKind::concatenateString: {
-        if (!is<std::string>(value)) return false;
-        const std::string_view text = as<std::string>(value);
-        const auto& prefix = as<std::string>(p.literals[0]);
-        const auto& suffix = as<std::string>(p.literals[1]);
-        const auto fixed = prefix.size() + suffix.size();
-        if (text.size() < fixed || !text.starts_with(prefix) || !text.ends_with(suffix)) return false;
-        if (p.fields.empty()) return text.size() == fixed;
-        return match(p.fields[0], std::string(text.substr(prefix.size(), text.size()-fixed)), env);
-    }
-// @if-runtime Adt
-    case PatternKind::constructor: {
-        const auto* adt = adtPointer(value);
-        if (!adt || adt->tag() != p.constructor || adt->count() != p.fields.size()) return false;
-        for (std::size_t i=0; i<p.fields.size(); ++i)
-            if (!match(p.fields[i],adt->field(i),env)) return false;
-        return true;
-    }
-// @end-runtime
-// @if-runtime VectorBase
-    case PatternKind::vector:
-        return is<Ptr<VectorBase>>(value) && matches(p.fields, as<Ptr<VectorBase>>(value)->items(), env);
-    case PatternKind::concatenate: {
-        if (!is<Ptr<VectorBase>>(value)) return false;
-        const auto xs = as<Ptr<VectorBase>>(value)->items();
-        std::size_t fixed=0, offset=0;
-        for (std::size_t i=0;i<p.fields.size();++i)
-            if (static_cast<int>(i)!=p.rest) fixed+=p.fields[i].fields.size();
-        if (xs.size()<fixed || (p.rest<0 && xs.size()!=fixed)) return false;
-        for (std::size_t i=0;i<p.fields.size();++i) {
-            auto count=static_cast<int>(i)==p.rest ? xs.size()-fixed : p.fields[i].fields.size();
-            if (!match(p.fields[i],vectorView(value,offset,count),env)) return false;
-            offset+=count;
-        }
-        return true;
-    }
-    case PatternKind::push: {
-        if (!is<Ptr<VectorBase>>(value)) return false;
-        const auto& xs = as<Ptr<VectorBase>>(value)->items();
-        return !xs.empty() && matches(p.fields, Values{vector(Values(xs.begin(), xs.end()-1)), xs.back()}, env);
-    }
-// @end-runtime
-// @if-runtime Tuple
-    case PatternKind::tuple:
-        return is<Ptr<Tuple>>(value) && matches(p.fields, as<Ptr<Tuple>>(value)->values, env);
-// @end-runtime
-// @if-runtime Record
-    case PatternKind::record: {
-        if (!is<Ptr<Record>>(value)) return false;
-        const auto& fields = as<Ptr<Record>>(value)->fields;
-        for (std::size_t i = 0; i < p.fields.size(); ++i) {
-            auto it = fields.find(p.keys[i]);
-            if (it == fields.end() || !match(p.fields[i], it->second, env)) return false;
-        }
-        return true;
-    }
-// @end-runtime
-    default:
-        return false;
-    }
+// @runtime matchLiteral
+inline bool matchLiteral(const Value& literal,const Value& value) {
+    if (is<Int>(literal) && is<Byte>(value)) return as<Int>(literal) == as<Byte>(value);
+    if (is<Int>(literal) && is<double>(value)) return static_cast<double>(as<Int>(literal)) == as<double>(value);
+    return equal(literal,value);
 }
 
 // @runtime Event Route
@@ -1096,6 +1176,12 @@ struct Event {
     bool never = false;
     const void* target = nullptr;
     unsigned skip = 0;
+// @if-runtime performTypedYield
+    // The issuing frame owns this item until the routed operation returns.
+    void* yieldItem = nullptr;
+    const std::type_info* yieldType = nullptr;
+    Value (*boxYield)(void*) = nullptr;
+// @end-runtime
 };
 using Route = std::function<Values(Event)>;
 // @runtime Handler
@@ -1105,38 +1191,71 @@ using Handler = std::function<Values(const Values&, Ptr<Continuation>)>;
 struct WorklistRoute;
 // @end-runtime
 struct Machine {
-    Env& globals;
-    Route route;
+// @if-runtime Event
+    Route route{};
+    Values perform(Event event);
+// @end-runtime
 // @if-runtime WorklistRoute
     WorklistRoute* worklist = nullptr;
 // @end-runtime
-    Values perform(Event event);
     [[noreturn]] void exception(const std::string& message, const std::string& at);
 };
+// @runtime inputLine
+inline std::string inputLine() {
+#ifndef NYANCO_BATCH_IO
+    std::cout.flush();
+#endif
+    std::string line;
+    std::getline(std::cin,line);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    return line;
+}
+// @runtime outputLine
+inline void outputLine(const std::string& text) {
+    std::cout << text << '\n';
+}
 // @runtime perform
 inline Values Machine::perform(Event event) {
     if (route) return route(std::move(event));
     if (event.target || event.skip) fail(event.at, "Unhandled routed effect: " + event.name);
     if (event.name == "put") {
-        std::cout << raw(event.arguments.at(0)) << '\n';
+        outputLine(raw(event.arguments.at(0)));
         return {};
     }
     if (event.name == "read") {
-#ifndef NYANCO_BATCH_IO
-        std::cout.flush();
-#endif
-        std::string line;
-        std::getline(std::cin, line);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        return {line};
+        return {inputLine()};
     }
     if (event.name == "exn") fail(event.at, "Exception: " + raw(event.arguments.at(0)));
     fail(event.at, "Unhandled effect: " + event.name);
 }
+// @runtime performTypedYield
+template <typename T>
+void performTypedYield(Machine& m, T item, const std::string& at, const void* target) {
+    Event event{"yield",at,{},false,target};
+    event.yieldItem = &item;
+    event.yieldType = &typeid(T);
+    event.boxYield = [](void* value) -> Value { return std::move(*static_cast<T*>(value)); };
+    m.perform(std::move(event));
+}
+// @runtime effectArguments
+inline const Values& effectArguments(Event& event) {
+// @if-runtime performTypedYield
+    if (event.boxYield) {
+        event.arguments.push_back(event.boxYield(event.yieldItem));
+        event.boxYield = nullptr;
+    }
+// @end-runtime
+    return event.arguments;
+}
 // @runtime exception
 inline void Machine::exception(const std::string& message, const std::string& at) {
-    perform(Event{"exn", at, {message}, true});
-    fail(at, "Non-returning effect returned");
+// @if-runtime Event
+    if (route) {
+        perform(Event{"exn", at, {message}, true});
+        fail(at, "Non-returning effect returned");
+    }
+// @end-runtime
+    fail(at,"Exception: " + message);
 }
 // @runtime RoutedLabel
 struct RoutedLabel {
@@ -1149,7 +1268,8 @@ struct RoutedLabel {
     RoutedLabel(const RoutedLabel&) = delete;
 };
 // @runtime labelTarget
-inline const void* labelTarget(const Value& value, const std::string& at) {
+template <typename Source>
+inline const void* labelTarget(const Source& value, const std::string& at) {
     const auto& label = as<Ptr<Label>>(value);
     if (!label->target) fail(at, "Effect label is outside its handler lifetime");
     return label->target;
@@ -1166,7 +1286,7 @@ struct Abort { const void* owner; std::optional<Values> result; };
 template <typename Body>
 std::optional<Values> loop(Machine& parent, Body body, Ptr<Label> label = {}, bool cancelOnly = false) {
     const RoutedLabel scope(std::move(label));
-    Machine child{parent.globals, [&](Event event) -> Values {
+    Machine child{ [&](Event event) -> Values {
         if ((event.name == "cancel" || (!cancelOnly && event.name == "break")) && accepts(event, scope))
             throw Abort{&scope, event.name == "break" ? std::optional<Values>(std::move(event.arguments)) : std::nullopt};
         return parent.perform(std::move(event));
@@ -1227,8 +1347,8 @@ class EffectWorker {
     }
 public:
     template <typename Body>
-    EffectWorker(Env& globals, Body body) : worker([this, &globals, body = std::move(body)] {
-        Machine child{globals, [this](Event event){ return request(std::move(event)); }};
+    EffectWorker(Body body) : worker([this, body = std::move(body)] {
+        Machine child{[this](Event event){ return request(std::move(event)); }};
         try { result = body(child); }
         catch (...) { failure = std::current_exception(); }
         std::lock_guard lock(mutex);
@@ -1265,7 +1385,7 @@ public:
 template <typename Body>
 Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& handlers, Ptr<Label> label = {}) {
     const RoutedLabel scope(std::move(label));
-    EffectWorker worker(parent.globals, std::move(body));
+    EffectWorker worker(std::move(body));
     std::function<Values()> drive = [&]() -> Values {
         while (auto event = worker.next()) {
             auto handler = handlers.find(event->name);
@@ -1280,7 +1400,7 @@ Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& 
                 return drive();
             };
             struct Expire { Ptr<Continuation> k; ~Expire() { k->active = false; k->resume = {}; } } expire{k};
-            auto answer = handler->second(event->arguments, k);
+            auto answer = handler->second(effectArguments(*event), k);
 // @if-runtime resumeTail
             if (k->tailReply) {
                 // Unwind this handler before servicing another operation.
@@ -1297,7 +1417,7 @@ Values handle(Machine& parent, Body body, const std::map<std::string, Handler>& 
 // @runtime mask
 template <typename Body>
 Values mask(Machine& parent, Body body, const std::string& name, const void* target) {
-    Machine child{parent.globals, [&](Event event) {
+    Machine child{ [&](Event event) {
         if (event.name == name && !event.target) {
             if (target) event.target = target;
             else ++event.skip;
@@ -1311,7 +1431,7 @@ template <typename Body>
 Values labelBlock(Machine& parent, Body body) {
     auto label = std::make_shared<Label>();
     const RoutedLabel scope(label);
-    Machine child{parent.globals, [&](Event event) {
+    Machine child{ [&](Event event) {
         if (event.target == &scope) event.target = nullptr;
         return parent.perform(std::move(event));
     }};
@@ -1449,9 +1569,13 @@ inline Ptr<VectorBase> append(Source value, const Item& item, bool reuse) {
     return Ptr<VectorBase>(std::move(xs));
 }
 // @runtime field
-template <typename Source> inline const Value& field(const Source& value, const std::string& key) { return as<Ptr<Record>>(value)->fields.at(key); }
+template <typename Source> inline const Value& field(const Source& value, const std::string& key) { return as<Ptr<Record>>(value)->boxedRecordItems().at(key); }
 // @runtime tupleAt
-template <typename Source> inline const Value& tupleAt(const Source& value, std::size_t i) { return as<Ptr<Tuple>>(value)->values.at(i); }
+template <typename Source> inline const Value& tupleAt(const Source& value, std::size_t i) {
+    const auto items = as<Ptr<Tuple>>(value)->boxedTupleItems();
+    if (i >= items.size()) throw std::out_of_range("Tuple index out of range");
+    return items[i];
+}
 // @runtime UpdatePart
 struct UpdatePart {
     std::string kind, field;
@@ -1490,16 +1614,25 @@ Value updatePath(Machine& m, Value value, const std::vector<UpdatePart>& path, s
     } else if (!leaf || updating) old = pathRead(m, value, part, at);
     if (part.kind == "field") {
         auto result = std::move(std::any_cast<Ptr<Record>&>(value));
-        if (!reuse || result.use_count() != 1) result = std::make_shared<Record>(*result);
+        auto* boxed = dynamic_cast<BoxedRecord*>(result.get());
+        if (!reuse || result.use_count() != 1 || !boxed) {
+            result = std::make_shared<BoxedRecord>(result->boxedRecordItems());
+            boxed = static_cast<BoxedRecord*>(result.get());
+        }
         old.reset();
-        if (!leaf || updating) old = std::move(result->fields.at(part.field));
-        result->fields[part.field] = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
+        if (!leaf || updating) old = std::move(boxed->fields.at(part.field));
+        boxed->fields[part.field] = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
         return result;
     }
     if (part.kind == "tuple-index") {
         auto result = std::move(std::any_cast<Ptr<Tuple>&>(value));
-        if (!reuse || result.use_count() != 1) result = std::make_shared<Tuple>(*result);
-        auto& slot = result->values.at(static_cast<std::size_t>(as<Int>(part.index)));
+        auto* boxed = dynamic_cast<BoxedTuple*>(result.get());
+        if (!reuse || result.use_count() != 1 || !boxed) {
+            const auto fields = result->boxedTupleItems();
+            result = std::make_shared<BoxedTuple>(Values(fields.begin(),fields.end()));
+            boxed = static_cast<BoxedTuple*>(result.get());
+        }
+        auto& slot = boxed->fields.at(static_cast<std::size_t>(as<Int>(part.index)));
         old.reset();
         if (!leaf || updating) old = std::move(slot);
         slot = updatePath(m,std::move(old),path,i+1,replace,defaulting,updating,reuse,at);
@@ -1923,9 +2056,9 @@ inline void walk(Machine&, const Ptr<VectorBase>& source, const Visit& visit) {
     for (const auto& value : source->items()) visit(value);
 }
 // @end-runtime
-// @if-runtime Stream
+// @if-runtime boxedStreamWalk
 inline void walk(Machine& m, const Ptr<Stream>& source, const Visit& visit) {
-    source->walk(m,visit);
+    source->boxedStreamWalk(m,visit);
 }
 // @end-runtime
 // @if-runtime Range
@@ -1940,7 +2073,7 @@ inline void walk(Machine& m, const Value& value, const Visit& visit) {
 // @if-runtime Range
     if (is<Range>(value)) { walk(m,as<Range>(value),visit); return; }
 // @end-runtime
-// @if-runtime Stream
+// @if-runtime boxedStreamWalk
     if (is<Ptr<Stream>>(value)) { walk(m,as<Ptr<Stream>>(value),visit); return; }
 // @end-runtime
 // @if-runtime HashSetBase
@@ -1963,21 +2096,23 @@ inline void walk(Machine& m, const Value& value, const Visit& visit) {
 // @end-runtime
     throw std::runtime_error("Value is not iterable");
 }
-// @runtime stream
-inline Ptr<Stream> stream(std::function<void(Machine&, const Visit&)> body) {
-    return std::make_shared<Stream>(std::move(body));
+// @runtime walkBoxedStream
+template <typename Source>
+void walkBoxedStream(Machine& m, const Source& source, const Visit& visit) {
+    as<Ptr<Stream>>(source)->boxedStreamWalk(m,visit);
 }
-// @runtime TypedVisit TypedWalk
-template <typename T> using TypedVisit = std::function<void(T)>;
-template <typename T> using TypedWalk = std::function<void(Machine&, const TypedVisit<T>&)>;
 // @runtime TypedStream typedStream
 // Untyped consumers use the boxed Stream ABI. Typed consumers visit scan
 // directly, so boxing is confined to a boundary between the two ABIs.
 template <typename T> struct TypedStream final : Stream {
     TypedWalk<T> scan;
-    explicit TypedStream(TypedWalk<T> body) : Stream([this](Machine& m, const Visit& visit) {
-        scan(m,[&](T typedItem) { visit(std::move(typedItem)); });
-    }), scan(std::move(body)) {}
+    explicit TypedStream(TypedWalk<T> body) : scan(std::move(body)) {
+// @if-runtime boxedStreamWalk
+        boxedStreamWalk = [this](Machine& m, const Visit& visit) {
+            scan(m,[&](T typedItem) { visit(std::move(typedItem)); });
+        };
+// @end-runtime
+    }
 };
 template <typename T> Ptr<Stream> typedStream(TypedWalk<T> body) {
     return std::make_shared<TypedStream<T>>(std::move(body));
@@ -1985,12 +2120,8 @@ template <typename T> Ptr<Stream> typedStream(TypedWalk<T> body) {
 // @runtime walkTyped
 // @if-runtime VectorBase
 template <typename T> void walkTyped(Machine&, const Ptr<VectorBase>& value, const TypedVisit<T>& visit) {
-    if constexpr (std::is_same_v<T,Int> || std::is_same_v<T,Byte> || std::is_same_v<T,double>) {
-        const NativeVectorReader<T> values(value);
-        for (std::size_t i=0; i<values.size(); ++i) visit(values[i]);
-    } else {
-        for (const auto& item : value->items()) visit(as<T>(item));
-    }
+    const NativeVectorReader<T> items(value);
+    for (std::size_t i=0; i<items.size(); ++i) visit(items[i]);
 }
 // @end-runtime
 // @if-runtime Range
@@ -1998,12 +2129,37 @@ template <typename T> void walkTyped(Machine&, const Range& source, const TypedV
     walkRange(source,visit);
 }
 // @end-runtime
+// @if-runtime HashSetBase
+template <typename T>
+void walkTyped(Machine&, const Ptr<HashSetBase>& source, const TypedVisit<T>& visit) {
+    for (auto& item : source->keys()) visit(takeAs<T>(item));
+}
+// @end-runtime
+// @if-runtime Queue
+template <typename T>
+void walkTyped(Machine&, const Ptr<Queue>& source, const TypedVisit<T>& visit) {
+    for (auto node=source->front.get(); node; node=node->next.get()) visit(as<T>(node->value));
+    std::vector<const QueueNode*> back;
+    for (auto node=source->back.get(); node; node=node->next.get()) back.push_back(node);
+    for (auto node=back.rbegin(); node!=back.rend(); ++node) visit(as<T>((*node)->value));
+}
+// @end-runtime
+// @if-runtime Collection
+template <typename T>
+void walkTyped(Machine&, const Ptr<Collection>& source, const TypedVisit<T>& visit) {
+    for (const auto& item : source->values) visit(as<T>(item));
+}
+// @end-runtime
 template <typename T> void walkTyped(Machine& m, const Ptr<Stream>& source, const TypedVisit<T>& visit) {
     if (const auto* typed = dynamic_cast<const TypedStream<T>*>(source.get())) {
         typed->scan(m,visit);
         return;
     }
-    walk(m,source,[&](Value item) { visit(takeAs<T>(item)); });
+// @if-runtime boxedStreamWalk
+    source->boxedStreamWalk(m,[&](Value item) { visit(takeAs<T>(item)); });
+    return;
+// @end-runtime
+    throw std::runtime_error("Unexpected stream element representation");
 }
 template <typename T> void walkTyped(Machine& m, const Value& value, const TypedVisit<T>& visit) {
     if (is<Ptr<Stream>>(value)) { walkTyped<T>(m,as<Ptr<Stream>>(value),visit); return; }
@@ -2017,7 +2173,22 @@ template <typename T> void walkTyped(Machine& m, const Value& value, const Typed
     if constexpr (std::is_same_v<T,Int>)
         if (is<Range>(value)) { walkTyped<T>(m,as<Range>(value),visit); return; }
 // @end-runtime
+// @if-runtime HashSetBase
+    if (is<Ptr<HashSetBase>>(value)) { walkTyped<T>(m,as<Ptr<HashSetBase>>(value),visit); return; }
+// @end-runtime
+// @if-runtime Queue
+    if (is<Ptr<Queue>>(value)) { walkTyped<T>(m,as<Ptr<Queue>>(value),visit); return; }
+// @end-runtime
+// @if-runtime Collection
+    if (is<Ptr<Collection>>(value)) { walkTyped<T>(m,as<Ptr<Collection>>(value),visit); return; }
+// @end-runtime
     walk(m,value,[&](Value item) { visit(takeAs<T>(item)); });
+}
+// @runtime walkTypedDict
+template <typename K, typename V, typename Source>
+void walkTypedDict(Machine&, const Source& source, const TypedVisit<Ptr<Tuple>>& visit) {
+    for (auto& [key,value] : as<Ptr<DictBase>>(source)->entries())
+        visit(nativeTuple(std::tuple<K,V>{takeAs<K>(key),takeAs<V>(value)}));
 }
 // @runtime byteStream
 template <typename Source> inline Ptr<Stream> byteStream(const Source& value) {
@@ -2031,20 +2202,20 @@ template <typename Source> inline Ptr<Stream> charStream(const Source& value, co
         visitChars(text,at,visit);
     });
 }
-// @runtime textStream
-template <auto WalkText, typename Source>
-inline Ptr<Stream> textStream(const Source& value, const std::string& at) {
-    return stream([text = as<std::string>(value), at](Machine&, const Visit& visit) {
-        WalkText(text,at,visit);
-    });
-}
 // @runtime fromYield
-inline Ptr<Stream> fromYield(Ptr<Label> label, std::function<void(Machine&)> body) {
-    return stream([label, body = std::move(body)](Machine& parent, const Visit& visit) {
+template <typename T>
+Ptr<Stream> fromYield(Ptr<Label> label, std::function<void(Machine&)> body) {
+    return typedStream<T>([label, body = std::move(body)](Machine& parent, const TypedVisit<T>& visit) {
         const RoutedLabel scope(label);
-        Machine child{parent.globals,[&](Event event) -> Values {
+        Machine child{[&](Event event) -> Values {
             if (event.name == "yield" && accepts(event,scope)) {
-                visit(event.arguments.at(0));
+// @if-runtime performTypedYield
+                if (event.yieldType && *event.yieldType == typeid(T)) {
+                    visit(std::move(*static_cast<T*>(event.yieldItem)));
+                    return {};
+                }
+// @end-runtime
+                visit(as<T>(effectArguments(event).at(0)));
                 return {};
             }
             return parent.perform(std::move(event));
@@ -2084,14 +2255,13 @@ Ptr<Stream> mapNativePairs(Source source, Map fn, Ptr<Label> label) {
                 for (const auto& row : pairs->rows) visit(fn(m,std::get<0>(row),std::get<1>(row)));
             } else {
                 for (const auto& item : base->items()) {
-                    const auto& fields=as<Ptr<Tuple>>(item)->values;
+                    const auto& fields=as<Ptr<Tuple>>(item)->boxedTupleItems();
                     visit(fn(m,as<Left>(fields[0]),as<Right>(fields[1])));
                 }
             }
         },label);
     };
-    if constexpr (std::is_same_v<Out,Value>) return stream(std::move(body));
-    else return typedStream<Out>(std::move(body));
+    return typedStream<Out>(std::move(body));
 }
 // @runtime transformTyped
 template <typename PredicateResult> bool streamPredicate(const PredicateResult& result) {
@@ -2130,8 +2300,7 @@ Ptr<Stream> transformTyped(TypedWalk<In> source, Int count, Map fn, Ptr<Label> l
             },label,cancelOnly);
         });
     };
-    if constexpr (std::is_same_v<Out,Value>) return stream(std::move(body));
-    else return typedStream<Out>(std::move(body));
+    return typedStream<Out>(std::move(body));
 }
 // @runtime transform
 template <Transform Mode>
@@ -2168,8 +2337,7 @@ inline Ptr<Stream> split(const Source& source, const Separator& separator) {
         (Machine&, const TypedVisit<Item>& visit) {
         splitParts(input,[&](std::string_view part) { visit(std::string(part)); });
     };
-    if constexpr (Typed) return typedStream<Item>(std::move(body));
-    else return stream(std::move(body));
+    return typedStream<Item>(std::move(body));
 }
 // @runtime Compare
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
@@ -2218,31 +2386,45 @@ Value groupOrderedCounts(Machine& m, Value sorted, Equal eq) {
     }
     return nativePairVector<Key,Int>(std::move(result));
 }
+// @runtime streamVector
+template <typename T>
+Ptr<VectorBase> streamVector(std::vector<T> items) {
+    if constexpr (std::is_same_v<T,bool>) {
+        Values boxed;
+        boxed.reserve(items.size());
+        for (bool item : items) boxed.emplace_back(item);
+        return vector(std::move(boxed));
+    } else return std::make_shared<VectorStorage<T>>(std::move(items));
+}
 // @runtime Partition partition
 enum class Partition { windows, chunks, chunkBy };
-template <Partition Mode, bool CountGroups = false>
-inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Label> label) {
-    return stream([=](Machine& parent,const Visit& visit) {
+template <Partition Mode, bool CountGroups, typename T, typename K, typename Map, typename Equal>
+Ptr<Stream> partition(TypedWalk<T> source, Int count, Map key, Equal eq, Ptr<Label> label) {
+    using Output = std::conditional_t<CountGroups,Int,
+        std::conditional_t<Mode == Partition::chunkBy,Ptr<Stream>,Ptr<VectorBase>>>;
+    return typedStream<Output>([=](Machine& parent,const TypedVisit<Output>& visit) {
         loop(parent,[&](Machine& m){
-            Values pending;
-            Value last;
+            std::vector<T> pending;
+            K last{};
             Int groupSize = 0;
             const auto emit = [&] {
                 if constexpr (CountGroups) visit(groupSize);
-                else if constexpr (Mode == Partition::chunkBy) visit(stream([saved=pending](Machine&,const Visit& visit){
+                else if constexpr (Mode == Partition::chunkBy) visit(typedStream<T>([saved=pending](Machine&,const TypedVisit<T>& visit){
                     for (const auto& value : saved) visit(value);
                 }));
-                else visit(vector(pending));
+                else visit(streamVector(pending));
             };
-            source(m,[&](Value item){
+            source(m,[&](T typedItem){
                 if constexpr (Mode == Partition::chunkBy) {
-                    auto k = key ? key(m,item) : CountGroups ? std::move(item) : item;
-                    if (groupSize && !(eq ? eq(m,last,k) : equal(last,k))) { emit(); groupSize=0; pending.clear(); }
+                    K k;
+                    if constexpr (std::is_same_v<Map,decltype(nullptr)>) k = typedItem;
+                    else k = key(m,typedItem);
+                    if (groupSize && !eq(m,last,k)) { emit(); groupSize=0; pending.clear(); }
                     last = std::move(k);
                     ++groupSize;
-                    if constexpr (!CountGroups) pending.push_back(std::move(item));
+                    if constexpr (!CountGroups) pending.push_back(std::move(typedItem));
                 } else {
-                    pending.push_back(std::move(item));
+                    pending.push_back(std::move(typedItem));
                     if (pending.size() == static_cast<UInt>(count)) {
                         emit();
                         if constexpr (Mode == Partition::windows) pending.erase(pending.begin());
@@ -2255,70 +2437,86 @@ inline Value partition(Walk source, Int count, MapItem key, Compare eq, Ptr<Labe
     });
 }
 // @runtime Cursor
+template <typename T>
 class Cursor {
-    Walk walk;
+    TypedWalk<T> source;
+    std::optional<T> item;
     Ptr<EffectWorker> worker;
     bool waiting = false;
 public:
-    explicit Cursor(Walk source) : walk(std::move(source)) {}
-    std::optional<Value> next(Machine& m) {
-        if (!worker) worker = std::make_shared<EffectWorker>(m.globals,[this](Machine& child) -> Values {
-            walk(child,[&](Value item){ child.perform(Event{"@zip-item","<zip>",{std::move(item)}}); });
+    explicit Cursor(TypedWalk<T> source) : source(std::move(source)) {}
+    std::optional<T> next(Machine& m) {
+        if (!worker) worker = std::make_shared<EffectWorker>([this](Machine& child) -> Values {
+            source(child,[&](T typedItem) {
+                item.emplace(std::move(typedItem));
+                child.perform(Event{"@zip-item","<zip>",{}});
+            });
             return {};
         });
         else if (waiting) worker->send({});
         waiting = false;
         while (auto event = worker->next()) {
-            if (event->name == "@zip-item") { waiting = true; return std::move(event->arguments[0]); }
+            if (event->name == "@zip-item") {
+                waiting = true;
+                auto result = std::move(item);
+                item.reset();
+                return result;
+            }
             worker->send(m.perform(std::move(*event)));
         }
         return {};
     }
 };
 // @runtime zip
-inline Ptr<Stream> zip(Walk left, Walk right, Ptr<Label> label) {
-    return stream([=](Machine& parent,const Visit& visit) {
+template <typename A, typename B>
+Ptr<Stream> zip(TypedWalk<A> left, TypedWalk<B> right, Ptr<Label> label) {
+    return typedStream<Ptr<Tuple>>([=](Machine& parent,const TypedVisit<Ptr<Tuple>>& visit) {
         loop(parent,[&](Machine& m){
-            Cursor a(left),b(right);
+            Cursor<A> a(left);
+            Cursor<B> b(right);
             while (auto x = a.next(m)) {
                 auto y = b.next(m);
                 if (!y) break;
-                visit(tuple({std::move(*x),std::move(*y)}));
+                visit(nativeTuple(std::tuple<A,B>{std::move(*x),std::move(*y)}));
             }
         },label,true);
     });
 }
 // @runtime zipVectors
-template <typename Left, typename Right>
+template <typename A, typename B, typename Left, typename Right>
 inline Ptr<Stream> zipVectors(Left left,Right right,Ptr<Label> label){
-    return stream([left=std::move(left),right=std::move(right),label](Machine& parent,const Visit& visit){
+    return typedStream<Ptr<Tuple>>([left=std::move(left),right=std::move(right),label](Machine& parent,const TypedVisit<Ptr<Tuple>>& visit){
         loop(parent,[&](Machine&){
-            const auto& xs=as<Ptr<VectorBase>>(left)->items();const auto& ys=as<Ptr<VectorBase>>(right)->items();
-            for(std::size_t i=0;i<std::min(xs.size(),ys.size());i++)visit(tuple({xs[i],ys[i]}));
+            const NativeVectorReader<A> xs(left);
+            const NativeVectorReader<B> ys(right);
+            for(std::size_t i=0;i<std::min(xs.size(),ys.size());i++)
+                visit(nativeTuple(std::tuple<A,B>{xs[i],ys[i]}));
         },label);
     });
 }
 // @runtime Combinatorics combinatorics
 enum class Combinatorics { permutations, combinations, combinationsWithReplacement, powerset, cartesianProduct };
-template <Combinatorics Mode>
-inline Ptr<Stream> combinatorics(Walk left, Walk right, Int count) {
-    return stream([=](Machine& m,const Visit& visit){
-        Values xs,ys;
-        loop(m,[&](Machine& child){ left(child,[&](Value v){xs.push_back(std::move(v));}); });
+template <Combinatorics Mode, typename A, typename B>
+Ptr<Stream> combinatorics(TypedWalk<A> left, TypedWalk<B> right, Int count) {
+    using Output = std::conditional_t<Mode == Combinatorics::cartesianProduct,Ptr<Tuple>,Ptr<VectorBase>>;
+    return typedStream<Output>([=](Machine& m,const TypedVisit<Output>& visit){
+        std::vector<A> xs;
+        loop(m,[&](Machine& child){ left(child,[&](A typedItem){xs.push_back(std::move(typedItem));}); });
         if constexpr (Mode == Combinatorics::cartesianProduct) {
-            loop(m,[&](Machine& child){ right(child,[&](Value v){ys.push_back(std::move(v));}); });
-            for (const auto& a : xs) for (const auto& b : ys) visit(tuple({a,b}));
-            return;
-        }
+            std::vector<B> ys;
+            loop(m,[&](Machine& child){ right(child,[&](B typedItem){ys.push_back(std::move(typedItem));}); });
+            for (const auto& a : xs) for (const auto& b : ys)
+                visit(nativeTuple(std::tuple<A,B>{a,b}));
+        } else {
         const auto emit = [&](UInt k) {
-            if (!k) { visit(vector({})); return; }
+            if (!k) { visit(streamVector(std::vector<A>{})); return; }
             if (xs.empty() || (k > xs.size() && Mode != Combinatorics::combinationsWithReplacement)) return;
             std::vector<std::size_t> selected, next{0};
             while (!next.empty()) {
                 if (selected.size() == k) {
-                    Values choice;
+                    std::vector<A> choice;
                     for (auto i : selected) choice.push_back(xs[i]);
-                    visit(vector(std::move(choice)));
+                    visit(streamVector(std::move(choice)));
                     next.pop_back(); selected.pop_back();
                     continue;
                 }
@@ -2336,6 +2534,7 @@ inline Ptr<Stream> combinatorics(Walk left, Walk right, Int count) {
         };
         if constexpr (Mode == Combinatorics::powerset) for (std::size_t k=0; k<=xs.size(); ++k) emit(k);
         else emit(static_cast<UInt>(count));
+        }
     });
 }
 // @runtime CollectionOp collectionOp
@@ -2423,7 +2622,7 @@ template <typename Body>
 Values withNativeWorklist(Machine& parent, WorklistRoute& state, Body body, Ptr<Label> label) {
     const RoutedLabel scope(std::move(label));
     state.scope = &scope;
-    Machine child{parent.globals, [&](Event event) -> Values {
+    Machine child{ [&](Event event) -> Values {
         std::optional<WorklistOperation> operation;
         if (event.name == "__worklistPush") operation = WorklistOperation::Push;
         else if (event.name == "__worklistPop") operation = WorklistOperation::Pop;
@@ -2442,46 +2641,59 @@ Values withNativeWorklist(Machine& parent, WorklistRoute& state, Body body, Ptr<
 struct Consumption { Value value; std::optional<Values> broken; };
 // @runtime Consume consume
 enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, dict, counts, groupBy };
-template <Consume Mode>
-inline Consumption consume(Machine& parent, Walk source, const Value& arg,
-                           MapItem key, Compare less, Ptr<DictBase> dict, Ptr<Label> label) {
-    Values collected;
-    std::vector<std::pair<Value,Value>> sorted;
+template <Consume Mode> using ConsumeOutput =
+    std::conditional_t<Mode == Consume::dict || Mode == Consume::counts || Mode == Consume::groupBy,Ptr<DictBase>,
+    std::conditional_t<Mode == Consume::all || Mode == Consume::any,bool,
+    std::conditional_t<Mode == Consume::join,std::string,
+    std::conditional_t<Mode == Consume::reverse || Mode == Consume::sort || Mode == Consume::sortBy,Ptr<VectorBase>,Adt>>>>;
+template <typename T> struct TypedConsumption { T value; std::optional<Values> broken; };
+template <Consume Mode, typename T, typename K, typename Key, typename Less>
+TypedConsumption<ConsumeOutput<Mode>> consume(Machine& parent, TypedWalk<T> source, const Value& arg,
+                                            Key key, Less less, Ptr<DictBase> dict, Ptr<Label> label) {
+    std::vector<T> collected;
+    std::vector<std::pair<T,K>> sorted;
     std::vector<std::string> joined;
-    Value result;
-    std::optional<Value> best, bestKey;
+    std::optional<T> best;
+    std::optional<K> bestKey;
     bool flag = Mode == Consume::all;
     Int remaining = Mode == Consume::nth ? as<Int>(arg) : 0;
     std::optional<Values> broken;
     if (remaining >= 0) untilStopped([&](auto stop){
         broken = loop(parent,[&](Machine& m){
-            source(m,[&](Value item){
-                if constexpr (Mode == Consume::join) joined.push_back(as<std::string>(item));
-                else if constexpr (Mode == Consume::reverse) collected.push_back(item);
-                else if constexpr (Mode == Consume::sort || Mode == Consume::sortBy) sorted.emplace_back(item,Mode == Consume::sortBy ? key(m,item) : item);
-                else if constexpr (Mode == Consume::nth) { if (remaining-- == 0) { best = item; stop(); } }
-                else if constexpr (Mode == Consume::all || Mode == Consume::any) {
-                    flag = truth(key(m,item));
+            source(m,[&](T typedItem){
+                if constexpr (Mode == Consume::join) joined.push_back(as<std::string>(typedItem));
+                else if constexpr (Mode == Consume::reverse) collected.push_back(std::move(typedItem));
+                else if constexpr (Mode == Consume::sort) sorted.emplace_back(typedItem,typedItem);
+                else if constexpr (Mode == Consume::sortBy) {
+                    auto order = key(m,typedItem);
+                    sorted.emplace_back(std::move(typedItem),std::move(order));
+                } else if constexpr (Mode == Consume::nth) {
+                    if (remaining-- == 0) { best.emplace(std::move(typedItem)); stop(); }
+                } else if constexpr (Mode == Consume::all || Mode == Consume::any) {
+                    flag = truth(key(m,typedItem));
                     if (flag == (Mode == Consume::any)) stop();
-                } else if constexpr (Mode == Consume::dict) dict->set(tupleAt(item,0),tupleAt(item,1));
+                } else if constexpr (Mode == Consume::dict) dict->set(tupleAt(typedItem,0),tupleAt(typedItem,1));
                 else if constexpr (Mode == Consume::counts) {
-                    auto previous = dict->get(item);
-                    dict->set(item, Int{previous ? as<Int>(*previous)+1 : 1});
+                    auto previous = dict->get(typedItem);
+                    dict->set(std::move(typedItem),Int{previous ? as<Int>(*previous)+1 : 1});
                 } else if constexpr (Mode == Consume::groupBy) {
-                    auto k = key(m,item);
+                    auto k = key(m,typedItem);
                     auto previous = dict->get(k);
-                    if (previous) std::static_pointer_cast<Vector>(as<Ptr<VectorBase>>(*previous))->values.push_back(item);
-                    else dict->set(k,vector({item}));
+                    if (previous) std::static_pointer_cast<Vector>(as<Ptr<VectorBase>>(*previous))->values.emplace_back(std::move(typedItem));
+                    else dict->set(std::move(k),vector({std::move(typedItem)}));
                 } else {
-                    auto k = Mode == Consume::maxiBy || Mode == Consume::miniBy ? key(m,item) : item;
+                    K order;
+                    if constexpr (Mode == Consume::maxiBy || Mode == Consume::miniBy) order = key(m,typedItem);
+                    else order = typedItem;
                     constexpr bool maximum = Mode == Consume::maxi || Mode == Consume::maxiBy;
-                    if (!bestKey || (maximum ? !less(m,k,*bestKey) : less(m,k,*bestKey))) {
-                        best = item; bestKey = std::move(k);
+                    if (!bestKey || (maximum ? !less(m,order,*bestKey) : less(m,order,*bestKey))) {
+                        best.emplace(std::move(typedItem)); bestKey.emplace(std::move(order));
                     }
                 }
             });
         },label);
     });
+    ConsumeOutput<Mode> result;
     if constexpr (Mode == Consume::dict || Mode == Consume::counts || Mode == Consume::groupBy) result = dict;
     else if constexpr (Mode == Consume::all || Mode == Consume::any) result = flag;
     else if constexpr (Mode == Consume::join) result = join(joined,as<std::string>(arg));
@@ -2490,11 +2702,11 @@ inline Consumption consume(Machine& parent, Walk source, const Value& arg,
             std::stable_sort(sorted.begin(),sorted.end(),[&](const auto& a,const auto& b){return less(m,a.second,b.second);});
         },label);
         for (auto& pair : sorted) collected.push_back(std::move(pair.first));
-        result = vector(std::move(collected));
+        result = streamVector(std::move(collected));
     } else if constexpr (Mode == Consume::reverse) {
         std::reverse(collected.begin(),collected.end());
-        result = vector(std::move(collected));
-    } else result = option(best);
+        result = streamVector(std::move(collected));
+    } else result = typedOption(std::move(best));
     return {std::move(result),std::move(broken)};
 }
 // @runtime sortScalarVectors

@@ -61,7 +61,7 @@ export function lowerCppCoroutines(source) {
     n.async=event||continuation||visitor||walker||machine&&!compare;
     if(!n.type)n.type=event||continuation?'Values':visitor&&directReturn(n)?'Value':directReturn(n)?'Values':'void';
   }
-  const callbackNames=new Set(['body','route','visit','source','left','right','fn','nested','key','replace','drive','second','WalkText','scan']);
+  const callbackNames=new Set(['body','route','visit','source','left','right','fn','nested','key','replace','drive','second','WalkText','scan','boxedStreamWalk']);
   function calleeStart(i){
     let j=i;
     if(tokens[j]?.v===')'||tokens[j]?.v===']'){const a=pairs.get(j);j=tokens[j].v===')'?calleeStart(a-1):a;}
@@ -152,6 +152,7 @@ export function lowerCppCoroutines(source) {
     source+='\nint main() { return nyanco::runTask(coroutineMain()); }\n';
   }
   source='#include <coroutine>\n#include <memory_resource>\n#include <type_traits>\n#include <utility>\n'+source;
-  source=source.replace(/^#include <(?:thread|mutex|condition_variable)>\r?\n/gm,'');
+  source=source.replace(/^#include <(?:thread|condition_variable)>\r?\n/gm,'');
+  if (!source.includes('std::call_once')) source=source.replace(/^#include <mutex>\r?\n/gm,'');
   return source;
 }

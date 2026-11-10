@@ -93,8 +93,8 @@ class CoroutineWorker {
     bool started=false;
     static Task<Values> request(Event event) { co_return co_await EffectRequest{std::move(event)}; }
 public:
-    template <typename Body> CoroutineWorker(Env& globals, Body body)
-        : child{globals,request}, task(start(std::move(body),child)) { task.handle.promise().control=&control; }
+    template <typename Body> CoroutineWorker(Body body)
+        : child{request}, task(start(std::move(body),child)) { task.handle.promise().control=&control; }
     template <typename Body> static Task<Values> start(Body body,Machine& child) { co_return co_await body(child); }
     std::optional<Event> next() {
         if (!started) { started=true;control.current=task.handle; }

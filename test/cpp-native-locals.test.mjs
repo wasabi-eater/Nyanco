@@ -29,7 +29,8 @@ test('synchronous captures and numeric traversals use lexical slots and native l
  assert.doesNotMatch(code,/\.read\(std::string\("(?:total|i)"|\.cell\(std::string\("total"|\.select\(/);
  const memory=ir.regions.flatMap(r=>r.instructions).map(i=>i.memory?.binding);
  assert.ok(memory.includes('native-cell'));assert.ok(memory.includes('lexical-capture'));
- const fallback=transpileCpp(p,{nativeLocals:false});assert.match(fallback,/\.(?:read|take|update)\(std::string\("total"/);
+ const fallback=transpileCpp(p,{nativeLocals:false});
+ assert.doesNotMatch(fallback,/\bEnv\b|\.(?:read|take|update)\(std::string\("total"/);
 });
 
 test('single-use UTF-8 byte streams iterate natively and shared streams remain reusable',{skip:!available},()=>{
@@ -91,7 +92,7 @@ main =
   'transformTyped<Transform::flatten,Ptr<VectorBase>,Int>','transformTyped<Transform::map,std::string,Int>',
   'transformTyped<Transform::map,Char,Int>','typedStream<Int>','walkTyped<Int>','testStream<true,Int>',
   'testStream<false,Int>','class CoroutineWorker'])assert.ok(code.includes(spelling),spelling);
- assert.match(code,/\[v\d+, v\d+\]\(Machine& m, Byte typedItem\d+\) -> Task<Int>/);
+ assert.match(code,/\[captureArg\d+ = v\d+, captureArg\d+ = v\d+\]\(Machine& m, Byte typedItem\d+\) -> Task<Int>/);
  assert.doesNotMatch(code,/\.bind(?:Cell)?\(std::string\("(?:offset|delta|valToYield|repeatValue)"/);
  native(code,run=>assert.equal(run().stdout,out));
  native(transpileCpp(p,{effectCoroutines:false}),run=>assert.equal(run().stdout,out));
@@ -140,9 +141,10 @@ main =
  for(const nativeLocals of [true,false]){
   const code=transpileCpp(p,{nativeLocals,referenceCounting:'local'});
   if(nativeLocals){
-   assert.match(code,/\.bindCell\(std::string\("offset", 6\), makeRc<NativeCell<Int>>\(\w+, false\)\)/);
-   assert.match(code,/const Int& capturedSlot\d+ = static_cast<const NativeCell<Int>&>/);
+   assert.match(code,/struct QuoteSite\d+ final : Quote \{\s*Int capture0;/);
+   assert.match(code,/static_cast<const QuoteSite\d+&>\(\*q\)/);
   }
+  assert.doesNotMatch(code,/\bEnv\b/);
   native(code,run=>assert.equal(run().stdout,out));
  }
 });

@@ -1,4 +1,5 @@
 import {typeIR} from '../../types/types.mjs';
+import {patternNames} from '../../types/type-syntax.mjs';
 
 // Lexical lifetimes for the C++ RC backend. Bindings, rather than spellings,
 // distinguish shadowed names. A write ends the old generation of a mutable
@@ -18,9 +19,11 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
       if (!external.has(name)) external.set(name,{name,owned:false});
       return external.get(name);
     };
-    const nested = (child,scope,node,extra = []) => {
-      const names = unit(child,new Map(scope));
-      const reads = new Set([...names,...extra].filter(Boolean));
+    const nested = (child,scope,node,extra = [],locals = []) => {
+      const local = new Map(scope);
+      const hidden = new Set(locals.map(name => ({name,owned:false})));
+      for (const binding of hidden) local.set(binding.name,binding);
+      const reads = new Set([...unit(child,local),...extra].filter(binding=>binding&&!hidden.has(binding)));
       for (const binding of reads) used.add(binding);
       events.push({reads:[...reads]});
       if (node) captures.set(node,[...reads].map(b => b.name));
@@ -33,8 +36,9 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
         if (n.kind === 'application') { walk(info.application,scope); continue; }
         if (n.kind === 'scope') { walk(n.body,new Map(scope)); continue; }
         if (n.kind === 'word') { read(lookup(n.value,scope,info),n); continue; }
-        if (n.kind === 'bind') {
-          for (const name of n.names) {
+        if (n.kind === 'bind' || n.kind === 'capture') {
+          const names = n.kind==='bind' ? n.names : n.slots.flatMap(slot=>slot.capturedName?[slot.capturedName]:[]);
+          for (const name of names) {
             const binding = {name,owned:own};
             created.add(binding); scope.set(name,binding);
           }
@@ -62,7 +66,8 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
           continue;
         }
         if (n.kind === 'quote' || n.kind === 'local-function') {
-          nested(n.body,scope,n);
+          const name = n.kind==='local-function' ? n.name : n.blockLabel;
+          nested(n.body,scope,n,[],name?[name]:[]);
           if (n.kind === 'local-function') {
             const binding = {name:n.name,owned:own};
             created.add(binding); scope.set(n.name,binding);
@@ -71,18 +76,13 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
         }
         if (n.kind === 'case') {
           for (const b of n.branches) {
-            const branch = new Map(scope);
-            const hide = ps => { for (const p of ps || []) {
-              if (p.kind === 'word') branch.set(p.value,{name:p.value,owned:false});
-              hide(p.fields);
-            }};
-            hide(b.patterns);
-            nested([...(b.guard || []),...b.body],branch);
+            nested([...(b.guard || []),...b.body],scope,null,[],patternNames(b.patterns || []));
           }
           continue;
         }
         if (n.kind === 'borrow' || n.kind === 'mask' || n.kind === 'label') {
-          nested(n.body,scope,null,n.kind === 'borrow' ? [lookup(n.owner,scope,info)] : []);
+          const name = n.kind==='borrow' ? n.reference : n.kind==='label' ? n.key : null;
+          nested(n.body,scope,null,n.kind === 'borrow' ? [lookup(n.owner,scope,info)] : [],name?[name]:[]);
           continue;
         }
         if (n.kind === 'binary' && ['&&','||'].includes(n.value)) {
@@ -105,7 +105,7 @@ export function cppLifetimes(nodes, trace, {parameters = [], local = true} = {})
     walk(body,new Map(inherited));
     const live = new Set();
     // External bindings remain available to the caller after this unit. A
-    // local mutable write can still kill their old generation, but Env::take
+    // local mutable write can still kill their old generation, but takeLocal
     // will refuse extraction whenever another scope/closure shares the cell.
     if (keepInherited) for (const binding of inherited.values()) live.add(binding);
     for (let i=events.length-1;i>=0;i--) {

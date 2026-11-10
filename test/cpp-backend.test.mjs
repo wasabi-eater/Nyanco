@@ -40,7 +40,7 @@ test('C++ lowering uses typed specializations and preserves vector ownership dec
   const program = compile('main = v <- [1,2]; when True {print (length v)}; vpush v 3');
   const source = transpileCpp(program, {onIR: value => {ir = value;}});
   assert.ok(verifyTypedIR(ir));
-  assert.match(source, /Results<1> fn\d+\(Machine& m\)/);
+  assert.match(source, /Ptr<VectorBase> fn\d+\(Machine& m\)/);
   assert.match(source, /scalarPush<Int>\([^\n]+, true\)/);
   assert.doesNotMatch(source, /evalStack|node\.exe|system\(/);
   assert.throws(() => transpileCpp(compile('main = 1 + True', 'bad.nyan', new Map(), {checkTypes:false})), /Type error/);
@@ -50,7 +50,8 @@ test('C++ output keeps only runtime fragments reachable from the generated progr
   const source = transpileCpp(compile(`data unused = UnusedTag
 unused = toVector (map [1, 2] {* 2})
 main = print "EffectWorker transform"`));
-  assert.match(source, /inline Values Machine::perform\(/);
+  assert.match(source, /inline void outputLine\(/);
+  assert.doesNotMatch(source, /\b(?:Value|Values)\b|std::any|Machine::perform/);
   assert.match(source, /"EffectWorker transform"/);
   assert.doesNotMatch(source, /#include <thread>|class EffectWorker|class Dict|class AdtValue|UnusedTag/);
   assert.doesNotMatch(source, /inline Value transform\(|No matching pattern for unused/);
@@ -79,7 +80,93 @@ main = mixed (calc 2 3); drop; drop`));
   assert.ok(arithmetic);
   assert.match(arithmetic[0], /Int v\d+ = bits\(static_cast<UInt>/);
   assert.doesNotMatch(arithmetic[0], /\bValue\b|\bas<|\.read\(|\.bind\(/);
-  assert.match(source, /std::tuple<Int, Value, bool> fn\d+\(Machine& m, Int arg\d+\)/);
+  assert.match(source, /std::tuple<Int, std::string, bool> fn\d+\(Machine& m, Int arg\d+\)/);
+  assert.doesNotMatch(source, /\b(?:Value|Values)\b|std::any/);
+});
+
+test('typed data, recursive closures and pattern bindings compile without Env or boxed storage', t => {
+  const program = compile(`data measurement = Reading int
+extract (Reading n) = n
+first row = row.first
+makeRecursive offset =
+    f n = if (n == 0) {offset} {f (n - 1)}
+    {f}
+choose offset flag = if flag {{+ offset}} {{* offset}}
+initial <- if False {saved} {0}
+#(7, 8) -> #(savedA, savedB)
+saved = savedA + savedB
+main =
+    pair <- #(read, 7)
+    row <- {first: pair.0, second: pair.1}
+    print (first row)
+    print (pair.1 + 1)
+    print (row == {second: 7, first: pair.0})
+    changed <- row with second = "new"
+    print changed.second
+    nested <- {pair: pair}
+    mut updated <- nested with pair.1 ! + 10
+    updated.pair.1 ! + 1
+    print updated.pair.1
+    print nested.pair.1
+    [1, 2]; vpush 3; length; print
+    print (extract (Reading 14))
+    #(0, 6) -> (#(x, 0) || #(0, x))
+    print x
+    next <- makeRecursive 19
+    3; call next; print
+    print (initial + saved)
+    scale <- choose 3 False
+    4; call scale; print
+`);
+  const source = transpileCpp(program);
+  assert.match(source, /struct RecordLayout\d+/);
+  assert.match(source, /nativeTuple\(std::tuple<std::string,Int>/);
+  assert.match(source, /typedRecordAt<RecordLayout\d+/);
+  assert.match(source, /std::optional<Int>/);
+  assert.doesNotMatch(source, /\b(?:Env|Value|Values)\b|std::any/);
+  if (!compiler) { t.diagnostic('Native compilation skipped because a C++ compiler is unavailable'); return; }
+  const dir = mkdtempSync(join(tmpdir(),'nyanco-cpp-products-'));
+  try {
+    const file = join(dir,'main.cpp'), exe = join(dir,'main.exe');
+    writeFileSync(file,source);
+    const flags = isMsvc(compiler) ? ['/nologo','/std:c++20','/EHsc','/utf-8',file,'/Fe:'+exe]
+      : ['-std=c++20',file,'-o',exe];
+    const built = run(compiler,flags,dir);
+    assert.equal(built.status,0,built.stdout+built.stderr);
+    const result = run(exe,[],dir,'hello\n');
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.replaceAll('\r\n','\n'),'hello\n8\nTrue\nnew\n18\n7\n3\n14\n6\n19\n15\n12\n');
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('tuple display formats native pair vectors and preserves custom show instances without boxing', t => {
+  const program = compile(`data stamp = Stamp int
+instance show stamp where
+    show _ = "custom"
+main =
+    value <- #(Stamp 7, (1 .. 3), [#(2, "a"), #(3, "b")])
+    show value; put
+    print value
+`);
+  const source = transpileCpp(program);
+  assert.match(source,/showPairVector<Int,std::string>/);
+  assert.doesNotMatch(source,/\b(?:Value|Values)\b|std::any/);
+  if (!compiler) { t.diagnostic('Native compilation skipped because a C++ compiler is unavailable'); return; }
+  const dir = mkdtempSync(join(tmpdir(),'nyanco-cpp-display-'));
+  try {
+    const file = join(dir,'main.cpp'), exe = join(dir,'main.exe');
+    writeFileSync(file,source);
+    const flags = isMsvc(compiler) ? ['/nologo','/std:c++20','/EHsc','/utf-8',file,'/Fe:'+exe]
+      : ['-std=c++20',file,'-o',exe];
+    const built = run(compiler,flags,dir);
+    assert.equal(built.status,0,built.stdout+built.stderr);
+    const result = run(exe,[],dir);
+    assert.equal(result.status,0,result.stderr);
+    const expected = [];
+    new VM({...program,output:line=>expected.push(line)}).evaluate('main');
+    assert.deepEqual(expected,['#(custom (1 .. 3) [#(2 "a"), #(3 "b")])','#((Stamp 7) (1 .. 3) [#(2 "a"), #(3 "b")])']);
+    assert.equal(result.stdout.replaceAll('\r\n','\n'),expected.join('\n')+'\n');
+  } finally { rmSync(dir,{recursive:true,force:true}); }
 });
 
 test('known bit operations lower to native scalars and checked positions', () => {
@@ -128,8 +215,8 @@ test('built-in calls select their operation at C++ compile time', () => {
   const source = transpileCpp(program);
   const emitted = source.slice(source.lastIndexOf('\nnamespace nyanco {'));
   for (const call of ['intOp<Arithmetic::divide>', 'vectorTail(', 'vectorLength(',
-    'transformTyped<Transform::map,Int,Int>', 'transformTyped<Transform::take,Int,Int>', 'partition<Partition::chunks>',
-    'combinatorics<Combinatorics::combinations>', 'scalarOrder<Int>', 'queueOp<0>']) {
+    'transformTyped<Transform::map,Int,Int>', 'transformTyped<Transform::take,Int,Int>', 'partition<Partition::chunks,false,Int,Int>',
+    'combinatorics<Combinatorics::combinations,Int,Int>', 'scalarOrder<Int>', 'queueOp<0>']) {
     assert.ok(emitted.includes(call),call);
   }
   assert.doesNotMatch(source,/\b(?:binary|unary)\(const std::string& op|\b(?:op|mode) == "/);

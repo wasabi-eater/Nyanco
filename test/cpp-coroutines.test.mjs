@@ -73,6 +73,34 @@ test('resumable boundaries use C++20 tasks, while synchronous programs retain di
  const pure=transpileCpp(compile('square n = n * n\nmain = square 3; print'));
  assert.doesNotMatch(pure,/#include <coroutine>|co_await|class Task/);
 });
+test('typed stream stages keep heterogeneous zip items and intercepted yields out of the boxed stream ABI',{skip:!available},()=>{
+ const program=compile(`data bag 'a = Bag ['a]
+instance streem (bag 'a) where
+    item : 'a
+    each (Bag xs) f = each xs f
+main =
+    source <- fromYield {
+        handle {yield 3} {yield: {-> x k; yield x; resume k}}
+        yield 1; yield 1
+    }
+    zip source (Bag ["z","a","b"]); sortBy {_.1}; print
+    chunkBy source {}; map {count}; vector; print
+    windows source 2; vector; print
+    combinations source 2; vector; print
+    values [0: 2, 1: 1]; sort; print
+    [0: 2, 1: 1]; map {_.1}; sort; print
+`);
+ const expected=vm(program);
+ for(const effectCoroutines of [true,false]){
+  const code=transpileCpp(program,{effectCoroutines});
+  for(const spelling of ['fromYield<Int>','performTypedYield<Int>','zip<Int,std::string>','nativeVisitorQuote<std::string>','consume<Consume::sortBy,Ptr<Tuple>,std::string>','partition<Partition::chunkBy,false,Int,Int>','walkTypedDict<Int,Int>'])
+   assert.ok(code.includes(spelling),spelling);
+  assert.doesNotMatch(code,/\bboxedStreamWalk\b/);
+  const result=native(code);
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.replaceAll('\r\n','\n'),expected);
+ }
+});
 test('the standard worklist handlers preserve priority and FIFO ordering in C++',{skip:!available},()=>{
  const program=compileModule(new URL('../examples/worklist/main.nyan',import.meta.url).href);
  const result=native(transpileCpp(program,{batchIO:true,referenceCounting:'local'}));
