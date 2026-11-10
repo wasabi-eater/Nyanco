@@ -145,6 +145,44 @@ main =
   assert.equal(execute(transpileCpp(program,{optimizeVectors:false,nativeLocals:false})).stdout,expected.join('\n')+'\n');
 });
 
+test('ordered counts, vector collectors and tuple consumers avoid materializing boxes',{skip:!available},()=>{
+  const scalar=transpileCpp(compile('main = print (orderedCounts [3,1,3])'));
+  assert.doesNotMatch(scalar,/\b(?:Value|Values)\b|std::any/);
+  const program=compile(`main =
+    print (orderedCounts (0 .. 0))
+    print (orderedCounts [3,1,3,2,1,3])
+    print (orderedCounts [2.5,1.5,2.5])
+    print (orderedCounts (split "z y z" " "))
+    rows <- vmap (0 .. 4) {[_ % 2]}
+    print (orderedCounts rows)
+    rows; each {print _.[0]}
+    print rows.[-1]
+    print rows.?[3]
+    pairs <- vector (zip (0 .. 2) [10,20])
+    pairs; map {_.0 + _.1}; vector; print
+    unzip pairs -> left right
+    print left; print right
+`);
+  const expected=[];
+  new VM({...program,output:line=>expected.push(line)}).evaluate('main');
+  const code=transpileCpp(program)
+    .replace('struct VectorBase {','inline unsigned boxings = 0;\nstruct VectorBase {')
+    .replace('boxing.boxed.reserve(size());','++boxings; boxing.boxed.reserve(size());')
+    .replace('Values values;values.reserve(rows.size());','++boxings; Values values;values.reserve(rows.size());')
+    .replace('boxed = std::apply','++boxings; boxed = std::apply');
+  assert.match(code,/Ptr<VectorBase> v\d+ = groupOrderedCounts<Int>\(v\d+,\[\]\(const Int& a,const Int& b\)/);
+  assert.match(code,/groupOrderedCounts<std::string>/);
+  assert.match(code,/Ptr<VectorBase> v\d+ = groupOrderedCounts<Ptr<VectorBase>>\(v\d+,\[\]\(const Ptr<VectorBase>& a,const Ptr<VectorBase>& b\)/);
+  assert.match(code,/TypedConsumption<Ptr<VectorBase>>>? sortScalarVectors/);
+  assert.match(code,/unzipNativeVector<Int,Int>/);
+  const instrumented=code.replace(/(int main\(\) \{)/,
+    '$1\n    struct Report { ~Report() { std::cerr << nyanco::boxings << "\\n"; } } report;');
+  assert.notEqual(code,instrumented);
+  const actual=execute(instrumented);
+  assert.equal(actual.stdout,expected.join('\n')+'\n');
+  assert.equal(actual.stderr.trim(),'0');
+});
+
 test('native and boxed vectors preserve sharing, views, numeric types and opaque boundaries',{skip:!available},()=>{
   const source=`data box = Box [int] deriving eq, hash, show
 identity x = x

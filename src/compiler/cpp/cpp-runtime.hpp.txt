@@ -650,7 +650,7 @@ template <typename Left, typename Right> struct NativePairVector final : VectorB
     std::span<const Value> items() const override {
         if (boxed.empty() && !rows.empty()) {
             Values values;values.reserve(rows.size());
-            for (const auto& row : rows) values.push_back(tuple({std::get<0>(row),std::get<1>(row)}));
+            for (const auto& row : rows) values.push_back(nativeTuple(row));
             boxed=std::move(values);
         }
         return boxed;
@@ -680,9 +680,10 @@ std::tuple<Ptr<VectorBase>,Ptr<VectorBase>> unzipNativeVector(const Source& sour
     if (const auto* pairs=dynamic_cast<const NativePairVector<Left,Right>*>(base)) {
         for (const auto& [a,b] : pairs->rows) { left.push_back(a);right.push_back(b); }
     } else {
-        for (const auto& item : base->items()) {
-            const auto& fields=as<Ptr<Tuple>>(item)->boxedTupleItems();
-            left.push_back(as<Left>(fields[0]));right.push_back(as<Right>(fields[1]));
+        const NativeVectorReader<Ptr<Tuple>> rows(source);
+        for (std::size_t i=0; i<rows.size(); ++i) {
+            left.push_back(typedTupleAt<0,Left,Right>(rows[i]));
+            right.push_back(typedTupleAt<1,Left,Right>(rows[i]));
         }
     }
     return {scalarVector<Left>(std::move(left)),scalarVector<Right>(std::move(right))};
@@ -1857,17 +1858,13 @@ inline Ptr<VectorBase> textVector(const Source& value, const std::string& at) {
 template <typename T> inline std::optional<T> vectorFind(const Ptr<VectorBase>& source,Int index) {
     const auto pos=vectorPosition(index,source->size());
     if (pos<0) return {};
-    const auto& item=source->items()[static_cast<std::size_t>(pos)];
-    if constexpr (std::is_same_v<T,Value>) return item;
-    else return as<T>(item);
+    return NativeVectorReader<T>(source)[static_cast<std::size_t>(pos)];
 }
 // @runtime vectorElement
 template <typename T> inline T vectorElement(Machine& m,const Ptr<VectorBase>& source,Int index,const std::string& at) {
     const auto pos=vectorPosition(index,source->size());
     if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
-    const auto& item=source->items()[static_cast<std::size_t>(pos)];
-    if constexpr(std::is_same_v<T,Value>)return item;
-    else return as<T>(item);
+    return NativeVectorReader<T>(source)[static_cast<std::size_t>(pos)];
 }
 // @runtime vectorLength
 template <typename Source> inline Int vectorLength(const Source& value) {
@@ -1883,13 +1880,13 @@ template <typename T,typename Source> inline std::optional<T> scalarFind(const S
 template <typename T,typename Source> inline T scalarAt(Machine& m,const Source& source,Int index,const std::string& at) {
     auto data = scalarData<T>(source);
     const auto pos=vectorPosition(index,data->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
     return data->scalars()[static_cast<std::size_t>(pos)];
 }
 // @runtime scalarSetNative
 template <typename T> inline Ptr<VectorBase> scalarSetNative(Machine& m,Ptr<VectorBase> source,Int index,T value,bool reuse,const std::string& at) {
     const auto pos=vectorPosition(index,source->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
     auto data = vectorWritable<T>(std::move(source),reuse);
     data->values[pos] = value;
     return data;
@@ -1898,7 +1895,7 @@ template <typename T> inline Ptr<VectorBase> scalarSetNative(Machine& m,Ptr<Vect
 template <typename T, typename Source>
 inline Ptr<VectorBase> scalarSetAt(Machine& m,Source source,Int index,T value,bool reuse,std::string_view at) {
     const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),std::string(at));
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),std::string(at));
     auto data = vectorWritable<T>(std::move(source),reuse);
     data->values[pos] = value;
     return Ptr<VectorBase>(std::move(data));
@@ -1927,7 +1924,7 @@ void cellScalarSet(Machine& m,const Ptr<Cell>& cell,Int index,const Replace& rep
     if(updating)old=scalarAt<T>(m,source,index,at);
     auto value=replace(std::move(old));
     const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
     source.reset();cell->write(scalarSetAt<T>(m,cell->take(),pos,as<T>(value),true,at));
 }
 template <typename T,typename Replace>
@@ -1936,7 +1933,7 @@ void cellScalarSet(Machine& m,const Ptr<NativeCell<Ptr<VectorBase>>>& cell,Int i
     if(updating)old=scalarAt<T>(m,cell->value,index,at);
     auto value=replace(std::move(old));
     const auto pos=vectorPosition(index,cell->value->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
     cell->value=scalarSetNative<T>(m,std::move(cell->value),pos,as<T>(value),true,at);
 }
 template <typename Replace>
@@ -1959,13 +1956,13 @@ template<typename T> Ptr<VectorBase> rowPush(Ptr<VectorBase> source,Int index,T 
 }
 template<typename T> void cellRowPush(Machine& m,const Ptr<NativeCell<Ptr<VectorBase>>>& cell,Int index,T item,const std::string& at){
     const auto pos=vectorPosition(index,cell->value->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
     cell->value=rowPush<T>(std::move(cell->value),pos,item);
 }
 template<typename T> void cellRowPush(Machine& m,const Ptr<Cell>& cell,Int index,T item,const std::string& at){
     auto source=cell->read();
     const auto pos=vectorPosition(index,as<Ptr<VectorBase>>(source)->size());
-    if(pos<0)m.exception("Index out of bounds: "+show(Value{index}),at);
+    if(pos<0)m.exception("Index out of bounds: "+showScalar(index),at);
     source.reset();source=cell->take();cell->write(rowPush<T>(takeAs<Ptr<VectorBase>>(source),pos,item));
 }
 // @runtime vectorHead
@@ -2246,7 +2243,7 @@ using WalkItem = std::function<void(Machine&, Value, const Visit&)>;
 // @runtime Transform
 enum class Transform { map, filter, takeWhile, skipWhile, take, skip, flatMap, flatten };
 // @runtime mapNativePairs
-template <typename Left, typename Right, typename Out = Value, typename Source, typename Map>
+template <typename Left, typename Right, typename Out, typename Source, typename Map>
 Ptr<Stream> mapNativePairs(Source source, Map fn, Ptr<Label> label) {
     auto body = [source=std::move(source),fn=std::move(fn),label](Machine& parent,const TypedVisit<Out>& visit) {
         loop(parent,[&](Machine& m){
@@ -2254,9 +2251,10 @@ Ptr<Stream> mapNativePairs(Source source, Map fn, Ptr<Label> label) {
             if (const auto* pairs=dynamic_cast<const NativePairVector<Left,Right>*>(base)) {
                 for (const auto& row : pairs->rows) visit(fn(m,std::get<0>(row),std::get<1>(row)));
             } else {
-                for (const auto& item : base->items()) {
-                    const auto& fields=as<Ptr<Tuple>>(item)->boxedTupleItems();
-                    visit(fn(m,as<Left>(fields[0]),as<Right>(fields[1])));
+                const NativeVectorReader<Ptr<Tuple>> rows(source);
+                for (std::size_t i=0; i<rows.size(); ++i) {
+                    const auto& row=rows[i];
+                    visit(fn(m,typedTupleAt<0,Left,Right>(row),typedTupleAt<1,Left,Right>(row)));
                 }
             }
         },label);
@@ -2343,15 +2341,20 @@ inline Ptr<Stream> split(const Source& source, const Separator& separator) {
 using Compare = std::function<bool(Machine&,const Value&,const Value&)>;
 // @runtime equalScalarVectors
 template <typename T, typename Left, typename Right>
-bool equalScalarVectors(Machine&, const Left& a, const Right& b) {
+bool equalScalarVectors(const Left& a, const Right& b) {
     const auto& x = as<Ptr<VectorBase>>(a);
     const auto& y = as<Ptr<VectorBase>>(b);
     if constexpr (!std::is_same_v<T,double>) if (x == y) return true;
     const auto* left = dynamic_cast<const ScalarVector<T>*>(x.get());
     const auto* right = dynamic_cast<const ScalarVector<T>*>(y.get());
-    if (!left || !right) return equalValues(x->items(),y->items());
-    const auto xs = left->scalars(), ys = right->scalars();
-    return std::equal(xs.begin(),xs.end(),ys.begin(),ys.end());
+    if (left && right) {
+        const auto xs = left->scalars(), ys = right->scalars();
+        return std::equal(xs.begin(),xs.end(),ys.begin(),ys.end());
+    }
+    const NativeVectorReader<T> xs(x),ys(y);
+    if (xs.size() != ys.size()) return false;
+    for (std::size_t i=0; i<xs.size(); ++i) if (!(xs[i] == ys[i])) return false;
+    return true;
 }
 // @runtime compareScalarVectors
 template <typename T, typename Left, typename Right> int compareScalarVectors(const Left& a, const Right& b) {
@@ -2369,20 +2372,21 @@ template <typename T, typename Source> std::uint32_t hashScalarVector(const Sour
 }
 // @runtime groupOrderedCounts
 template <typename Key, typename Equal>
-Value groupOrderedCounts(Machine& m, Value sorted, Equal eq) {
-    const auto items = as<Ptr<VectorBase>>(sorted)->items();
+Ptr<VectorBase> groupOrderedCounts(const Ptr<VectorBase>& sorted, Equal eq) {
+    const NativeVectorReader<Key> items(sorted);
+    const auto size = items.size();
     std::vector<std::tuple<Key,Int>> result;
-    if (!items.empty()) {
+    if (size != 0) {
         std::size_t first = 0;
         const auto emit = [&](std::size_t end) {
-            result.emplace_back(as<Key>(items[first]),static_cast<Int>(end-first));
+            result.emplace_back(items[first],static_cast<Int>(end-first));
         };
-        for (std::size_t i=1; i<items.size(); ++i) {
-            if (eq(m,items[i],items[first])) continue;
+        for (std::size_t i=1; i<size; ++i) {
+            if (eq(items[i],items[first])) continue;
             emit(i);
             first=i;
         }
-        emit(items.size());
+        emit(size);
     }
     return nativePairVector<Key,Int>(std::move(result));
 }
@@ -2637,8 +2641,8 @@ Values withNativeWorklist(Machine& parent, WorklistRoute& state, Body body, Ptr<
     child.worklist = &state;
     return body(child);
 }
-// @runtime Consumption
-struct Consumption { Value value; std::optional<Values> broken; };
+// @runtime TypedConsumption
+template <typename T> struct TypedConsumption { T value; std::optional<Values> broken; };
 // @runtime Consume consume
 enum class Consume { join, nth, reverse, sort, sortBy, maxi, mini, maxiBy, miniBy, all, any, dict, counts, groupBy };
 template <Consume Mode> using ConsumeOutput =
@@ -2646,9 +2650,8 @@ template <Consume Mode> using ConsumeOutput =
     std::conditional_t<Mode == Consume::all || Mode == Consume::any,bool,
     std::conditional_t<Mode == Consume::join,std::string,
     std::conditional_t<Mode == Consume::reverse || Mode == Consume::sort || Mode == Consume::sortBy,Ptr<VectorBase>,Adt>>>>;
-template <typename T> struct TypedConsumption { T value; std::optional<Values> broken; };
-template <Consume Mode, typename T, typename K, typename Key, typename Less>
-TypedConsumption<ConsumeOutput<Mode>> consume(Machine& parent, TypedWalk<T> source, const Value& arg,
+template <Consume Mode, typename T, typename K, typename Arg, typename Key, typename Less>
+TypedConsumption<ConsumeOutput<Mode>> consume(Machine& parent, TypedWalk<T> source, const Arg& arg,
                                             Key key, Less less, Ptr<DictBase> dict, Ptr<Label> label) {
     std::vector<T> collected;
     std::vector<std::pair<T,K>> sorted;
@@ -2656,7 +2659,8 @@ TypedConsumption<ConsumeOutput<Mode>> consume(Machine& parent, TypedWalk<T> sour
     std::optional<T> best;
     std::optional<K> bestKey;
     bool flag = Mode == Consume::all;
-    Int remaining = Mode == Consume::nth ? as<Int>(arg) : 0;
+    Int remaining = 0;
+    if constexpr (Mode == Consume::nth) remaining = as<Int>(arg);
     std::optional<Values> broken;
     if (remaining >= 0) untilStopped([&](auto stop){
         broken = loop(parent,[&](Machine& m){
@@ -2711,7 +2715,7 @@ TypedConsumption<ConsumeOutput<Mode>> consume(Machine& parent, TypedWalk<T> sour
 }
 // @runtime sortScalarVectors
 template <typename T, typename Item>
-Consumption sortScalarVectors(Machine& parent, TypedWalk<Item> source, Ptr<Label> label) {
+TypedConsumption<Ptr<VectorBase>> sortScalarVectors(Machine& parent, TypedWalk<Item> source, Ptr<Label> label) {
     struct Row { Ptr<ScalarVector<T>> value; UInt prefix; };
     std::vector<Row> rows;
     auto broken = loop(parent,[&](Machine& m){
@@ -2736,9 +2740,9 @@ Consumption sortScalarVectors(Machine& parent, TypedWalk<Item> source, Ptr<Label
         }
         return std::lexicographical_compare(x.begin(),x.end(),y.begin(),y.end());
     });
-    Values result;result.reserve(rows.size());
-    for (auto& row : rows) result.emplace_back(Ptr<VectorBase>(std::move(row.value)));
-    return {vector(std::move(result)),std::move(broken)};
+    std::vector<Ptr<VectorBase>> result;result.reserve(rows.size());
+    for (auto& row : rows) result.emplace_back(std::move(row.value));
+    return {scalarVector<Ptr<VectorBase>>(std::move(result)),std::move(broken)};
 }
 // @runtime testStream
 template <bool All, typename T, typename Predicate>
