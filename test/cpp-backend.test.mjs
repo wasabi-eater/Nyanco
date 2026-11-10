@@ -96,6 +96,26 @@ main = change (toByte 5) 1; drop; drop; logical True False`));
   assert.doesNotMatch(emitted, /\bbitOp[<(]/);
 });
 
+test('comparison, display and casts keep inferred operands and results native', () => {
+  const source = transpileCpp(compile(`main =
+    read; parseInt; byte; int -> n
+    print (Some n == Some 65)
+    print (Some n < Some 66)
+    Some n; show; length; print
+    d <- [0: n]
+    print d.?[0]
+    q <- deque [n]
+    print (peek q)`));
+  const emitted = source.slice(source.lastIndexOf('\nnamespace nyanco {'));
+  assert.match(emitted, /Byte v\d+ = cast<Byte>\(m, v\d+,/);
+  assert.match(emitted, /Int v\d+ = static_cast<Int>\(v\d+\)/);
+  assert.match(emitted, /bool valueOp\d+\(Machine& m,const Adt& a,const Adt& b\)/);
+  assert.match(emitted, /int valueOp\d+\(Machine& m,const Adt& a,const Adt& b\)/);
+  assert.match(emitted, /std::string v\d+ = valueOp\d+\(m,v\d+\)/);
+  assert.match(emitted, /Adt v\d+ = typedOption\(dictFind<Int>/);
+  assert.match(emitted, /Adt v\d+ = queueOp<4,false,Int>/);
+});
+
 test('built-in calls select their operation at C++ compile time', () => {
   const program = compile(`main =
     print (7 / 2)

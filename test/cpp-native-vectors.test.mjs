@@ -81,8 +81,8 @@ test('native collectors, numeric parsers and scalar vector operations avoid elem
   let code=transpileCpp(program);
   for(const spelling of ['zipNativeVectors<Int,Int>','unzipNativeVector<Int,Int>','mapNativePairs<Int,Int,Int>','transformTyped<Transform::map,Int,Int>',
     'equalScalarVectors<double>','compareScalarVectors<Byte>','hashScalarVector<double>'])assert.ok(code.includes(spelling),spelling);
-  assert.match(code,/Int v\d+ = (?:\(co_await )?parseNumber<Int, true>/);
-  assert.match(code,/double v\d+ = (?:\(co_await )?parseNumber<double, true>/);
+  assert.match(code,/Int v\d+ = (?:\(co_await )?parseNumberText<Int, true>/);
+  assert.match(code,/double v\d+ = (?:\(co_await )?parseNumberText<double, true>/);
   code=code.replace('struct VectorBase {','inline unsigned boxings = 0;\nstruct VectorBase {')
     .replace('boxing.boxed.reserve(size());','++boxings; boxing.boxed.reserve(size());')
     .replace('Values values;values.reserve(rows.size());','++boxings; Values values;values.reserve(rows.size());')

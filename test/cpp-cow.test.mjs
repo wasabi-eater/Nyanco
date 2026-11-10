@@ -35,7 +35,8 @@ test('C++ ownership uses runtime RC checks and transfers last local generations'
   assert.match(code,/scalarPush<Int>\(std::move\(v\d+\), v\d+, true\)/);
   assert.match(code,/takeLocal\(v\d+\)/);
   assert.match(code,/Ptr<NativeCell<Ptr<VectorBase>>>/);
-  assert.match(code,/v\d+->value = takeAs<Ptr<VectorBase>>\(v\d+\)/);
+  assert.match(code,/Ptr<VectorBase> v\d+ = scalarPush<Int>/);
+  assert.match(code,/v\d+->value = std::move\(v\d+\)/);
   assert.ok(ir.regions.flatMap(r=>r.instructions).some(i=>i.ownership?.mode==='cow'));
   assert.ok(ir.regions.flatMap(r=>r.instructions).some(i=>i.memory?.binding==='take-if-unshared'));
 });

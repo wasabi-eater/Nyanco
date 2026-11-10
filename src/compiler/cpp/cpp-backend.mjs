@@ -162,7 +162,7 @@ Adt typedOption(std::optional<T> value) {
     return value ? makeAdt<Family>(${optionAlternative(some)}{{std::move(*value)}})
                  : makeAdt<Family>(${optionAlternative(none)}{{}});
 }`});
-  fragments.push({symbols:['option'],text:`inline Value option(std::optional<Value> value) {
+  fragments.push({symbols:['option'],text:`inline Adt option(std::optional<Value> value) {
     return typedOption(std::move(value));
 }`});
   return {constructors, families, layout, make, fragments};
@@ -198,7 +198,19 @@ export function transpileCpp(program, {
     const item = T.prune(container.item), native = cppType(item);
     return ['Int','Byte','double'].includes(native) ? native : item.numericLiterals ? 'Int' : null;
   };
-  const localType = type => nativeLocals && nativeVectors && type && T.prune(type).tag==='list' ? 'Ptr<VectorBase>' : cppType(type);
+  const vectorResult = nativeLocals && nativeVectors ? 'Ptr<VectorBase>' : 'Value';
+  const streamResult = nativeLocals ? 'Ptr<Stream>' : 'Value';
+  const localType = type => {
+    const resolved = type && T.prune(type);
+    if (resolved?.tag==='list') return vectorResult;
+    if (resolved?.tag==='stream') return streamResult;
+    if (nativeLocals && resolved?.tag==='adt' && adtCollectionFields.has(resolved.name)) return adtCollectionFields.get(resolved.name);
+    if (nativeLocals && resolved?.tag==='tuple') return 'Ptr<Tuple>';
+    if (nativeLocals && resolved?.tag==='record') return 'Ptr<Record>';
+    if (nativeLocals && resolved?.tag==='atom' && resolved.name==='range') return 'Range';
+    if (nativeLocals && resolved?.tag==='atom' && ['string','char'].includes(resolved.name)) return castType.get(resolved.name);
+    return cppType(type);
+  };
   function adtFieldType(type) {
     const resolved = T.prune(T.aliasRepresentation(type));
     if (resolved.numericLiterals) return 'Int';
@@ -234,7 +246,10 @@ export function transpileCpp(program, {
     return fields.includes('Value') ? null : fields;
   }
   const managed = type => type==='Value' || type==='Adt' || type.startsWith('Ptr<');
-  const vectorFactory = (type,data) => `${vectorScalar(type) ? 'scalarVector<'+vectorScalar(type)+'>' : 'vector'}(${data})`;
+  const vectorValue = (ctx,type,data) => {
+    const scalar = vectorScalar(type);
+    return ctx.value(scalar ? `scalarVector<${scalar}>(${data})` : `vector(${data})`,vectorResult);
+  };
   const lifetimePlans = new WeakMap();
   const functions = new Map();
   const invocations = new Map();
@@ -710,28 +725,29 @@ export function transpileCpp(program, {
     if (['==','/=','<','<=','>','>='].includes(op)) {
       const eq = token.value === '==' || token.value === '/=';
       const call = type
-        ? `${valueOperation(eq ? 'eq' : 'ord',type,token)}(m,${a},${b})`
+        ? valueCall(eq ? 'eq' : 'ord',type,token,a,b)
         : `${eq ? 'equal' : 'compare'}(${a},${b})`;
       return ctx.value(eq ? (token.value === '/=' ? '!' : '') + call : `${call} ${token.value} 0`,'bool');
     }
     if (arithmetic.has(op)) return ctx.value(`numeric<Arithmetic::${arithmetic.get(op)}>(${a}, ${b}, ${loc(token)})`);
-    if (op === 'cons') return ctx.value(`prepend(${a}, ${b})`);
+    if (op === 'cons') return ctx.value(`prepend(${a}, ${b})`,vectorResult);
     if (['vpush','push','Push','::'].includes(op)) {
       const native = vectorScalar(type);
-      return ctx.value(native ? `scalarPush<${native}>(${ctx.move(a,[b])}, ${readAs(b,native)}, ${reuse})` : `append<false>(${ctx.move(a,[b])}, ${b}, ${reuse})`);
+      return ctx.value(native ? `scalarPush<${native}>(${ctx.move(a,[b])}, ${readAs(b,native)}, ${reuse})` : `append<false>(${ctx.move(a,[b])}, ${b}, ${reuse})`,vectorResult);
     }
     if (op === 'concat' || op === '++') {
       const container = type && T.prune(type);
       if (op === 'concat' || container?.tag === 'list') {
         const native = vectorScalar(type);
-        return ctx.value(native ? `scalarConcat<${native}>(${ctx.move(a,[b])}, ${b}, ${reuse})` : `append<true>(${ctx.move(a,[b])}, ${b}, ${reuse})`);
+        return ctx.value(native ? `scalarConcat<${native}>(${ctx.move(a,[b])}, ${b}, ${reuse})` : `append<true>(${ctx.move(a,[b])}, ${b}, ${reuse})`,vectorResult);
       }
-      if (container?.tag === 'atom' && container.name === 'string') return ctx.value(`concatStrings(${a}, ${b})`);
+      if (container?.tag === 'atom' && container.name === 'string') return ctx.value(`concatStrings(${a}, ${b})`,'std::string');
       return ctx.value(`concatValues(${ctx.move(a,[b])}, ${b}, ${reuse})`);
     }
     if (op === 'range' || op === '..' || op === '..=') {
       const left = readAs(a,'Int'), right = readAs(b,'Int');
-      return ctx.value(op === 'range' ? `rangeVector(${left}, ${right})` : `Range{${left}, ${right}, ${op === '..='}}`);
+      return op === 'range' ? ctx.value(`rangeVector(${left}, ${right})`,vectorResult)
+        : ctx.value(`Range{${left}, ${right}, ${op === '..='}}`,'Range');
     }
     if (op === '&&' || op === '||') return ctx.value(`${readAs(a,'bool')} ${op} ${readAs(b,'bool')}`,'bool');
     unsupported(token);
@@ -743,13 +759,33 @@ export function transpileCpp(program, {
       const native = vectorScalar(items(effect.input).at(-args.length));
       if (native && args.length === 2 && optional) return ctx.value(`typedOption(scalarFind<${native}>(${args[0]},${readAs(args[1],'Int')}))`,'Adt');
       if (native && args.length === 2 && !optional) return ctx.value(`scalarAt<${native}>(m,${args[0]},${readAs(args[1],'Int')},${loc(token)})`,native);
-      if (native && args.length === 3) return ctx.value(`scalarSetAt<${native}>(m,${ctx.move(args[0],args.slice(1))},${readAs(args[1],'Int')},${readAs(args[2],native)},${optimizeVectors},${locView(token)})`);
+      if (native && args.length === 3) return ctx.value(`scalarSetAt<${native}>(m,${ctx.move(args[0],args.slice(1))},${readAs(args[1],'Int')},${readAs(args[2],native)},${optimizeVectors},${locView(token)})`,vectorResult);
       const sourceType=T.prune(items(effect.input).at(-args.length));
-      if(nativeLocals&&nativeVectors&&!optional&&args.length===2&&sourceType.tag==='list'){
-        const type=localType(sourceType.item);
-        return ctx.value(`vectorElement<${type}>(m,as<Ptr<VectorBase>>(${args[0]}),${readAs(args[1],'Int')},${loc(token)})`,type);
+      if(sourceType.tag==='adt' && sourceType.name==='dict'){
+        if(args.length===3){
+          const dict=readAs(ctx.move(args[0],args.slice(1)),'Ptr<DictBase>');
+          return ctx.value(`dictSetAt(${dict},${args[1]},${args[2]},${optimizeVectors})`,localType(sourceType));
+        }
+        const type=localType(sourceType.args[1]), dict=readAs(args[0],'Ptr<DictBase>');
+        if(optional) return ctx.value(`typedOption(dictFind<${type}>(${dict},${args[1]}))`,'Adt');
+        return ctx.value(`dictAt<${type}>(m,${dict},${args[1]},${loc(token)})`,type);
       }
-      if (optional) return ctx.value(`option(findIndex(${args.join(', ')}))`);
+      if(sourceType.tag==='atom' && sourceType.name==='string'){
+        const text=readAs(args[0],'std::string'), index=readAs(args[1],'Int');
+        if(args.length===3)
+          return ctx.value(`stringSetAt(m,${text},${index},${readAs(args[2],'Byte')},${loc(token)})`,'std::string');
+        if(optional) return ctx.value(`typedOption(stringFind(${text},${index}))`,'Adt');
+        return ctx.value(`stringAt(m,${text},${index},${loc(token)})`,'Byte');
+      }
+      if(nativeLocals&&nativeVectors&&args.length===2&&sourceType.tag==='list'){
+        const type=localType(sourceType.item);
+        const source=readAs(args[0],'Ptr<VectorBase>'), index=readAs(args[1],'Int');
+        if(optional) return ctx.value(`typedOption(vectorFind<${type}>(${source},${index}))`,'Adt');
+        return ctx.value(`vectorElement<${type}>(m,${source},${index},${loc(token)})`,type);
+      }
+      if(sourceType.tag==='list'&&args.length===3)
+        return ctx.value(`vectorSetAt(m,${ctx.move(args[0],args.slice(1))},${readAs(args[1],'Int')},${args[2]},${loc(token)},${optimizeVectors})`,vectorResult);
+      if (optional) return ctx.value(`option(findIndex(${args.join(', ')}))`,'Adt');
       const inputs = args.length === 2 ? args : [ctx.move(args[0],args.slice(1)),...args.slice(1)];
       return ctx.value(`${args.length === 2 ? 'atIndex' : 'setIndex'}(m, ${inputs.join(', ')}, ${loc(token)}${args.length === 3 ? ', ' + optimizeVectors : ''})`);
     }
@@ -768,23 +804,43 @@ return {option(${args[0]})};
     const name=token.sliceMethod||token.value,target=customMethod({...token,value:name},effect);
     if(target){callNamed(ctx,target,effect,args);return args[0];}
     const native = vectorScalar(items(effect.input).at(-args.length));
-    if (native) return ctx.value(`scalarSlice<${native}>(m,${args[0]},${name==='sliceTo'?'Int{0}':readAs(args[1],'Int')},${name==='sliceFrom'?'Int{0}':readAs(args.at(-1),'Int')},${name==='sliceFrom'},${loc(token)})`);
-    return ctx.value(`sliceVector(m, ${args[0]}, ${name==='sliceTo'?'Int{0}':args[1]}, ${name==='sliceFrom'?'Int{0}':args.at(-1)}, ${name==='sliceFrom'}, ${loc(token)})`);
+    if (native) return ctx.value(`scalarSlice<${native}>(m,${args[0]},${name==='sliceTo'?'Int{0}':readAs(args[1],'Int')},${name==='sliceFrom'?'Int{0}':readAs(args.at(-1),'Int')},${name==='sliceFrom'},${loc(token)})`,vectorResult);
+    return ctx.value(`sliceVector(m, ${args[0]}, ${name==='sliceTo'?'Int{0}':readAs(args[1],'Int')}, ${name==='sliceFrom'?'Int{0}':readAs(args.at(-1),'Int')}, ${name==='sliceFrom'}, ${loc(token)})`,vectorResult);
   }
   function shown(ctx, value, type, token, rawStrings = false) {
     type = T.prune(type);
-    if (rawStrings && type.tag === 'atom' && type.name === 'string') return `as<std::string>(${value})`;
-    const shown = ctx.value(`${valueOperation('show',type,token)}(m,${value})`);
-    return `as<std::string>(${shown})`;
+    if (rawStrings && type.tag === 'atom' && type.name === 'string') return readAs(value,'std::string');
+    return ctx.value(valueCall('show',type,token,value),'std::string');
   }
 
+  function operationType(type) {
+    const resolved = T.prune(type);
+    if (resolved.tag==='list') return 'Ptr<VectorBase>';
+    if (resolved.tag==='tuple') return 'Ptr<Tuple>';
+    if (resolved.tag==='record') return 'Ptr<Record>';
+    if (resolved.tag==='atom' && ['char','string'].includes(resolved.name)) return castType.get(resolved.name);
+    return cppType(resolved);
+  }
+  function valueCall(kind,type,token,...args) {
+    const native = operationType(type);
+    return `${valueOperation(kind,type,token)}(m,${args.map(value=>readAs(value,native)).join(',')})`;
+  }
+  function rawValue(value,type) {
+    const native = operationType(type);
+    if (native==='std::string') return readAs(value,native);
+    if (native==='Char') return `showChar(${readAs(value,native)})`;
+    if (native==='Adt') return `showAdt(${readAs(value,native)})`;
+    if (['Int','Byte','double','bool'].includes(native)) return `showScalar(${readAs(value,native)})`;
+    return `raw(${value})`;
+  }
   function valueOperation(kind,type,token) {
     type = T.prune(type);
     const key = kind + ':' + formatType(type,{defaultNumbers:false});
     if (helpers.has(key)) return helpers.get(key).fn;
     const fn = `valueOp${helpers.size}`, pair = kind === 'eq' || kind === 'ord';
     const result = {show:'std::string',hash:'std::uint32_t',eq:'bool',ord:'int'}[kind];
-    const header = `${result} ${fn}(Machine& m,const Value& a${pair ? ',const Value& b' : ''})`;
+    const native = operationType(type);
+    const header = `${result} ${fn}(Machine& m,const ${native}& a${pair ? ',const '+native+'& b' : ''})`;
     const ctx = context();
     helpers.set(key,{fn,header,body:ctx.lines});
     const implementation = lookupInstance(definitions.classes.get(kind),[type])?.implementations;
@@ -805,15 +861,25 @@ return {option(${args[0]})};
         ? `as<std::string>(${value})` : `hashValue(${value})`};`);
       return fn;
     }
-    const sub = (t,a,b) => `${valueOperation(kind,t,token)}(m,${a}${pair ? ','+b : ''})`;
+    const sub = (t,a,b) => valueCall(kind,t,token,...(pair ? [a,b] : [a]));
     const check = call => kind === 'eq' ? `if (!${call}) return false;` : `if (auto rank = ${call}) return rank;`;
-    const fallback = {eq:'equal(a,b)',ord:'compare(a,b)',hash:'hashValue(a)',show:'show(a)'}[kind];
+    const fallback = native==='Adt'
+      ? {eq:'equalAdt(a,b)',ord:'compareAdt(a,b)',hash:'hashAdt(a)',show:'showAdt(a)'}[kind]
+      : {eq:'equal(a,b)',ord:'compare(a,b)',hash:'hashValue(a)',show:'show(a)'}[kind];
+    if (['Int','Byte','double','bool','Char','std::string'].includes(native)) {
+      const a=native==='Char'?'a.code':'a', b=native==='Char'?'b.code':'b';
+      const hash=native==='std::string'?'hashText(a)':native==='Char'||native==='bool'?a:'hashNumericScalar(a)';
+      ctx.add(`return ${{eq:`${a} == ${b}`,ord:`order(${a},${b})`,hash,show:native==='Char'?'showChar(a)':'showScalar(a)'}[kind]};`);
+      return fn;
+    }
     if (type.tag === 'list') {
-      const native=vectorScalar(type);
-      if (native && kind!=='show' && !lookupInstance(definitions.classes.get(kind),[T.prune(type.item)])) {
-        if (kind==='eq') ctx.add(`return equalScalarVectors<${native}>(m,a,b);`);
-        else if (kind==='ord') ctx.add(`return compareScalarVectors<${native}>(a,b);`);
-        else ctx.add(`return hashScalarVector<${native}>(a);`);
+      const scalar=vectorScalar(type);
+      if (scalar && !lookupInstance(definitions.classes.get(kind),[T.prune(type.item)])) {
+        if (kind==='eq') ctx.add(`return equalScalarVectors<${scalar}>(m,a,b);`);
+        else if (kind==='ord') ctx.add(`return compareScalarVectors<${scalar}>(a,b);`);
+        else if (kind==='hash') ctx.add(`return hashScalarVector<${scalar}>(a);`);
+        else ctx.add(`const NativeVectorReader<${scalar}> xs(a);`,'std::vector<std::string> parts; parts.reserve(xs.size());',
+          'for (std::size_t i=0; i<xs.size(); ++i) parts.push_back(showScalar(xs[i]));','return "["+join(parts,", ")+"]";');
         return fn;
       }
       ctx.add('const auto& xs = as<Ptr<VectorBase>>(a)->items();');
@@ -872,7 +938,7 @@ return {option(${args[0]})};
       const constructors = [...definitions.constructors.values()].filter(c => c.typeName === type.name);
       if (constructors.length) {
         ctx.add('const auto& x = as<Adt>(a);');
-        if (pair) ctx.add('const auto& y = as<Adt>(b);',`if (x.tag() != y.tag()) return ${kind === 'ord' ? 'compare(a,b)' : 'false'};`);
+        if (pair) ctx.add('const auto& y = as<Adt>(b);',`if (x.tag() != y.tag()) return ${kind === 'ord' ? 'compareAdtTag(x.tag(),y.tag())' : 'false'};`);
         for (const c of constructors) {
           const params = new Map(c.parameters.map((p,i)=>[p,type.args[i]]));
           const fields = c.fields.map(t=>T.syntaxType(t,params));
@@ -1032,8 +1098,10 @@ return {option(${args[0]})};
               ? T.integerLiteralInfo(definitions, n, type) : null;
             if (numeric?.conversion) {
               const value = ctx.value(literal(n, 'int'),'Int');
-              if (numeric.conversion.target === 'fromInt')
-                stack.push(ctx.value(`cast<${castType.get(numeric.conversion.destination)}>(m, ${value}, ${at})`));
+              if (numeric.conversion.target === 'fromInt') {
+                const target = castType.get(numeric.conversion.destination);
+                stack.push(ctx.value(`cast<${target}>(m, ${value}, ${at})`,target));
+              }
               else {
                 const args = [value];
                 callNamed(ctx, numeric.conversion.target, numeric.effect, args);
@@ -1041,7 +1109,7 @@ return {option(${args[0]})};
               }
             } else {
               const numericType = numeric?.type || T.numericName(type);
-              const cpp = scalarTypes.get(numericType) || cppType(type);
+              const cpp = scalarTypes.get(numericType) || localType(type);
               stack.push(ctx.value(literal(n,numericType || undefined),cpp));
             }
             break;
@@ -1066,12 +1134,14 @@ return {option(${args[0]})};
                 representations.set(value,row);
               }
               const rows=elements.map(value=>`std::move(${value})`).join(',');
-              stack.push(ctx.value(`nativePairVector<${pair.join(',')}>(std::vector<${row}>{${rows}})`));
+              stack.push(ctx.value(`nativePairVector<${pair.join(',')}>(std::vector<${row}>{${rows}})`,vectorResult));
               break;
             }
             const owned = elements.map((value,i) => ctx.move(value,elements.filter((_,j) => i !== j)));
             const native = n.kind === 'list' && vectorScalar(outputType);
-            const value=ctx.value(native ? `scalarVector<${native}>(std::vector<${native}>{${elements.map(value=>readAs(value,native)).join(', ')}})` : `${n.kind === 'list' ? 'vector' : 'tuple'}(${values(owned)})`);
+            const value = n.kind==='list'
+              ? vectorValue(ctx,outputType,native ? `std::vector<${native}>{${elements.map(value=>readAs(value,native)).join(', ')}}` : values(owned))
+              : ctx.value(`tuple(${values(owned)})`,localType(outputType));
             if (n.kind==='tuple' && pair) pairLiterals.set(value,{ctx,line:ctx.lines.length-1,fields:owned.map((field,i)=>readAs(field,pair[i]))});
             stack.push(value);
             break;
@@ -1084,13 +1154,13 @@ return {option(${args[0]})};
               const value = field.empty ? args[pos++] : child(field.body)[0];
               parts.push(shown(ctx, value, info.formatTypes[i], n, true), string(n.chunks[i+1]));
             });
-            stack.push(ctx.value(parts.join(' + ')));
+            stack.push(ctx.value(parts.join(' + '),'std::string'));
             break;
           }
           case 'record': {
             const bound = bindHoles(n, stack, holes);
             const fields = n.fields.map(f => `{${string(f.name)}, ${ctx.move(child(f.body, [], bound)[0])}}`);
-            stack.push(ctx.value(`record({${fields.join(', ')}})`));
+            stack.push(ctx.value(`record({${fields.join(', ')}})`,localType(T.prune(info.output).item)));
             break;
           }
           case 'dict': {
@@ -1101,15 +1171,19 @@ return {option(${args[0]})};
               const value = child(n.fields[i+1].body)[0];
               ctx.add(`${dict}->set(${key}, ${value});`);
             }
-            stack.push(ctx.value(dict));
+            stack.push(ctx.value(`std::move(${dict})`,localType(dictType)));
             break;
           }
           case 'field':
-            stack.push(ctx.value(`field(${stack.pop()}, ${string(n.name)})`));
+            {
+              const type=localType(T.prune(info.output).item);
+              stack.push(ctx.value(readAs(`field(${stack.pop()}, ${string(n.name)})`,type),type));
+            }
             break;
           case 'tuple-index': {
             const source=stack.pop(), field=ctx.nativePairs?.get(source)?.[n.index];
-            stack.push(field ? ctx.value(field,representation(field)) : ctx.value(`tupleAt(${source}, ${n.index})`));
+            const type=localType(T.prune(info.output).item);
+            stack.push(field ? ctx.value(field,representation(field)) : ctx.value(readAs(`tupleAt(${source}, ${n.index})`,type),type));
             break;
           }
           case 'list-index': {
@@ -1409,11 +1483,11 @@ return {option(${args[0]})};
     return ['Int','Byte','double'].includes(native)?native:type.numericLiterals?'Int':'Value';
   }
   function makeDict(ctx, type, token, valueType=null) {
-    const hash = valueOperation('hash',type,token);
+    const hash = valueCall('hash',type,token,'key');
     const dict = id('dict');
     const key=trieScalar(type,true),value=trieScalar(valueType);
     ctx.add(`Ptr<DictBase> ${dict} = std::make_shared<${key==='Value'&&value==='Value'?'Dict':`NativeDict<${key},${value}>`}>();`);
-    ctx.add(`${dict}->hash = [&globals=m.globals](const Value& key) { Machine m{globals,{}}; return ${hash}(m,key); };`,
+    ctx.add(`${dict}->hash = [&globals=m.globals](const Value& key) { Machine m{globals,{}}; return ${hash}; };`,
       `${dict}->equal = equal;`);
     return dict;
   }
@@ -1529,8 +1603,8 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
       if(native)test=`scalarContains<${native}>(${source},${readAs(item,native)})`;
       else {
         const values=kind==='vector'?`${data}->items()`:kind==='heap'?`${data}->values`:`queueItems(*${data})`;
-        const eq=valueOperation('eq',itemType,n);
-        test=`containsElement(m,${values},${item},[](Machine& m,const Value& a,const Value& b) -> bool { return ${eq}(m,a,b); })`;
+        const eq=valueCall('eq',itemType,n,'a','b');
+        test=`containsElement(m,${values},${item},[](Machine& m,const Value& a,const Value& b) -> bool { return ${eq}; })`;
       }
     }
     stack.push(ctx.value(test,'bool'));
@@ -1617,7 +1691,7 @@ ${spec.fn}(m, ${source}, std::make_shared<NativeVisitor>(NativeVisitor{visit}));
         const visitor = type === 'Value' ? 'Visit' : `TypedVisit<${type}>`;
         stack.push(ctx.value(`${factory}([${captured}](Machine& parent,const ${visitor}& visit) {
 loop(parent,[&](Machine& m) { while(true) visit(${result}); });
-})`));
+})`,streamResult));
         return stack;
       }
     }
@@ -1626,7 +1700,9 @@ loop(parent,[&](Machine& m) { while(true) visit(${result}); });
       if(nativeLocals){
         const outputTypes=items(info.output),lt=outputTypes.at(-2),rt=outputTypes.at(-1),ln=vectorScalar(lt),rn=vectorScalar(rt);
         if (ln && rn && T.prune(type).tag==='list' && !lookupInstance(definitions.classes.get('streem'),[T.prune(type)])) {
-          stack.push(...ctx.call(`unzipNativeVector<${ln},${rn}>`,[source],2));
+          const result=id('unzipped');
+          ctx.add(`auto ${result} = unzipNativeVector<${ln},${rn}>(${source});`);
+          for (let i=0;i<2;i++) stack.push(ctx.value(`std::get<${i}>(std::move(${result}))`,vectorResult));
           return stack;
         }
         const state=stack.map(value=>ctx.value(value,representation(value))),left=id('unzipped'),right=id('unzipped'),append=id('appendPair'),broken=id('breakResult');
@@ -1637,7 +1713,7 @@ loop(parent,[&](Machine& m) { while(true) visit(${result}); });
           `auto ${broken}=loop(m,[&](Machine& m){`, `(${walker(source,type,n)})(m,${append});`,'});',`if(${broken}) {`);
         assign(ctx,state,state.map((_,i)=>`${broken}->at(${i})`));
         ctx.add(`${left}.clear();${right}.clear();`,`for(const auto& pair:as<Ptr<VectorBase>>(${broken}->at(${state.length}))->items()) ${append}(pair);`,'}');
-        state.push(ctx.value(vectorFactory(lt,`std::move(${left})`)),ctx.value(vectorFactory(rt,`std::move(${right})`)));
+        state.push(vectorValue(ctx,lt,`std::move(${left})`),vectorValue(ctx,rt,`std::move(${right})`));
         stack.splice(0,stack.length,...state);return stack;
       }
       const gathered = collect(ctx,stack,walker(source,type,n),'Ptr<Label>{}');
@@ -1650,7 +1726,7 @@ loop(parent,[&](Machine& m) { while(true) visit(${result}); });
         `for (const auto& pair : as<Ptr<VectorBase>>(${pairs})->items()) {`,
         `const auto& fields = as<Ptr<Tuple>>(pair)->values;`,
         `${left}.push_back(${ln ? 'as<'+ln+'>(fields[0])' : 'fields[0]'});`,`${right}.push_back(${rn ? 'as<'+rn+'>(fields[1])' : 'fields[1]'});`, '}');
-      gathered.push(ctx.value(vectorFactory(leftType,`std::move(${left})`)),ctx.value(vectorFactory(rightType,`std::move(${right})`)));
+      gathered.push(vectorValue(ctx,leftType,`std::move(${left})`),vectorValue(ctx,rightType,`std::move(${right})`));
       stack.splice(0,stack.length,...gathered);
       return stack;
     }
@@ -1661,11 +1737,11 @@ loop(parent,[&](Machine& m) { while(true) visit(${result}); });
       if (name === 'withHeap') {
         const item = T.prune(containerType).args[0], cmp = context();
         const less = callBinary(cmp,{...n,value:'<'},'a','b',comparisonEffect('<',item));
-        ctx.add(`NativeHeapWorklist ${state}(${ctx.move(initial,[q])}, [&](const Value& a, const Value& b) {
+        ctx.add(`NativeHeapWorklist ${state}(${readAs(ctx.move(initial,[q]),'Ptr<Collection>')}, [&](const Value& a, const Value& b) {
 ${cmp.lines.join('\n')}
 return truth(${less});
 });`);
-      } else ctx.add(`NativeDequeWorklist ${state}(${ctx.move(initial,[q])});`);
+      } else ctx.add(`NativeDequeWorklist ${state}(${readAs(ctx.move(initial,[q]),'Ptr<Queue>')});`);
       const inner = context(), body = call(q,bodyType,[],inner);
       inner.add(body.never ? `fail(${at}, "Non-returning body returned");` : `return ${values(body)};`);
       const action = `withNativeWorklist(m, ${state}, [&](Machine& m) -> Values {
@@ -1714,13 +1790,15 @@ ${inner.lines.join('\n')}
       const conversion = T.castInfo(definitions,n,info.effect);
       if (conversion.target !== name) callNamed(ctx, conversion.target, info.effect, stack);
       else {
-        const value = pop(), [source, result] = conversion.types.map(cppType);
+        const value = pop(), [source, result] = conversion.types.map(type=>castType.get(T.prune(type).name));
         const widening = source === result || result === 'double' || source === 'Byte' && result === 'Int';
-        if (nativeLocals && representation(value)==='Char' && ['Int','double'].includes(result)) {
-          stack.push(ctx.value(`static_cast<${result}>(${value}.code)`,result));
-        } else if (nativeLocals && source !== 'Value' && result !== 'Value' && widening) {
-          stack.push(ctx.value(`static_cast<${result}>(${readAs(value,source)})`,result));
-        } else push(`cast<${castType.get(conversion.destination)}>(m, ${value}, ${at})`);
+        const input = readAs(value,source);
+        if (source === result) stack.push(ctx.value(input,result));
+        else if (source==='Char' && ['Int','double'].includes(result))
+          stack.push(ctx.value(`static_cast<${result}>(${input}.code)`,result));
+        else if (widening && source!=='Char')
+          stack.push(ctx.value(`static_cast<${result}>(${input})`,result));
+        else stack.push(ctx.value(`cast<${result}>(m, ${input}, ${at})`,result));
       }
     } else if (name === 'not') {
       stack.push(ctx.value(`!${readAs(pop(),'bool')}`,'bool'));
@@ -1728,18 +1806,17 @@ ${inner.lines.join('\n')}
       const kind = name.startsWith('v') ? 'textVector' : 'textStream';
       const walk = name.endsWith('chars') ? 'walkChars' : 'walkBytes';
       const text = pop();
-      if (name==='bytes' && nativeLocals && optimizeVectors) push(`byteStream(${text})`);
-      else if (name==='chars' && nativeLocals && optimizeVectors) push(`charStream(${text}, ${at})`);
-      else if (name==='vbytes' && nativeLocals && vectorScalar(T.prune(info.output).item)==='Byte') push(`byteVector(${text})`);
-      else push(`${kind}<${walk}>(${text}, ${at})`);
+      if (name==='bytes' && nativeLocals && optimizeVectors) stack.push(ctx.value(`byteStream(${text})`,streamResult));
+      else if (name==='chars' && nativeLocals && optimizeVectors) stack.push(ctx.value(`charStream(${text}, ${at})`,streamResult));
+      else if (name==='vbytes' && nativeLocals && vectorScalar(T.prune(info.output).item)==='Byte') stack.push(ctx.value(`byteVector(${text})`,vectorResult));
+      else stack.push(ctx.value(`${kind}<${walk}>(${text}, ${at})`,kind==='textVector'?vectorResult:streamResult));
       if (name === 'bytes') knownByteStreams.set(stack.at(-1),{ctx,line:ctx.lines.length-1,text});
     } else if (['head','tail'].includes(name)) {
       const value = pop();
       if(name==='head'&&nativeLocals&&vectorScalar(inputs().at(-1))){const native=vectorScalar(inputs().at(-1));stack.push(ctx.value(`scalarHead<${native}>(${value},${at})`,native));}
       else push(`${name === 'head' ? 'vectorHead' : 'vectorTail'}(${value}, ${at})`);
     } else if (name === 'hash') {
-      const operation = valueOperation('hash',inputs().at(-1),n);
-      push(`static_cast<Int>(${operation}(m,${pop()}))`);
+      stack.push(ctx.value(`static_cast<Int>(${valueCall('hash',inputs().at(-1),n,pop())})`,'Int'));
     } else if (method?.specialSlice) {
       stack.push(callSlice(ctx,n,info.effect,take(stack,name==='sliceBetween'?3:2)));
     } else if (name === 'at' || name === 'setAt') {
@@ -1755,8 +1832,8 @@ ${inner.lines.join('\n')}
     else if (name === 'over') stack.push(stack.at(-2));
     else if (name === 'swap') { const [a,b] = take(stack,2); stack.push(b,a); }
     else if (name === 'rot') { const [a,b,c] = take(stack,3); stack.push(b,c,a); }
-    else if (name === 'show') push(shown(ctx,pop(),inputs().at(-1),n));
-    else if (name === 'print') ctx.add(`m.perform(Event{"put", ${at}, {raw(${pop()})}});`);
+    else if (name === 'show') stack.push(shown(ctx,pop(),inputs().at(-1),n));
+    else if (name === 'print') ctx.add(`m.perform(Event{"put", ${at}, {${rawValue(pop(),inputs().at(-1))}}});`);
     else if (name === 'readRef') push(`readBorrow(${pop()}, ${at})`);
     else if (name === 'writeRef') {
       const [ref,value] = take(stack,2);
@@ -1837,7 +1914,7 @@ ${handler.lines.join('\n')}
         ctx.add(`if (resumeTail(${k}, tailContinuation, ${values(args)}, ${at})) return {};`);
       stack.push(...dynamicResults(ctx,`resume(${k}, ${values(args)}, ${at})`,parts.output.length));
     } else if (name === 'fromYield') {
-      push(`fromYield(${label}, ${callback(ctx,pop(),info.bodyType,at,null,'void',0)})`);
+      stack.push(ctx.value(`fromYield(${label}, ${callback(ctx,pop(),info.bodyType,at,null,'void',0)})`,streamResult));
     } else {
       return collectionWord(n,info,stack,ctx,label,reuse);
     }
@@ -1864,7 +1941,7 @@ ${handler.lines.join('\n')}
       ctx.add(`${native ? 'std::vector<'+native+'>' : 'Values'} ${values};`, `auto ${broken} = loop(m,[&](Machine& m) {`,
         `splitParts(${source},[&](std::string_view part) {`,
         `${values}.push_back(parseNumberText<${number},true>(m,part,${loc(parser[0])}));`, '});', `},${label});`);
-      state.push(ctx.value(vectorFactory(T.prune(info.output).item,`std::move(${values})`)));
+      state.push(vectorValue(ctx,T.prune(info.output).item,`std::move(${values})`));
       replaceOnBreak(ctx,state,broken);
       return state;
     }
@@ -1927,7 +2004,7 @@ ${handler.lines.join('\n')}
     if(range)ctx.add(`if(${cursor}==${range}.last)break;`,`${cursor} += ${range}.first>${range}.last ? -1 : 1;`);
     ctx.add(direct?'}':' });', `}, ${label});`);
     if (acc && name !== 'vscan') state.push(accumulator);
-    if (collecting) state.push(ctx.value(vectorFactory(T.prune(info.output).item,`std::move(${collected})`)));
+    if (collecting) state.push(vectorValue(ctx,T.prune(info.output).item,`std::move(${collected})`));
     replaceOnBreak(ctx,state,broken);
     release.forEach(value=>ctx.add(`${value}.reset();`));
     return state;
@@ -1942,25 +2019,29 @@ ${handler.lines.join('\n')}
       else {
         const result=id('popped');
         ctx.add(`auto ${result} = vectorPop<${item}>(${ctx.move(source)},${reuse});`);
-        stack.push(ctx.value(`std::get<0>(std::move(${result}))`,'Adt'),ctx.value(`std::get<1>(std::move(${result}))`));
+        stack.push(ctx.value(`std::get<0>(std::move(${result}))`,'Adt'),ctx.value(`std::get<1>(std::move(${result}))`,vectorResult));
       }
       return stack;
     }
     if(name==='vreplicate'){
       const [count,value]=take(stack,2),native=vectorScalar(T.prune(info.output).item);
       const size=`static_cast<std::size_t>(countValue(m,${count},"vreplicate",${at}))`;
-      push(native?`scalarVector<${native}>(std::vector<${native}>(${size},${readAs(value,native)}))`:`vector(Values(${size},${value}))`);return stack;
+      stack.push(vectorValue(ctx,T.prune(info.output).item,native?`std::vector<${native}>(${size},${readAs(value,native)})`:`Values(${size},${value})`));return stack;
     }
     if(name==='__emptySet'){
-      const type=T.prune(T.prune(info.output).item).args[0],hash=valueOperation('hash',type,n),eq=valueOperation('eq',type,n),out=id('set');
+      const type=T.prune(T.prune(info.output).item).args[0],hash=valueCall('hash',type,n,'key'),eq=valueCall('eq',type,n,'a','b'),out=id('set');
       const native=trieScalar(type,true);
-      ctx.add(`Ptr<HashSetBase> ${out}=std::make_shared<${native==='Value'?'HashSet':`NativeSet<${native}>`}>();`,`${out}->hash=[&globals=m.globals](const Value& key){Machine m{globals,{}};return ${hash}(m,key);};`,`${out}->equal=[&globals=m.globals](const Value& a,const Value& b){Machine m{globals,{}};return ${eq}(m,a,b);};`);
-      push(out);return stack;
+      ctx.add(`Ptr<HashSetBase> ${out}=std::make_shared<${native==='Value'?'HashSet':`NativeSet<${native}>`}>();`,`${out}->hash=[&globals=m.globals](const Value& key){Machine m{globals,{}};return ${hash};};`,`${out}->equal=[&globals=m.globals](const Value& a,const Value& b){Machine m{globals,{}};return ${eq};};`);
+      stack.push(ctx.value(`std::move(${out})`,localType(T.prune(info.output).item)));return stack;
     }
     if(['sinsert','sremove','scontains','slength','sisEmpty'].includes(name)){
-      if(name==='slength'||name==='sisEmpty'){const source=stack.pop();push(name==='slength'?`static_cast<Int>(as<Ptr<HashSetBase>>(${source})->size())`:`as<Ptr<HashSetBase>>(${source})->size()==0`);return stack;}
+      if(name==='slength'||name==='sisEmpty'){
+        const source=readAs(stack.pop(),'Ptr<HashSetBase>');
+        stack.push(name==='slength' ? ctx.value(`static_cast<Int>(${source}->size())`,'Int') : ctx.value(`${source}->size()==0`,'bool'));
+        return stack;
+      }
       const [source,key]=take(stack,2),op={sinsert:0,sremove:1,scontains:2}[name];
-      push(`setOp<${op}>(${ctx.move(source,[key])},${key})`);return stack;
+      stack.push(ctx.value(`setOp<${op}>(${ctx.move(source,[key])},${key})`,op===2?'bool':localType(T.prune(info.output).item)));return stack;
     }
     if (transforms.has(name)) {
       const mode = transforms.get(name);
@@ -1988,7 +2069,7 @@ ${handler.lines.join('\n')}
         const fn = pair && callback(ctx,arg,types.at(-1),at,pair,out);
         if (fn) {
           const layout = out === 'Value' ? pair : [...pair,out];
-          push(`mapNativePairs<${layout.join(',')}>(${source},${fn},${label})`);
+          stack.push(ctx.value(`mapNativePairs<${layout.join(',')}>(${source},${fn},${label})`,streamResult));
           return stack;
         }
       }
@@ -2005,7 +2086,7 @@ ${handler.lines.join('\n')}
         if (fn) {
           const walk = input ? typedWalker(source,input) : walker(source,type,n);
           const nested = nestedItem ? `,[](Machine& m, ${nestedInput} item, const TypedVisit<${nestedItem}>& visit) { walkTyped<${nestedItem}>(m,item,visit); }` : '';
-          const transformed = ctx.value(`transformTyped<Transform::${mode},${input || 'Value'},${item}>(${walk},${count},${fn},${lazy?label:'Ptr<Label>{}'},${!lazy}${nested})`);
+          const transformed = ctx.value(`transformTyped<Transform::${mode},${input || 'Value'},${item}>(${walk},${count},${fn},${lazy?label:'Ptr<Label>{}'},${!lazy}${nested})`,streamResult);
           if (lazy) stack.push(transformed);
           else return collect(ctx,stack,typedWalker(transformed,item),label,outputType,vectorScalar(outputType));
           return stack;
@@ -2017,29 +2098,31 @@ ${handler.lines.join('\n')}
 auto walkItem = ${walker('item',nestedType,n)};
 walkItem(m,visit);
 }` : '{}';
-      const stream = ctx.value(`transform<Transform::${mode}>(${walk}, ${count}, ${fn}, ${lazy ? label : 'Ptr<Label>{}'}, ${!lazy}, ${nested})`);
+      const stream = ctx.value(`transform<Transform::${mode}>(${walk}, ${count}, ${fn}, ${lazy ? label : 'Ptr<Label>{}'}, ${!lazy}, ${nested})`,streamResult);
       if (lazy) stack.push(stream);
       else return collect(ctx, stack, walker(stream,T.prune(info.output).item,n), label);
       return stack;
     }
     if (name === 'split') {
       const [source,separator] = take(stack,2);
-      const line = ctx.lines.length, result = ctx.value(`split<${nativeLocals && optimizeVectors}>(${source}, ${separator})`);
+      const line = ctx.lines.length, result = ctx.value(`split<${nativeLocals && optimizeVectors}>(${source}, ${separator})`,streamResult);
       knownSplits.set(result,{text:source,separator,line,ctx});
       stack.push(result);
       return stack;
     }
     if (name === 'values') {
       const source = stack.pop();
-      push(`stream([${source}](Machine&, const Visit& visit) {
+      stack.push(ctx.value(`stream([${source}](Machine&, const Visit& visit) {
 for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.second);
-})`);
+})`,streamResult));
       return stack;
     }
     if (name === 'max' || name === 'min') {
       const [a,b] = take(stack,2);
       const less = callBinary(ctx,{...n,value:'<'},b,a,info.comparison);
-      push(`truth(${less}) ? ${name === 'max' ? a : b} : ${name === 'max' ? b : a}`);
+      const type=localType(T.prune(info.output).item);
+      const yes=readAs(name==='max'?a:b,type), no=readAs(name==='max'?b:a,type);
+      stack.push(ctx.value(`${readAs(less,'bool')} ? ${yes} : ${no}`,type));
       return stack;
     }
     if (name === 'zip' || name === 'vzip') {
@@ -2048,8 +2131,8 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       const vectors=T.prune(types.at(-2)).tag==='list'&&T.prune(types.at(-1)).tag==='list';
       const pair = !lazy && vectors && nativeLocals && nativeVectors && optimizeVectors &&
         nativePairTypes(T.prune(T.prune(info.output).item).item);
-      if (pair) { push(`zipNativeVectors<${pair.join(',')}>(${left},${right})`); return stack; }
-      const combined = ctx.value(vectors?`zipVectors(${left},${right},${lazy?label:'Ptr<Label>{}'})`:`zip(${walker(left,types.at(-2),n)}, ${walker(right,types.at(-1),n)}, ${lazy ? label : 'Ptr<Label>{}'})`);
+      if (pair) { stack.push(ctx.value(`zipNativeVectors<${pair.join(',')}>(${left},${right})`,vectorResult)); return stack; }
+      const combined = ctx.value(vectors?`zipVectors(${left},${right},${lazy?label:'Ptr<Label>{}'})`:`zip(${walker(left,types.at(-2),n)}, ${walker(right,types.at(-1),n)}, ${lazy ? label : 'Ptr<Label>{}'})`,streamResult);
       if (lazy) stack.push(combined);
       else return collect(ctx,stack,`[${combined}](Machine& m,const Visit& visit){ walk(m,${combined},visit); }`,label);
       return stack;
@@ -2065,7 +2148,7 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       const less = keyed && info.comparison ? callBinary(inner,{...n,value:'=='},'a','b',info.comparison) : null;
       const nativeKey = keyed && vectorScalar(T.prune(T.prune(types.at(-1)).output).item);
       const eq = less ? `[](Machine& m,const Value& a,const Value& b) { ${inner.lines.join(' ')} return truth(${less}); }` :
-        ['Byte','Int'].includes(nativeKey) ? `equalScalarVectors<${nativeKey}>` : '{}';
+        ['Byte','Int'].includes(nativeKey) ? `[](Machine& m,const Value& a,const Value& b){return equalScalarVectors<${nativeKey}>(m,a,b);}` : '{}';
       const arguments_ = `${walk}, ${count}, ${key}, ${eq}, ${label}`;
       push(`partition<Partition::${name}>(${arguments_})`);
       if (keyed && !n.handlerLabel && T.prune(types.at(-2)).tag==='list') {
@@ -2079,36 +2162,48 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       const arg = name === 'powerset' ? null : stack.pop(), source = stack.pop();
       const right = name === 'cartesianProduct' ? walker(arg,types.at(-1),n) : 'Walk{}';
       const count = arg && name !== 'cartesianProduct' ? `countValue(m,${arg},${string(name)},${at})` : '0';
-      push(`combinatorics<Combinatorics::${name}>(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count})`);
+      stack.push(ctx.value(`combinatorics<Combinatorics::${name}>(${walker(source,types.at(arg ? -2 : -1),n)}, ${right}, ${count})`,streamResult));
       return stack;
     }
     if (['__emptyDeque','__emptyHeap','qpush','qpushFront','qpop','qpopFront','qpopBack','qpeek','qpeekBack','qlength','qisEmpty',
          'hpush','hpop','hpeek','hlength','hisEmpty'].includes(name)) {
       if (name === '__emptyDeque' || name === '__emptyHeap') {
-        push(name==='__emptyDeque'?`std::make_shared<Queue>()`:`std::make_shared<Collection>(Collection{"heap", {}})`);
+        stack.push(ctx.value(name==='__emptyDeque'?`std::make_shared<Queue>()`:`std::make_shared<Collection>(Collection{"heap", {}})`,localType(T.prune(info.output).item)));
         return stack;
       }
       if(name.startsWith('q')){
         const op={qpush:0,qpushFront:1,qpop:2,qpopFront:2,qpopBack:3,qpeek:4,qpeekBack:5,qlength:6,qisEmpty:7}[name];
         const item=op<2?stack.pop():'Value{}',source=stack.pop();
-        const [container,itemOption]=ctx.call(`queueOp<${op}>`,[source,item],2);
-        if(op===2||op===3) stack.push(itemOption,container);
-        else stack.push(container);
+        const queue=T.prune(types.at(op<2?-2:-1)), repr=localType(queue);
+        const element=op>=2&&op<6?localType(queue.args[0]):'Value';
+        const specialization=element==='Value'?op:`${op},false,${element}`;
+        const call=`queueOp<${specialization}>(${ctx.move(source,[item])},${item})`;
+        if(op===2||op===3){
+          const result=id('dequeued');
+          ctx.add(`auto ${result} = ${call};`);
+          stack.push(ctx.value(`std::get<1>(std::move(${result}))`,'Adt'),ctx.value(`std::get<0>(std::move(${result}))`,repr));
+        } else stack.push(ctx.value(call,op<2?repr:op<6?'Adt':op===6?'Int':'bool'));
         return stack;
       }
-      const pushing = ['qpush','qpushFront','hpush'].includes(name);
+      const pushing = name==='hpush';
       const item = pushing ? stack.pop() : 'Value{}', source = stack.pop();
       const cmp = context();
-      let compare = '{}';
+      let compare = 'nullptr';
+      const heap=T.prune(types.at(pushing?-2:-1)), repr=localType(heap);
+      const element=name==='hpop'||name==='hpeek'?localType(heap.args[0]):'Value';
       if (name === 'hpush' || name === 'hpop') {
         const type = pushing ? types.at(-1) : T.prune(types.at(-1)).args[0];
         const effect = comparisonEffect('<',type);
         const less = callBinary(cmp,{...n,value:'<'},'a','b',effect);
         compare = `[&](const Value& a, const Value& b) { ${cmp.lines.join(' ')} return truth(${less}); }`;
       }
-      const [container,itemOption]=ctx.call(`collectionOp<CollectionOp::${name}>`,[source,item,compare,String(reuse)],2);
-      if(name==='hpop') stack.push(itemOption,container);
-      else stack.push(container);
+      const specialization=element==='Value'?'':`,${element}`;
+      const call=`collectionOp<CollectionOp::${name}${specialization}>(${ctx.move(source,[item])},${item},${compare},${reuse})`;
+      if(name==='hpop'){
+        const result=id('popped');
+        ctx.add(`auto ${result} = ${call};`);
+        stack.push(ctx.value(`std::get<1>(std::move(${result}))`,'Adt'),ctx.value(`std::get<0>(std::move(${result}))`,repr));
+      } else stack.push(ctx.value(call,pushing?repr:name==='hpeek'?'Adt':name==='hlength'?'Int':'bool'));
       return stack;
     }
     if (['vector','join','nth','reverse','sort','sortBy','maxi','mini','maxiBy','miniBy',
@@ -2135,7 +2230,7 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
     if (lookupInstance(eqClass,[item])) return false;
     let eq;
     if (['Int','Byte'].includes(row) && !lookupInstance(eqClass,[T.prune(item.item)])) {
-      eq = `equalScalarVectors<${row}>`;
+      eq = `[](Machine& m,const Value& a,const Value& b){return equalScalarVectors<${row}>(m,a,b);}`;
     } else if (['Int','Byte','bool'].includes(scalar)) {
       eq = `[](Machine&,const Value& a,const Value& b){return as<${scalar}>(a)==as<${scalar}>(b);}`;
     } else return false;
@@ -2154,7 +2249,7 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
       const method = order === 'sort' ? 'stable_sort' : 'reverse';
       ctx.add(`if (!${broken}) std::${method}(${result}.begin(), ${result}.end());`);
     }
-    state.push(ctx.value(vectorFactory(resultType,`std::move(${result})`)));
+    state.push(vectorValue(ctx,resultType,`std::move(${result})`));
     replaceOnBreak(ctx,state,broken);
     return state;
   }
@@ -2164,13 +2259,14 @@ for (const auto& pair : as<Ptr<DictBase>>(${source})->entries()) visit(pair.seco
     const arg = withArg ? stack.pop() : null, source = stack.pop();
     const native = vectorScalar(types.at(-1));
     if (native && ['sort','reverse'].includes(name) && (name === 'reverse' || !customMethod({...n,value:'<'},info.comparison))) {
-      stack.push(ctx.value(`scalarOrder<${native}>(${ctx.move(source)},${name === 'reverse'},${optimizeVectors})`));
+      stack.push(ctx.value(`scalarOrder<${native}>(${ctx.move(source)},${name === 'reverse'},${optimizeVectors})`,vectorResult));
       return stack;
     }
     if (name === 'vector') {
       const bytes = knownByteStreams.get(source), resultType=T.prune(info.output).item;
       if (nativeLocals && vectorScalar(resultType)==='Byte' && singleUseValue(bytes,ctx,source,stack)) {
-        ctx.lines[bytes.line] = `Value ${source} = byteVector(${bytes.text});`;
+        ctx.lines[bytes.line] = `${vectorResult} ${source} = byteVector(${bytes.text});`;
+        if (vectorResult!=='Value') representations.set(source,vectorResult);
         knownByteStreams.delete(source);
         stack.push(source);
         return stack;
